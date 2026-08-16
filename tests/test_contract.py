@@ -43,3 +43,12 @@ def test_load_non_mapping_top_level_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ContractError) as excinfo:
         load_contract(path)
     assert excinfo.value.code is ExitCode.CONTRACT_MISSING_FIELD
+
+
+def test_load_contract_ignores_unknown_fields(tmp_path: Path) -> None:
+    path = tmp_path / "extra.yaml"
+    path.write_text(
+        "id: e1-extra\ntask: Replace the greeting text\nfuture: whatever\n",
+        encoding="utf-8",
+    )
+    assert load_contract(path) == Contract(id="e1-extra", task="Replace the greeting text")

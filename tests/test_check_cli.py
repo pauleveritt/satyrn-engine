@@ -7,6 +7,8 @@ console script passes from ``sys.argv[1:]``).
 
 from pathlib import Path
 
+import pytest
+
 from satyrn_engine.cli import main
 from satyrn_engine.exits import ExitCode
 
@@ -16,27 +18,29 @@ INVALID = FIXTURES / "invalid.yaml"
 MISSING_FIELD = FIXTURES / "missing-field.yaml"
 
 
-def test_valid_contract_accepted(tmp_path: Path, capsys) -> None:
+def test_valid_contract_accepted(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["check", "--repo", str(tmp_path), str(VALID)]) == ExitCode.OK
-    assert capsys.readouterr().err == ""
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
-def test_invalid_yaml_refused(tmp_path: Path, capsys) -> None:
+def test_invalid_yaml_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["check", "--repo", str(tmp_path), str(INVALID)]) == ExitCode.CONTRACT_INVALID_YAML
     assert "CONTRACT_INVALID_YAML" in capsys.readouterr().err
 
 
-def test_impossible_repo_refused(tmp_path: Path, capsys) -> None:
+def test_impossible_repo_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["check", "--repo", str(tmp_path / "nope"), str(VALID)]) == ExitCode.REPO_UNAVAILABLE
     assert "REPO_UNAVAILABLE" in capsys.readouterr().err
 
 
-def test_impossible_contract_refused(tmp_path: Path, capsys) -> None:
+def test_impossible_contract_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["check", "--repo", str(tmp_path), str(tmp_path / "no-such.yaml")]) == ExitCode.CONTRACT_UNREADABLE
     assert "CONTRACT_UNREADABLE" in capsys.readouterr().err
 
 
-def test_missing_field_refused(tmp_path: Path, capsys) -> None:
+def test_missing_field_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["check", "--repo", str(tmp_path), str(MISSING_FIELD)]) == ExitCode.CONTRACT_MISSING_FIELD
     assert "CONTRACT_MISSING_FIELD" in capsys.readouterr().err
 

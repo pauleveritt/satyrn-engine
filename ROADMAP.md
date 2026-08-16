@@ -17,11 +17,17 @@ structure are initialized. `BRIEF.md` is landed. The guards
 fixtures) are copied in verbatim from `local-ai-pi` and are **not a
 phase** — see `BRIEF.md`.
 
-**Phase E1 — It installs and refuses. Not started; the current phase.**
-`satyrn-engine check --repo REPO CONTRACT`. See the Phases table below and
-`BRIEF.md` for the binding rules. Brainstorm E1's CLI surface, exit-code
-semantics, and contract format; do not reopen the phase list or the
-architecture — both are settled by the two-repo rewrite research, cited in
+**Phase E1 — It installs and refuses. Complete.** `satyrn-engine check
+--repo REPO CONTRACT` parses, validates, and path-lints a contract and
+refuses with a named cause and a stable exit code — zero model calls, zero
+processes. Spec and plan:
+`docs/superpowers/specs/2026-08-16-e1-check-design.md`,
+`docs/superpowers/plans/2026-08-16-e1-check.md`.
+
+**Phase E2 — The adapter reaches E1. Not started; the current phase.** See
+the Phases table below and `BRIEF.md` for the binding rules. Do not reopen
+the phase list or the architecture — both are settled by the two-repo
+rewrite research, cited in
 `docs/superpowers/research/2026-08-16-harvest-index.md`.
 
 ## Concept budget
@@ -32,15 +38,16 @@ earns its place by naming something the design actually needs, not by being
 convenient shorthand.*
 
 Seed terms, not yet defined in this repository's own words — define each
-when the phase that needs it lands: **contract**, **candidate**,
-**receipt**, **adapter**, **guard**, **worktree isolation**.
+when the phase that needs it lands: **candidate**, **receipt**,
+**adapter**, **guard**, **worktree isolation**. Defined so far:
+**contract**, with E1's other working terms, in `docs/glossary.md`.
 
 ## Phases
 
 | # | Phase | Direction (one sentence) | Status |
 |---|-------|--------------------------|--------|
-| E1 | It installs and refuses | `check` parses, validates, path-lints, and refuses a contract with a named cause, zero model calls, zero processes started | **current** |
-| E2 | The adapter reaches E1 | `/implement CONTRACT` reaches the same refusal through the TypeScript adapter, on POSIX and Windows — the architecture gate | not started |
+| E1 | It installs and refuses | `check` parses, validates, path-lints, and refuses a contract with a named cause, zero model calls, zero processes started | **done** |
+| E2 | The adapter reaches E1 | `/implement CONTRACT` reaches the same refusal through the TypeScript adapter, on POSIX and Windows — the architecture gate | **current** |
 | E3 | Delivery | `deliver` creates or discards a candidate ref in an isolated worktree, from a trivial executable standing in for the model | not started |
 | E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | not started |
 | E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | not started |
@@ -62,7 +69,13 @@ contract authoring (stays a main-agent skill); a multi-method protocol
 ## Prior work
 
 Completed phases move here (or to `docs/superpowers/phase-history.md`)
-when the roadmap outgrows the front page. Nothing here yet.
+when the roadmap outgrows the front page.
+
+- **E1 — It installs and refuses.** `check` parses, validates, and
+  path-lints a contract, refusing with a named cause and a stable exit
+  code, zero model calls and zero processes. Spec:
+  `docs/superpowers/specs/2026-08-16-e1-check-design.md`. Plan:
+  `docs/superpowers/plans/2026-08-16-e1-check.md`.
 
 ## Workflow
 

@@ -45,6 +45,12 @@ Backlog section.
 - **A correction is recorded, not edited away.** If something you wrote
   earlier turns out wrong, add a note that says so and why; don't silently
   rewrite history.
+- **Write modern 3.14 Python.** Favor structural pattern matching
+  (`match`/`case`) over `if`/`elif` chains that branch on a value's shape;
+  declare type aliases with the `type` statement and a semantic name
+  (PEP 695) instead of `TypeVar`/`TypeAlias` assignments; and use the
+  walrus operator (`:=`) where it removes a repeated computation from a
+  condition. Favor these where they clarify, not as a mandate.
 
 ## When something looks like a known failure mode
 

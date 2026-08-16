@@ -6,8 +6,14 @@ read why the code looks the way it does — including the arguments that
 were considered and rejected.
 
 The roadmap — phases of feature cycles derived from the two-repo rewrite
-brief — is not yet written. See `ROADMAP.md` in this checkout for the
-current state.
+brief — and the current phase live in `ROADMAP.md` in this checkout.
 
-The hidden `specs/*`, `plans/*`, and `research/*` toctrees return here
-when the roadmap step starts producing those documents.
+```{toctree}
+:maxdepth: 1
+:caption: Design record
+:glob:
+
+specs/*
+plans/*
+research/*
+```

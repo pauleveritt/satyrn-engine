@@ -9,19 +9,21 @@ before it can produce a green that silently depends on a model or a shell.
 import os
 import socket
 import subprocess
+from collections.abc import Callable
+from typing import NoReturn
 
 import pytest
 
 
-def _forbid(label: str):
-    def _explode(*args, **kwargs):
+def _forbid(label: str) -> Callable[..., NoReturn]:
+    def _explode(*args: object, **kwargs: object) -> NoReturn:
         raise AssertionError(f"forbidden in the default test tier: {label}")
 
     return _explode
 
 
 @pytest.fixture(autouse=True)
-def _no_process_or_network(monkeypatch):
+def _no_process_or_network(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fail any default-tier test that spawns a process or opens a socket."""
     # subprocess.run/call/check_* route through Popen, but patching the
     # entry points too keeps the failure message specific to the call made.

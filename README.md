@@ -18,9 +18,10 @@ repository, or stay a main-agent skill.
 
 ## Status
 
-Repository scaffolding. The roadmap — phases of feature cycles derived from
-the two-repo rewrite brief — is not yet written; see
-[`ROADMAP.md`](ROADMAP.md).
+Phase E1 ships: `satyrn-engine check --repo REPO CONTRACT` parses and
+validates a contract and lints the repository path, refusing with a named
+cause and a stable exit code. The current phase — the TypeScript adapter
+reaching E1 — and the phase list live in [`ROADMAP.md`](ROADMAP.md).
 
 ## Toolchain
 

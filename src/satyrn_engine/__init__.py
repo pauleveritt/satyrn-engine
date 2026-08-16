@@ -1,8 +1,8 @@
 """Satyrn Engine — a bounded contract becomes a candidate change.
 
-The package is scaffolding until the roadmap's phases define what it
-contains. The first phase re-earns behavior from a named fixture and
-incident rather than transplanting code.
+Phase E1 ships `check`: parse and validate a contract, lint the repository
+path it names, and accept or refuse with a named cause and a stable exit
+code. Later phases add the Pi adapter (E2) and delivery (E3).
 """
 
 __version__ = "0.1.0"

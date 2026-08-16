@@ -33,3 +33,7 @@ serves a live-rebuilding copy at http://127.0.0.1:8000.
   cutting the term over keeping it — see `ROADMAP.md`'s concept budget.
 - **A refusal test has a sibling success test**, so rejection cannot pass
   vacuously.
+- **Modern 3.14 Python.** Prefer `match`/`case` over long `if`/`elif`
+  chains, `type` aliases (PEP 695) under semantic names over
+  `TypeVar`/`TypeAlias` assignments, and the walrus operator (`:=`) where
+  it saves a repeated computation.

@@ -68,7 +68,7 @@ def load_contract(path: Path) -> Contract:
     return Contract(id=data["id"], task=data["task"])
 
 
-def _field_problems(data: dict) -> list[str]:
+def _field_problems(data: dict[str, object]) -> list[str]:
     problems: list[str] = []
     for field in REQUIRED_FIELDS:
         value = data.get(field)
