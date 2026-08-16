@@ -38,6 +38,14 @@ exit code
   refusals, and ``1`` is reserved for an uncaught internal error — a
   crash, never a refusal.
 
+integration tier
+  The marked test tier (``@pytest.mark.integration``) that starts the
+  engine as a real subprocess over the JSON {term}`protocol`. It is
+  excluded from the hermetic default run and from CI (``addopts = -m "not
+  integration"``); run it explicitly with ``uv run pytest -m
+  integration``. Its first tests, ``tests/test_integration_protocol.py``,
+  landed with E2.
+
 protocol
   The one-shot JSON surface between the adapter and the engine: one
   versioned request on stdin, one versioned response on stdout, then exit.
@@ -46,9 +54,11 @@ protocol
   mismatches are refused, not guessed at.
 
 refusal
-  A deliberate, named rejection of a contract or repository, reported as a
-  one-line ``satyrn-engine: <CAUSE>: <detail>`` message on stderr with a
-  stable exit code. A refusal is a verdict; a crash is not a refusal.
+  A deliberate, named rejection of a contract or repository. Over the CLI
+  it is reported as a one-line ``satyrn-engine: <CAUSE>: <detail>``
+  message on stderr with a stable exit code; over the {term}`protocol` it
+  travels as a JSON response on stdout whose ``code`` names the cause. A
+  refusal is a verdict; a crash is not a refusal.
 
 tripwire
   The autouse test fixture that forbids the default tier from spawning a
