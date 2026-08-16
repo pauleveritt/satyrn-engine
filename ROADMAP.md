@@ -53,8 +53,9 @@ when the phase that needs it lands: **candidate**, **receipt**,
 | E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | not started |
 | E6 | Packaged | The same `/implement` works outside either source checkout, on POSIX and Windows | not started |
 
-Full done-when criteria for each phase are in `BRIEF.md`'s referenced
-roadmap research, not restated here to avoid drift between two copies.
+Done-when criteria are restated in each phase's plan — for E1, the Goal
+of `docs/superpowers/plans/2026-08-16-e1-check.md` — not in this file,
+to avoid drift between two copies.
 
 ## Backlog
 
@@ -83,4 +84,6 @@ This repository runs on spec-driven development — see
 [`docs/sdd.md`](docs/sdd.md). Each feature cycle gets a committed design
 spec, an implementation plan, then code. The default test suite needs no
 model, network, or subprocess; process behavior lives in a small marked
-integration tier.
+integration tier. The `integration` marker is declared in
+`pyproject.toml` but the tier is empty so far — its first tests arrive
+with E2, which starts the engine as a subprocess.
