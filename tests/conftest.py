@@ -23,8 +23,15 @@ def _forbid(label: str) -> Callable[..., NoReturn]:
 
 
 @pytest.fixture(autouse=True)
-def _no_process_or_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fail any default-tier test that spawns a process or opens a socket."""
+def _no_process_or_network(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
+    """Fail any default-tier test that spawns a process or opens a socket.
+
+    The integration tier (``@pytest.mark.integration``) is the one
+    deliberate exception: it exists to start the engine as a subprocess
+    and does not run in CI.
+    """
+    if request.node.get_closest_marker("integration") is not None:
+        return
     # subprocess.run/call/check_* route through Popen, but patching the
     # entry points too keeps the failure message specific to the call made.
     monkeypatch.setattr(subprocess, "Popen", _forbid("subprocess.Popen"))

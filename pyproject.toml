@@ -33,6 +33,10 @@ docs = [
 [tool.pytest.ini_options]
 # docs/_build is the docs build output, never project tests.
 norecursedirs = ["docs/_build"]
+# The integration tier spawns the engine as a subprocess; keep it out of
+# the hermetic default run (and out of CI). Run it explicitly with
+# `uv run pytest -m integration`.
+addopts = ["-m", "not integration"]
 markers = [
     "integration: needs the real clone cache or network; excluded from the offline unit run",
 ]
