@@ -102,3 +102,31 @@ $ uv run satyrn-engine check --repo . tests/fixtures/contracts/missing-field.yam
 satyrn-engine: CONTRACT_MISSING_FIELD: missing required field 'task'
 field -> 5
 ```
+
+## The Pi adapter
+
+The {term}`adapter` exposes the engine inside Pi as a command:
+
+```console
+/implement CONTRACT
+```
+
+The command resolves `CONTRACT` against the current working directory and
+runs the engine's `protocol` operation against that directory as the
+repository. Acceptance reports `satyrn-engine: OK`; a refusal reports
+`satyrn-engine: <CAUSE>: <detail>` — the same named causes as `check`
+(`CONTRACT_UNREADABLE` through `REPO_UNAVAILABLE`, plus `INVALID_REQUEST`),
+and the adapter's own transport refusals (`ENGINE_START_FAILED`,
+`ENGINE_TIMEOUT`, `ENGINE_CRASHED`, `ENGINE_MALFORMED_RESPONSE`) when the
+engine process itself cannot serve the request.
+
+Install the adapter next to the guards:
+
+```console
+cp packages/engine/engine.ts packages/engine/orchestrator.ts ~/.pi/agent/extensions/
+export SATYRN_ENGINE_REPO=/path/to/satyrn-engine-checkout
+```
+
+`SATYRN_ENGINE_REPO` names the engine checkout; the adapter starts the
+engine with `uv run --project $SATYRN_ENGINE_REPO satyrn-engine protocol`,
+so `uv` must be on `PATH`.
