@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Turns a bounded contract into a candidate change without modifying the caller's working tree"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
-dependencies = []
+dependencies = ["pyyaml>=6.0.3"]
+
+[project.scripts]
+satyrn-engine = "satyrn_engine.cli:main"
 
 [build-system]
 requires = ["hatchling"]
