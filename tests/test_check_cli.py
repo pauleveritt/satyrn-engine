@@ -5,12 +5,16 @@ argv always leads with the ``check`` subcommand token (exactly what the
 console script passes from ``sys.argv[1:]``).
 """
 
+import io
+import json
+import sys
 from pathlib import Path
 
 import pytest
 
 from satyrn_engine.cli import main
 from satyrn_engine.exits import ExitCode
+from satyrn_engine.protocol import PROTOCOL_VERSION
 
 FIXTURES = Path(__file__).parent / "fixtures" / "contracts"
 VALID = FIXTURES / "valid.yaml"
@@ -58,3 +62,28 @@ def test_check_paths_make_no_process_or_model_calls(tmp_path: Path) -> None:
     ]
     for argv, expected in cases:
         assert main(argv) == expected
+
+
+class _FakeStream:
+    """A stand-in for sys.stdin/sys.stdout exposing a binary ``buffer``."""
+
+    def __init__(self, data: bytes = b"") -> None:
+        self.buffer = io.BytesIO(data)
+
+
+def test_protocol_subcommand_via_main(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = json.dumps(
+        {
+            "version": PROTOCOL_VERSION,
+            "operation": "check",
+            "repo": str(Path(__file__).parents[1]),
+            "contract": str(Path(__file__).parents[1] / "tests" / "fixtures" / "contracts" / "valid.yaml"),
+        }
+    )
+    out = _FakeStream()
+    monkeypatch.setattr(sys, "stdin", _FakeStream(request.encode("utf-8")))
+    monkeypatch.setattr(sys, "stdout", out)
+    assert main(["protocol"]) == ExitCode.OK
+    body = json.loads(out.buffer.getvalue().decode("utf-8"))
+    assert body["ok"] is True
+    assert body["code"] == "OK"
