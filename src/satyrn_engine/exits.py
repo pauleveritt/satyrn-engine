@@ -21,3 +21,4 @@ class ExitCode(IntEnum):
     CONTRACT_INVALID_YAML = 4
     CONTRACT_MISSING_FIELD = 5
     REPO_UNAVAILABLE = 6
+    INVALID_REQUEST = 7  # the protocol surface received a malformed request
