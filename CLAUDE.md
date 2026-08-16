@@ -1,5 +1,15 @@
 # Working in this repository
 
+**Before writing any code for a new phase: stop.** Post a short design
+proposal for the phase (CLI surface, exit codes, data shapes, test layout)
+and wait for explicit confirmation before implementing anything. This
+instruction is self-contained and does not depend on any skill, plugin, or
+tool being available — if you were invoked as a subagent and are inclined
+to skip an interactive step for that reason, this one still applies; a
+one-way task dispatch is the wrong mode for starting a new phase in this
+repository. If there is no way to ask and wait, stop and say so instead of
+proceeding.
+
 Read `BRIEF.md` and `ROADMAP.md` in full before any work, every session.
 **Do not re-brainstorm the project.** The design in those two files is the
 output of a long, twice-reviewed session recorded in
