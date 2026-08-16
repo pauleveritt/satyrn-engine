@@ -18,10 +18,13 @@ repository, or stay a main-agent skill.
 
 ## Status
 
-Phase E1 ships: `satyrn-engine check --repo REPO CONTRACT` parses and
-validates a contract and lints the repository path, refusing with a named
-cause and a stable exit code. The current phase — the TypeScript adapter
-reaching E1 — and the phase list live in [`ROADMAP.md`](ROADMAP.md).
+Phase E2 ships: `/implement CONTRACT` in the TypeScript adapter reaches
+the same refusal as `check` — the adapter starts the engine as a
+subprocess (`uv run --project $SATYRN_ENGINE_REPO satyrn-engine
+protocol`), sends one versioned JSON request, reads one JSON response, and
+converts every transport failure into a named refusal. Verified end to end
+on POSIX; the recorded Windows run is the remaining gate (see
+[`ROADMAP.md`](ROADMAP.md)).
 
 ## Toolchain
 

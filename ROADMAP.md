@@ -24,10 +24,19 @@ processes. Spec and plan:
 `docs/superpowers/specs/2026-08-16-e1-check-design.md`,
 `docs/superpowers/plans/2026-08-16-e1-check.md`.
 
-**Phase E2 — The adapter reaches E1. Not started; the current phase.** See
-the Phases table below and `BRIEF.md` for the binding rules. Do not reopen
-the phase list or the architecture — both are settled by the two-repo
-rewrite research, cited in
+**Phase E2 — The adapter reaches E1. Implemented; POSIX verified; Windows record pending.**
+`/implement CONTRACT` starts the engine through the TypeScript adapter
+(`uv run --project $SATYRN_ENGINE_REPO satyrn-engine protocol`), sends one
+versioned JSON request, reads one JSON response, and converts every
+transport failure into a named refusal. Verified end to end on POSIX: the
+shipped `exchange` against the real spawner/uv/engine returns OK and the
+named refusals; the extension intercepts `/implement` in a live pi. The
+remaining gate before E2 moves to Prior work is a recorded live run on
+Windows (the integration tier does not run in CI). Spec and plan:
+`docs/superpowers/specs/2026-08-16-e2-adapter-reaches-e1-design.md`,
+`docs/superpowers/plans/2026-08-16-e2-adapter-reaches-e1.md`. Do not
+reopen the phase list or the architecture — both are settled by the
+two-repo rewrite research, cited in
 `docs/superpowers/research/2026-08-16-harvest-index.md`.
 
 ## Concept budget
@@ -39,15 +48,16 @@ convenient shorthand.*
 
 Seed terms, not yet defined in this repository's own words — define each
 when the phase that needs it lands: **candidate**, **receipt**,
-**adapter**, **guard**, **worktree isolation**. Defined so far:
-**contract**, with E1's other working terms, in `docs/glossary.md`.
+**guard**, **worktree isolation**. Defined so far: **contract**, with
+E1's working terms, plus **adapter** and **protocol** (E2), in
+`docs/glossary.md`.
 
 ## Phases
 
 | # | Phase | Direction (one sentence) | Status |
 |---|-------|--------------------------|--------|
 | E1 | It installs and refuses | `check` parses, validates, path-lints, and refuses a contract with a named cause, zero model calls, zero processes started | **done** |
-| E2 | The adapter reaches E1 | `/implement CONTRACT` reaches the same refusal through the TypeScript adapter, on POSIX and Windows — the architecture gate | **current** |
+| E2 | The adapter reaches E1 | `/implement CONTRACT` reaches the same refusal through the TypeScript adapter, on POSIX and Windows — the architecture gate | **current** (POSIX verified; Windows record pending) |
 | E3 | Delivery | `deliver` creates or discards a candidate ref in an isolated worktree, from a trivial executable standing in for the model | not started |
 | E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | not started |
 | E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | not started |
@@ -84,6 +94,7 @@ This repository runs on spec-driven development — see
 [`docs/sdd.md`](docs/sdd.md). Each feature cycle gets a committed design
 spec, an implementation plan, then code. The default test suite needs no
 model, network, or subprocess; process behavior lives in a small marked
-integration tier. The `integration` marker is declared in
-`pyproject.toml` but the tier is empty so far — its first tests arrive
-with E2, which starts the engine as a subprocess.
+integration tier that does not run in CI. The tier's first tests
+(`tests/test_integration_protocol.py`, E2) start the engine as a
+subprocess over the JSON protocol; run them explicitly with
+`uv run pytest -m integration`.

@@ -14,7 +14,6 @@ from satyrn_engine.exits import ExitCode
 from satyrn_engine.protocol import (
     PROTOCOL_VERSION,
     ProtocolError,
-    handle_protocol,
     parse_request,
     render_response,
     run_protocol,
