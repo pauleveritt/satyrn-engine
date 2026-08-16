@@ -1,0 +1,49 @@
+{
+  "name": "loop-breaker-edit-schema-retry",
+  "source": "phase-7 Experiment A r2. 57 tool calls, 52 of them malformed `edit` retries that fail schema validation. Pi validates at agent-loop.js:404 BEFORE invoking beforeToolCall, so only 5 calls ever reach a tool_call hook. This fixture holds those 5. It exists to record that this loop is structurally invisible to a tool_call guard -- not to show one working.",
+  "calls": [
+    {
+      "toolName": "read",
+      "input": {
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "description": "Add Iterator to imports.",
+        "edits": [
+          {
+            "newText": "from collections.abc import Awaitable, Callable, Iterator\n",
+            "oldText": "from collections.abc import Awaitable, Callable\n",
+            "path": "src/svcs/_core.py"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "cat -A src/svcs/_core.py | sed -n '120,140p'"
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "cat -e src/svcs/_core.py | sed -n '120,135p'"
+      }
+    },
+    {
+      "toolName": "read",
+      "input": {
+        "path": "src/svcs/_core.py"
+      }
+    }
+  ],
+  "expected": {
+    "blocked": 0,
+    "entries": 0,
+    "firstBlock": null
+  }
+}

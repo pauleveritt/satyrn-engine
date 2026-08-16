@@ -10,14 +10,19 @@ Backlog, not into the current phase.*
 
 ## Now
 
-**Repository scaffolding — complete.** The repository is initialized with
-the toolchain (`uv`, `ruff`, `pyrefly`, `pytest`), the docs stack (Sphinx,
-MyST, Furo, sphinx-autobuild behind a Justfile recipe), CI for Pages, and
-the superpowers structure. The roadmap itself — phases of feature cycles
-derived from the two-repo rewrite brief — is **not yet written**; the
-brief names the engine's slices (check, adapter proof, delivery, bounded
-replacement, real attempt, packaging) and this section will record them in
-named phases once the roadmap is authored.
+**Repository scaffolding — complete.** The toolchain (`uv`, `ruff`,
+`pyrefly`, `pytest`), the docs stack, CI for Pages, and the superpowers
+structure are initialized. `BRIEF.md` is landed. The guards
+(`packages/engine/engine.ts`, `tools/replay_guards.mjs`, their replay
+fixtures) are copied in verbatim from `local-ai-pi` and are **not a
+phase** — see `BRIEF.md`.
+
+**Phase E1 — It installs and refuses. Not started; the current phase.**
+`satyrn-engine check --repo REPO CONTRACT`. See the Phases table below and
+`BRIEF.md` for the binding rules. Brainstorm E1's CLI surface, exit-code
+semantics, and contract format; do not reopen the phase list or the
+architecture — both are settled by the two-repo rewrite research, cited in
+`docs/superpowers/research/2026-08-16-harvest-index.md`.
 
 ## Concept budget
 
@@ -26,18 +31,33 @@ the design in mind. Checked and updated at the end of each cycle; a term
 earns its place by naming something the design actually needs, not by being
 convenient shorthand.*
 
-No terms yet. The concept budget starts empty and is earned.
+Seed terms, not yet defined in this repository's own words — define each
+when the phase that needs it lands: **contract**, **candidate**,
+**receipt**, **adapter**, **guard**, **worktree isolation**.
 
 ## Phases
 
 | # | Phase | Direction (one sentence) | Status |
 |---|-------|--------------------------|--------|
-| — | *(pending — roadmap not yet authored)* | The engine brief's slices: check, adapter proof, delivery, bounded replacement, real attempt, packaging | not started |
+| E1 | It installs and refuses | `check` parses, validates, path-lints, and refuses a contract with a named cause, zero model calls, zero processes started | **current** |
+| E2 | The adapter reaches E1 | `/implement CONTRACT` reaches the same refusal through the TypeScript adapter, on POSIX and Windows — the architecture gate | not started |
+| E3 | Delivery | `deliver` creates or discards a candidate ref in an isolated worktree, from a trivial executable standing in for the model | not started |
+| E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | not started |
+| E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | not started |
+| E6 | Packaged | The same `/implement` works outside either source checkout, on POSIX and Windows | not started |
+
+Full done-when criteria for each phase are in `BRIEF.md`'s referenced
+roadmap research, not restated here to avoid drift between two copies.
 
 ## Backlog
 
-Deferred ideas land here, never into the current phase. Nothing is
-scheduled yet.
+Deferred, each with the condition that reopens it — see `BRIEF.md`:
+a persistent sidecar (reopens on measured startup cost); a subinterpreter
+pool (reopens on a concurrent caller); guards in Python (reopens only if
+the everyday path acquires a Python prerequisite for some other reason —
+the latency argument against it is wrong and should not be re-derived);
+contract authoring (stays a main-agent skill); a multi-method protocol
+(add a second method only when a vertical slice needs it).
 
 ## Prior work
 

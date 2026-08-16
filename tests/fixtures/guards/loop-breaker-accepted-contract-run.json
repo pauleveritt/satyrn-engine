@@ -1,0 +1,55 @@
+{
+  "name": "loop-breaker-accepted-contract-run",
+  "source": "phase-7 Experiment A r1, ACCEPTED. False-rejection test.",
+  "calls": [
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "ls -R"
+      }
+    },
+    {
+      "toolName": "read",
+      "input": {
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from collections.abc import Awaitable, Callable, Iterator\n",
+            "oldText": "from collections.abc import Awaitable, Callable\n",
+            "path": "src/svcs/_core.py"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "    def __contains__(self, svc_type: type) -> bool:\n        \"\"\"\n        Check whether this registry knows how to create *svc_type*:\n\n        .. doctest::\n\n            >>> reg = svcs.Registry()\n            >>> reg.register_value(int, 42)\n            >>> int in reg\n            True\n            >>> str in reg\n            False\n        \"\"\"\n        return svc_type in self._services\n\n    def __iter__(self) -> Iterator[RegisteredService]:\n        \"\"\"\n        Iterate over the registered services.\n\n        Yields:\n            The :class:`RegisteredService` objects for every type registered on\n        this registry.\n        \"\"\"\n        return iter(self._services.values())\n\n    def __enter__(self) -> Registry:\n",
+            "oldText": "    def __contains__(self, svc_type: type) -> bool:\n        \"\"\"\n        Check whether this registry knows how to create *svc_type*:\n\n        .. doctest::\n\n            >>> reg = svcs.Registry()\n            >>> reg.register_value(int, 42)\n            >>> int in reg\n            True\n            >>> str in reg\n            False\n        \"\"\"\n        return svc_type in self._services\n\n    def __enter__(self) -> Registry:",
+            "path": "src/svcs/_core.py"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "pytest tests/test_registry.py"
+      }
+    }
+  ],
+  "expected": {
+    "blocked": 0,
+    "entries": 0,
+    "firstBlock": null
+  }
+}

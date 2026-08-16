@@ -1,0 +1,168 @@
+{
+  "name": "loop-breaker-accepted-magicmock-run",
+  "source": "phase-7 Experiment B r6, ACCEPTED, clean stop. False-rejection test.",
+  "calls": [
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "grep -r \"def get\" . | grep \"container\""
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "find . -maxdepth 3 -name \"*container*\""
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "find . -name \"*container*\" | grep -v \"tests\""
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "grep -r \"get\" . | grep \"class\""
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "grep -r \"def get\" src/svcs/"
+      }
+    },
+    {
+      "toolName": "read",
+      "input": {
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "read",
+      "input": {
+        "path": "tests/test_container.py"
+      }
+    },
+    {
+      "toolName": "write",
+      "input": {
+        "content": "# SPDX-FileCopyrightText: 2023 Hynek Schlawack <hs@ox.cx>\n#\n# SPDX-License-Identifier: MIT\n\nimport pytest\nfrom unittest.mock import MagicMock, AsyncMock\nfrom svcs import Container, Registry\n\ndef test_mock_factory_get():\n    registry = Registry()\n    # A factory that returns a MagicMock\n    # MagicMock will pass isinstance(mock, AbstractContextManager)\n    mock_svc = MagicMock()\n    registry.register_factory(\"MockSvc\", lambda: mock_svc, enter=True)\n\n    container = Container(registry)\n    # This should NOT raise TypeError and should NOT attempt to call __enter__ on mock_svc\n    # because it's a mock. It should just return mock_svc.\n    svc = container.get(\"MockSvc\")\n    assert svc == mock_svc\n    mock_svc.__enter__.assert_not_called()\n\n@pytest.mark.asyncio\nasync def test_mock_factory_aget():\n    registry = Registry()\n    # A factory that returns an AsyncMock\n    mock_svc = AsyncMock()\n    registry.register_factory(\"MockSvc\", lambda: mock_svc, enter=True)\n\n    container = Container(registry)\n    # This should NOT raise TypeError and should NOT attempt to await mock_svc\n    # because it's an AsyncMock. It should just return mock_svc.\n    svc = await container.aget(\"MockSvc\")\n    assert svc == mock_svc\n    mock_svc.__aenter__.assert_not_called()\n",
+        "path": "tests/test_mock_factory.py"
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "pytest tests/test_mock_factory.py"
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "python3 -c \"from unittest.mock import MagicMock, AsyncMock; print(f'MagicMock: {MagicMock()}', end=' '); print(f'AsyncMock: {AsyncMock()}')\""
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "python3 -c \"from unittest.mock import MagicMock, AsyncMock; m = MagicMock(); print(hasattr(m, '__mock__')); am = AsyncMock(); print(hasattr(am, '__mock__'))\""
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "python3 -c \"from collections.abc import AbstractAsyncContextManager, AbstractContextManager; print(f'Async: {AbstractAsyncContextManager}', end=' '); print(f'Sync: {AbstractContextManager}')\""
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "python3 -c \"from collections.abc import AbstractContextManager; from unittest.mock import MagicMock; print(isinstance(MagicMock(), AbstractContextManager))\""
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "python3 -c \"from unittest.mock import Mock, AsyncMock; print(isinstance(Mock(), Mock), isinstance(AsyncMock(), Mock))\""
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "python3 -c \"from unittest.mock import Mock, AsyncMock; print(isinstance(Mock(), Mock), isinstance(AsyncMock(), Mock))\""
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "python3 -c \"from unittest.mock import Mock, MagicMock; print(issubclass(MagicMock, Mock))\""
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "python3 -c \"from unittest.mock import Mock, MagicMock; print(issubclass(MagicMock, Mock))\""
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "def _is_mock(obj: Any) -> bool:\n    try:\n        from unittest.mock import Mock, AsyncMock\n        return isinstance(obj, (Mock, AsyncMock))\n    except ImportError:\n        return False\n\ndef _full_name(obj: object) -> str:",
+            "oldText": "def _full_name(obj: object) -> str:"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "def _is_mock(obj: Any) -> bool:\n    try:\n        from unittest.mock import Mock, AsyncMock\n        return isinstance(obj, (Mock, AsyncMock))\n    except ImportError:\n        return False\n\ndef _full_name(obj: object) -> str:",
+            "oldText": "def _full_name(obj: object) -> str:"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "            if cached:\n                rv.append(svc)\n                continue\n\n            if _is_mock(svc):\n                self._instantiated[svc_type] = (svc, rs)\n                rv.append(svc)\n                continue\n\n            if iscoroutine(svc) or isinstance(",
+            "oldText": "            if cached:\n                rv.append(svc)\n                continue\n\n            if iscoroutine(svc) or isinstance("
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "            if cached:\n                rv.append(svc)\n                continue\n\n            if _is_mock(svc):\n                self._instantiated[svc_type] = (svc, rs)\n                rv.append(svc)\n                continue\n\n            if rs.enter and isinstance(svc, AbstractAsyncContextManager):",
+            "oldText": "            if cached:\n                rv.append(svc)\n                continue\n\n            if rs.enter and isinstance(svc, AbstractAsyncContextManager):"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "pytest tests/test_mock_factory.py"
+      }
+    }
+  ],
+  "expected": {
+    "blocked": 0,
+    "entries": 0,
+    "firstBlock": null
+  }
+}

@@ -1,0 +1,9 @@
+{
+	"name": "agent-engine",
+	"version": "0.1.0",
+	"keywords": ["pi-package"],
+	"type": "module",
+	"pi": {
+		"extensions": ["./engine.ts", "./orchestrator.ts"]
+	}
+}

@@ -1,0 +1,13 @@
+{
+  "name": "clean-accepted-excerpt",
+  "source": "phase-5 clean accepted run: representative calls",
+  "calls": [
+    { "toolName": "bash", "input": { "command": "ls -R" } },
+    { "toolName": "read", "input": { "path": "app.py" } },
+    { "toolName": "bash", "input": { "command": "python -m pytest" } },
+    { "toolName": "write", "input": { "path": "app.py", "content": "one" } },
+    { "toolName": "bash", "input": { "command": "python -m pytest" } },
+    { "toolName": "read", "input": { "path": "templates/home.html" } }
+  ],
+  "expected": { "blocked": 0, "entries": 0 }
+}

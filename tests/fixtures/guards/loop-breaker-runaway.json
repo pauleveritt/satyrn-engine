@@ -1,0 +1,13 @@
+{
+  "name": "cycle-4-runaway-excerpt",
+  "source": "phase-5 cycle 4 banked run: repeated ls -R excerpt",
+  "calls": [
+    { "toolName": "bash", "input": { "command": "ls -R" } },
+    { "toolName": "bash", "input": { "command": "ls -R" } },
+    { "toolName": "bash", "input": { "command": "ls -R" } },
+    { "toolName": "bash", "input": { "command": "ls -R" } },
+    { "toolName": "bash", "input": { "command": "ls -R" } },
+    { "toolName": "bash", "input": { "command": "ls -R" } }
+  ],
+  "expected": { "blocked": 1, "entries": 1 }
+}
