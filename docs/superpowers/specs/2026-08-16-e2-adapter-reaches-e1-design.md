@@ -125,6 +125,7 @@ else. Contract semantics stay in Python.
 | `ENGINE_TIMEOUT` | adapter | no response before the deadline |
 | `ENGINE_CRASHED` | adapter | nonzero exit with no parseable response (incl. exit 1) |
 | `ENGINE_MALFORMED_RESPONSE` | adapter | response is JSON but wrong shape, or version mismatch |
+| `USAGE` | adapter | `/implement` called with no `CONTRACT` argument (reuses the engine's `USAGE` name for the command surface) |
 | `INVALID_REQUEST` | engine | malformed request (the only new engine code) |
 | `CONTRACT_UNREADABLE` … `REPO_UNAVAILABLE` | engine | pass through verbatim from `check()` |
 

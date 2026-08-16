@@ -133,6 +133,7 @@ No process is involved: the seam ``run_protocol`` is fed BytesIO streams
 directly. Every refusal has a sibling success (binding rule 4).
 """
 
+import io
 import json
 from pathlib import Path
 
@@ -153,8 +154,6 @@ CONTRACTS = Path(__file__).parent / "fixtures" / "contracts"
 
 
 def _run(text: str | bytes) -> tuple[bytes, int]:
-    import io
-
     stdin = io.BytesIO(text if isinstance(text, bytes) else text.encode("utf-8"))
     stdout = io.BytesIO()
     code = run_protocol(stdin, stdout)
@@ -345,7 +344,7 @@ def handle_protocol(data: str | bytes) -> tuple[str, int]:
 def run_protocol(stdin: BinaryIO, stdout: BinaryIO) -> int:
     """The stdin/stdout plumbing behind the ``protocol`` subcommand."""
     response, code = handle_protocol(stdin.read())
-    stdout.write(response.encode("utf-8") + b"\n")
+    stdout.write(response.encode("utf-8"))
     stdout.flush()
     return code
 ```
@@ -376,7 +375,7 @@ git commit -m "feat(protocol): one-shot versioned JSON request/response over std
 
 - [ ] **Step 1: Write the failing wiring test**
 
-Append to `tests/test_check_cli.py`:
+Add these imports to the top of `tests/test_check_cli.py` (its existing top-level block already imports `Path`, `main`, and `ExitCode`):
 
 ```python
 import io
@@ -384,8 +383,11 @@ import json
 import sys
 
 from satyrn_engine.protocol import PROTOCOL_VERSION
+```
 
+Then append the helper and the test:
 
+```python
 class _FakeStream:
     """A stand-in for sys.stdin/sys.stdout exposing a binary ``buffer``."""
 
@@ -421,7 +423,7 @@ Expected: FAIL — `satyrn-engine: error: argument command: invalid choice: 'pro
 In `src/satyrn_engine/cli.py`, add the `protocol` subparser in `build_parser()` next to `check`:
 
 ```python
-    protocol_parser = subparsers.add_parser("protocol", help="serve one JSON request over stdin/stdout")
+    subparsers.add_parser("protocol", help="serve one JSON request over stdin/stdout")
 ```
 
 And branch on it at the top of `main`:
@@ -443,7 +445,7 @@ Add the import at the top of `cli.py`:
 from .protocol import run_protocol
 ```
 
-Note: `protocol_parser` is assigned but unused beyond registration (argparse requires the parser object to exist); this is the same pattern the existing `check_parser` follows.
+Note: `protocol` takes no arguments, so the subparser is registered without being assigned — unlike `check_parser`, which is held to call `add_argument` on it. Assigning an unused name here would trip ruff's `F841`.
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -482,10 +484,28 @@ def _no_process_or_network(monkeypatch, request):
     deliberate exception: it exists to start the engine as a subprocess
     and does not run in CI.
     """
-    if "integration" in request.keywords:
+    if request.node.get_closest_marker("integration") is not None:
         return
     # ... every existing patch below unchanged ...
 ```
+
+Also in `pyproject.toml`, under `[tool.pytest.ini_options]`, add `addopts` so the
+default run deselects the integration tier (the tier spawns `uv` and must not run
+in the hermetic default suite or in CI):
+
+```toml
+[tool.pytest.ini_options]
+norecursedirs = ["docs/_build"]
+addopts = ["-m", "not integration"]
+markers = [
+    "integration: needs the real clone cache or network; excluded from the offline unit run",
+]
+```
+
+`uv run pytest` then runs only the default tier; `uv run pytest -m integration`
+overrides `addopts` (argparse keeps the last `-m`) and runs only the integration
+tier. Running a single integration file by path requires `-m integration` too,
+since `addopts` would otherwise deselect it.
 
 - [ ] **Step 2: Re-prove the tripwire still bites the default tier**
 
@@ -580,10 +600,10 @@ def test_protocol_refuses_malformed_request() -> None:
 
 
 def test_compatibility_fixture_round_trip() -> None:
-    """The committed request/response pair matches the real console script byte for byte."""
+    """The committed request/response pair matches the real console script."""
     proc = run_protocol_process((FIXTURES / "request-check-valid.json").read_text())
     assert proc.returncode == 0
-    assert proc.stdout == (FIXTURES / "response-check-ok.json").read_text()
+    assert proc.stdout.rstrip("\n") == (FIXTURES / "response-check-ok.json").read_text().rstrip("\n")
 ```
 
 - [ ] **Step 5: Run the integration tier**
@@ -661,11 +681,16 @@ export class AdapterRefusal extends Error {
 	}
 }
 
-/** The minimal child-process surface the adapter needs (the test seam). */
+/** The minimal child-process surface the adapter needs (the test seam).
+ *
+ * `close` (not `exit`) is the event the adapter listens for: Node fires
+ * `exit` before the stdio streams drain, so reading stdout on `exit` can
+ * lose trailing bytes. `close` fires after the process has ended AND the
+ * stdio streams are closed. */
 export interface SpawnedChild {
 	stdin: { write(data: string): void; end(): void };
 	stdout: { on(event: "data", cb: (chunk: string) => void): void };
-	on(event: "exit", cb: (code: number | null) => void): void;
+	on(event: "close", cb: (code: number | null) => void): void;
 	on(event: "error", cb: (err: Error) => void): void;
 	kill(): void;
 }
@@ -742,7 +767,6 @@ export async function exchange(
 			settled = true;
 			rejectPromise(new AdapterRefusal("ENGINE_TIMEOUT", `no response within ${deadlineMs} ms`));
 		}, deadlineMs);
-		timer.unref();
 
 		child.stdout.on("data", (chunk) => {
 			stdout += chunk;
@@ -755,7 +779,7 @@ export async function exchange(
 			rejectPromise(new AdapterRefusal("ENGINE_START_FAILED", `engine failed to start: ${err.message}`));
 		});
 
-		child.on("exit", (code) => {
+		child.on("close", (code) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
@@ -878,6 +902,11 @@ const { createAdapter, buildRequest, parseResponse, exchange, AdapterRefusal } =
 	pathToFileURL(extensionPath)
 );
 
+// The adapter reads this at call time; set it once so the command-surface
+// cases below start in the "engine is reachable" state. Individual cases
+// delete and restore it to exercise the unset path.
+process.env.SATYRN_ENGINE_REPO = String(root);
+
 const FIXTURES = resolve(root, "tests/fixtures/protocol");
 
 let failures = 0;
@@ -892,7 +921,7 @@ function ok(name, condition, detail = "") {
 
 /** A fake spawner child that behaves per case. */
 function mockChild({ stdoutText = "", exitCode = 0, emitError = null, neverExits = false }) {
-	const listeners = { exit: [], error: [] };
+	const listeners = { close: [], error: [] };
 	let killed = false;
 	const child = {
 		stdin: {
@@ -900,7 +929,7 @@ function mockChild({ stdoutText = "", exitCode = 0, emitError = null, neverExits
 			end() {
 				queueMicrotask(() => {
 					if (neverExits) return;
-					for (const cb of listeners.exit) cb(exitCode);
+					for (const cb of listeners.close) cb(exitCode);
 				});
 			},
 		},
@@ -921,10 +950,6 @@ function mockChild({ stdoutText = "", exitCode = 0, emitError = null, neverExits
 	};
 	if (emitError) queueMicrotask(() => { for (const cb of listeners.error) cb(emitError); });
 	return child;
-}
-
-function fakeSpawner(case_) {
-	return () => mockChild(case_);
 }
 
 // --- Case 1: acceptance round trip through the real fixtures ----------------
@@ -996,41 +1021,48 @@ const timedOut = await exchange(spawnerFor(mockChild({ neverExits: true })), okR
 ok("timeout -> ENGINE_TIMEOUT", timedOut instanceof AdapterRefusal && timedOut.code === "ENGINE_TIMEOUT", timedOut.message);
 
 // --- Case 5: the /implement command surface -----------------------------------
+// Each case clears `notifications` first so the assertion targets the one
+// notify call that case made, not an accumulated index.
 const notifications = [];
 const fakeCtx = {
 	cwd: root,
 	ui: { notify(message, level) { notifications.push({ message, level }); } },
 };
 
-const adapter = createAdapter(() => mockChild({ stdoutText: okResponse, exitCode: 0 }), 500);
-await adapter.implement("tests/fixtures/contracts/valid.yaml", fakeCtx);
+notifications.length = 0;
+await createAdapter(() => mockChild({ stdoutText: okResponse, exitCode: 0 }), 500).implement(
+	"tests/fixtures/contracts/valid.yaml",
+	fakeCtx,
+);
 ok(
 	"implement accepts and notifies OK",
 	notifications.length === 1 && notifications[0].message === "satyrn-engine: OK" && notifications[0].level === "info",
 	JSON.stringify(notifications),
 );
 
-const adapterRefusal = createAdapter(() => mockChild({ stdoutText: refusalText, exitCode: 6 }), 500);
-await adapterRefusal.implement("anything.yaml", fakeCtx);
+notifications.length = 0;
+await createAdapter(() => mockChild({ stdoutText: refusalText, exitCode: 6 }), 500).implement("anything.yaml", fakeCtx);
 ok(
 	"implement surfaces engine refusals verbatim",
-	notifications.length === 2 && notifications[0].message.startsWith("satyrn-engine: REPO_UNAVAILABLE") && notifications[0].level === "error",
+	notifications.length === 1 && notifications[0].message.startsWith("satyrn-engine: REPO_UNAVAILABLE") && notifications[0].level === "error",
 	JSON.stringify(notifications),
 );
 
 delete process.env.SATYRN_ENGINE_REPO;
+notifications.length = 0;
 await createAdapter(() => mockChild({})).implement("x.yaml", fakeCtx);
 ok(
 	"implement refuses when SATYRN_ENGINE_REPO is unset",
-	notifications.length === 3 && notifications[0].message.includes("SATYRN_ENGINE_REPO") && notifications[0].level === "error",
+	notifications.length === 1 && notifications[0].message.includes("SATYRN_ENGINE_REPO") && notifications[0].level === "error",
 	JSON.stringify(notifications),
 );
 
-process.env.SATYRN_ENGINE_REPO = engineRepo;
+process.env.SATYRN_ENGINE_REPO = String(root);
+notifications.length = 0;
 await createAdapter(() => mockChild({})).implement("   ", fakeCtx);
 ok(
 	"implement refuses an empty CONTRACT",
-	notifications.length === 4 && notifications[0].message.includes("USAGE") && notifications[0].level === "error",
+	notifications.length === 1 && notifications[0].message.includes("USAGE") && notifications[0].level === "error",
 	JSON.stringify(notifications),
 );
 
@@ -1041,7 +1073,7 @@ if (failures > 0) {
 console.log("\nall adapter replay cases passed");
 ```
 
-Note: set `process.env.SATYRN_ENGINE_REPO = engineRepo;` **before** the first `implement` call in the harness (the env var is read at call time).
+Note: `process.env.SATYRN_ENGINE_REPO` is set to `String(root)` at the top of the harness so the command-surface cases start in the reachable state; Case 5 deletes and restores it to exercise the unset path.
 
 - [ ] **Step 2: Run the harness**
 
@@ -1199,6 +1231,6 @@ git commit -m "docs: E2 complete — adapter reaches E1 on POSIX and Windows
 
 ## Self-Review
 
-- **Spec coverage:** `protocol` subcommand (Tasks 2–3); `INVALID_REQUEST = 7` + deliberately changed pinned table (Task 1); request/response shapes + version (Tasks 2–3); uv seam `uv run --project $SATYRN_ENGINE_REPO` (Tasks 3–5); adapter `/implement`, `repo = ctx.cwd`, spawner as injected test seam, deadline + exception boundary, four transport refusals (Task 5); engine refusals pass through verbatim (Tasks 5–6); default tier stays process-free with the tripwire yielding only for `integration` (Task 4); integration tier first tests (Task 4); Node replay harness (Task 6); protocol compatibility fixtures (Tasks 2, 4, 6); docs + install re-verification per the harvest index (Task 7); POSIX + Windows manual proofs and roadmap record (Task 8).
+- **Spec coverage:** `protocol` subcommand (Tasks 2–3); `INVALID_REQUEST = 7` + deliberately changed pinned table (Task 1); request/response shapes + version (Tasks 2–3); uv seam `uv run --project $SATYRN_ENGINE_REPO` (Tasks 3–5); adapter `/implement`, `repo = ctx.cwd`, spawner as injected test seam, deadline + exception boundary, four transport refusals + the `USAGE` command-surface refusal (Task 5); engine refusals pass through verbatim (Tasks 5–6); default tier stays process-free with the tripwire yielding only for `integration` AND `addopts` deselecting the integration tier from the default run (Task 4); integration tier first tests (Task 4); Node replay harness (Task 6); protocol compatibility fixtures (Tasks 2, 4, 6); docs + install re-verification per the harvest index (Task 7); POSIX + Windows manual proofs and roadmap record (Task 8).
 - **Placeholder scan:** every code step carries full content; the only prose steps (Task 8 proofs) name exact commands and expected output.
-- **Type consistency:** `ExitCode.INVALID_REQUEST` (Task 1) matches `protocol.py` (Task 2); `Request` fields `operation`/`repo`/`contract` match the JSON request (Tasks 2, 5); `buildRequest`/`parseResponse`/`exchange`/`createAdapter` signatures in `orchestrator.ts` (Task 5) match the harness (Task 6); `run_protocol(stdin, stdout)` (Task 2) matches the CLI wiring (Task 3). Task 6's `exchangeCase` asserts resolution only; the refusal conversions are asserted by the dedicated crash/malformed/start/timeout cases.
+- **Type consistency:** `ExitCode.INVALID_REQUEST` (Task 1) matches `protocol.py` (Task 2); `Request` fields `operation`/`repo`/`contract` match the JSON request (Tasks 2, 5); `buildRequest`/`parseResponse`/`exchange`/`createAdapter` signatures in `orchestrator.ts` (Task 5) match the harness (Task 6); `run_protocol(stdin, stdout)` (Task 2) matches the CLI wiring (Task 3). `exchange` listens on `close` (not `exit`) so stdout is fully drained before parsing; the `SpawnedChild` interface (Task 5) and the harness mock (Task 6) both declare/fire `close`. Task 6's `exchangeCase` asserts resolution only; the refusal conversions are asserted by the dedicated crash/malformed/start/timeout cases, and the command-surface cases each clear `notifications` first so the assertion targets the one notify call that case made.
