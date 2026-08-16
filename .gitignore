@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.pyrefly_cache/
+docs/_build/
+node_modules/
+
+# Local workspace state
+.worktrees/
+.superpowers/
+
+# IDE state. `.idea/` must be ignored in this file, not only via a
+# developer's global excludesfile: hermetic git environments disable global
+# config, so a dirty-repository preflight would see `.idea/` as untracked
+# and refuse every run.
+.idea/
