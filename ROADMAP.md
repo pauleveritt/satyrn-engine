@@ -32,7 +32,8 @@ transport failure into a named refusal. Verified end to end on POSIX: the
 shipped `exchange` against the real spawner/uv/engine returns OK and the
 named refusals; the extension intercepts `/implement` in a live pi; and a
 recorded live run on 2026-08-16 showed `satyrn-engine: OK` for a valid
-contract and `satyrn-engine: CONTRACT_UNREADABLE: …` for a missing one.
+contract, `satyrn-engine: CONTRACT_UNREADABLE: …` for a missing one, and
+`satyrn-engine: USAGE: …` for a missing argument.
 The remaining gate before E2 moves to Prior work is a recorded live run on
 Windows (the integration tier does not run in CI). Spec and plan:
 `docs/superpowers/specs/2026-08-16-e2-adapter-reaches-e1-design.md`,
