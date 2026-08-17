@@ -6,6 +6,7 @@ __pycache__/
 .pyrefly_cache/
 docs/_build/
 node_modules/
+dist/
 
 # Local workspace state
 .worktrees/
