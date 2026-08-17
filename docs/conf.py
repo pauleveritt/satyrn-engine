@@ -35,13 +35,9 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "furo"
 
-# Top-of-page buttons linking into the GitHub repository: "view" (eye)
-# opens the current page's source in the repo; "edit" (pencil) opens the
-# GitHub edit flow. Furo's determine_page_view_link builds the URLs from
-# these three options.
-html_theme_options = {
-    "top_of_page_buttons": ["view", "edit"],
-    "source_repository": "https://github.com/pauleveritt/satyrn-engine",
-    "source_branch": "main",
-    "source_directory": "docs/",
-}
+# A GitHub octocat linking to the repository home, injected into the page
+# header by docs/_static/github-header.js — Furo 2025.12.19 has no native
+# header slot for it (its octocat is footer-only and ReadTheDocs-gated).
+# If Furo grows a native header icon, delete the shim and this entry.
+html_static_path = ["_static"]
+html_js_files = ["github-header.js"]
