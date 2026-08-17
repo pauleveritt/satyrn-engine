@@ -15,10 +15,10 @@ satyrn-evals repository, or stay a main-agent skill.
 
 ## Status
 
-- _E1_ — it installs and refuses. `satyrn-engine check --repo REPO CONTRACT`
+- [_E1_](https://github.com/pauleveritt/satyrn-engine/tree/e1) — it installs and refuses. `satyrn-engine check --repo REPO CONTRACT`
   parses, validates, and path-lints a contract, refusing with a named cause
   and a stable exit code. ({doc}`spec <superpowers/specs/2026-08-16-e1-check-design>`, {doc}`plan <superpowers/plans/2026-08-16-e1-check>`)
-- _E2_ — the adapter reaches E1. `/implement CONTRACT` reaches the same
+- [_E2_](https://github.com/pauleveritt/satyrn-engine/tree/e2) — the adapter reaches E1. `/implement CONTRACT` reaches the same
   refusal through the TypeScript adapter over one-shot, versioned JSON —
   one Python process per operation. ({doc}`spec <superpowers/specs/2026-08-16-e2-adapter-reaches-e1-design>`, {doc}`plan <superpowers/plans/2026-08-16-e2-adapter-reaches-e1>`)
 
