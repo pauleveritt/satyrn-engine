@@ -1197,6 +1197,11 @@ Record the transcript (this is the E2 analogue of E1's planted-tripwire proof).
 
 On a Windows machine with the same checkout, `uv`, and adapter install, repeat Step 1's three commands. Record the transcript. The phase names POSIX and Windows, and the integration tier does not run in CI, so this recorded run is the Windows gate.
 
+> **Deferred (recorded 2026-08-16):** no Windows machine is available to
+> this project, so this step is deferred with a reopen condition in
+> `ROADMAP.md`'s Backlog (reopens on access to a Windows machine). E2
+> moved to done with the Windows leg recorded as deferred, not verified.
+
 - [ ] **Step 3: Update the roadmap**
 
 In `ROADMAP.md`:

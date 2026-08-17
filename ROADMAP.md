@@ -24,7 +24,7 @@ processes. Spec and plan:
 `docs/superpowers/specs/2026-08-16-e1-check-design.md`,
 `docs/superpowers/plans/2026-08-16-e1-check.md`.
 
-**Phase E2 — The adapter reaches E1. Implemented; POSIX proof recorded; Windows gate pending.**
+**Phase E2 — The adapter reaches E1. Complete.**
 `/implement CONTRACT` starts the engine through the TypeScript adapter
 (`uv run --project $SATYRN_ENGINE_REPO satyrn-engine protocol`), sends one
 versioned JSON request, reads one JSON response, and converts every
@@ -33,9 +33,10 @@ shipped `exchange` against the real spawner/uv/engine returns OK and the
 named refusals; the extension intercepts `/implement` in a live pi; and a
 recorded live run on 2026-08-16 showed `satyrn-engine: OK` for a valid
 contract, `satyrn-engine: CONTRACT_UNREADABLE: …` for a missing one, and
-`satyrn-engine: USAGE: …` for a missing argument.
-The remaining gate before E2 moves to Prior work is a recorded live run on
-Windows (the integration tier does not run in CI). Spec and plan:
+`satyrn-engine: USAGE: …` for a missing argument. The phase's done-when
+names POSIX and Windows; the Windows leg is deferred with a reopen
+condition in the Backlog below, because no Windows machine is available
+and the integration tier does not run in CI. Spec and plan:
 `docs/superpowers/specs/2026-08-16-e2-adapter-reaches-e1-design.md`,
 `docs/superpowers/plans/2026-08-16-e2-adapter-reaches-e1.md`. Do not
 reopen the phase list or the architecture — both are settled by the
@@ -60,7 +61,7 @@ E1's working terms, plus **adapter** and **protocol** (E2), in
 | # | Phase | Direction (one sentence) | Status |
 |---|-------|--------------------------|--------|
 | E1 | It installs and refuses | `check` parses, validates, path-lints, and refuses a contract with a named cause, zero model calls, zero processes started | **done** |
-| E2 | The adapter reaches E1 | `/implement CONTRACT` reaches the same refusal through the TypeScript adapter, on POSIX and Windows — the architecture gate | **current** (POSIX verified; Windows record pending) |
+| E2 | The adapter reaches E1 | `/implement CONTRACT` reaches the same refusal through the TypeScript adapter, on POSIX and Windows — the architecture gate | **done** (POSIX recorded; Windows leg deferred, see Backlog) |
 | E3 | Delivery | `deliver` creates or discards a candidate ref in an isolated worktree, from a trivial executable standing in for the model | not started |
 | E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | not started |
 | E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | not started |
@@ -78,7 +79,11 @@ pool (reopens on a concurrent caller); guards in Python (reopens only if
 the everyday path acquires a Python prerequisite for some other reason —
 the latency argument against it is wrong and should not be re-derived);
 contract authoring (stays a main-agent skill); a multi-method protocol
-(add a second method only when a vertical slice needs it).
+(add a second method only when a vertical slice needs it); the **Windows
+`/implement` run** (reopens on access to a Windows machine — E2's
+done-when named POSIX and Windows, and only POSIX has been recorded; the
+integration tier does not run in CI, so this is a manual recorded run,
+not a CI job).
 
 ## Prior work
 
@@ -90,6 +95,12 @@ when the roadmap outgrows the front page.
   code, zero model calls and zero processes. Spec:
   `docs/superpowers/specs/2026-08-16-e1-check-design.md`. Plan:
   `docs/superpowers/plans/2026-08-16-e1-check.md`.
+- **E2 — The adapter reaches E1.** `/implement CONTRACT` reaches the
+  same refusal through the TypeScript adapter (one process per operation,
+  versioned JSON over stdin/stdout), verified live on POSIX. The Windows
+  leg is deferred — see the Backlog. Spec:
+  `docs/superpowers/specs/2026-08-16-e2-adapter-reaches-e1-design.md`.
+  Plan: `docs/superpowers/plans/2026-08-16-e2-adapter-reaches-e1.md`.
 
 ## Workflow
 
