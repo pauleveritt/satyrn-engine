@@ -34,3 +34,14 @@ pygments_dark_style = "monokai"
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "furo"
+
+# Top-of-page buttons linking into the GitHub repository: "view" (eye)
+# opens the current page's source in the repo; "edit" (pencil) opens the
+# GitHub edit flow. Furo's determine_page_view_link builds the URLs from
+# these three options.
+html_theme_options = {
+    "top_of_page_buttons": ["view", "edit"],
+    "source_repository": "https://github.com/pauleveritt/satyrn-engine",
+    "source_branch": "main",
+    "source_directory": "docs/",
+}
