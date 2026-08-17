@@ -18,13 +18,17 @@ repository, or stay a main-agent skill.
 
 ## Status
 
-Phase E2 ships: `/implement CONTRACT` in the TypeScript adapter reaches
-the same refusal as `check` — the adapter starts the engine as a
-subprocess (`uv run --project $SATYRN_ENGINE_REPO satyrn-engine
-protocol`), sends one versioned JSON request, reads one JSON response, and
-converts every transport failure into a named refusal. Verified end to end
-on POSIX; the recorded Windows run is the remaining gate (see
-[`ROADMAP.md`](ROADMAP.md)).
+Phases completed, each with its design spec and implementation plan:
+
+- _E1_ — it installs and refuses. `satyrn-engine check --repo REPO CONTRACT`
+  parses, validates, and path-lints a contract, refusing with a named cause
+  and a stable exit code. ([_spec_](https://github.com/pauleveritt/satyrn-engine/blob/main/docs/superpowers/specs/2026-08-16-e1-check-design.md), [_plan_](https://github.com/pauleveritt/satyrn-engine/blob/main/docs/superpowers/plans/2026-08-16-e1-check.md))
+- _E2_ — the adapter reaches E1. `/implement CONTRACT` reaches the same
+  refusal through the TypeScript adapter over one-shot, versioned JSON —
+  one Python process per operation. ([_spec_](https://github.com/pauleveritt/satyrn-engine/blob/main/docs/superpowers/specs/2026-08-16-e2-adapter-reaches-e1-design.md), [_plan_](https://github.com/pauleveritt/satyrn-engine/blob/main/docs/superpowers/plans/2026-08-16-e2-adapter-reaches-e1.md))
+
+The roadmap and the current phase (E3 — Delivery) live in
+[`ROADMAP.md`](ROADMAP.md).
 
 ## Toolchain
 
