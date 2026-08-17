@@ -24,14 +24,16 @@ processes. Spec and plan:
 `docs/superpowers/specs/2026-08-16-e1-check-design.md`,
 `docs/superpowers/plans/2026-08-16-e1-check.md`.
 
-**Phase E2 — The adapter reaches E1. Implemented; POSIX verified; Windows record pending.**
+**Phase E2 — The adapter reaches E1. Implemented; POSIX proof recorded; Windows gate pending.**
 `/implement CONTRACT` starts the engine through the TypeScript adapter
 (`uv run --project $SATYRN_ENGINE_REPO satyrn-engine protocol`), sends one
 versioned JSON request, reads one JSON response, and converts every
 transport failure into a named refusal. Verified end to end on POSIX: the
 shipped `exchange` against the real spawner/uv/engine returns OK and the
-named refusals; the extension intercepts `/implement` in a live pi. The
-remaining gate before E2 moves to Prior work is a recorded live run on
+named refusals; the extension intercepts `/implement` in a live pi; and a
+recorded live run on 2026-08-16 showed `satyrn-engine: OK` for a valid
+contract and `satyrn-engine: CONTRACT_UNREADABLE: …` for a missing one.
+The remaining gate before E2 moves to Prior work is a recorded live run on
 Windows (the integration tier does not run in CI). Spec and plan:
 `docs/superpowers/specs/2026-08-16-e2-adapter-reaches-e1-design.md`,
 `docs/superpowers/plans/2026-08-16-e2-adapter-reaches-e1.md`. Do not
