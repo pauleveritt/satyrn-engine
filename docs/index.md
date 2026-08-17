@@ -15,8 +15,11 @@ satyrn-evals repository, or stay a main-agent skill.
 
 Phase E1 ships the `check` command: parse and validate a contract, lint
 the repository path it names, and either accept it or refuse with a named
-cause and a stable exit code. The roadmap and the current phase (E2, the
-TypeScript adapter reaching E1) live in `ROADMAP.md` in this checkout.
+cause and a stable exit code. Phase E2 ships the Pi adapter:
+`/implement CONTRACT` reaches the same verdict through the TypeScript
+adapter, which starts the engine as a subprocess and speaks one-shot,
+versioned JSON — see {doc}`usage` and {doc}`architecture`. The roadmap
+and the current phase live in `ROADMAP.md` in this checkout.
 
 ```{toctree}
 :maxdepth: 1
@@ -30,6 +33,7 @@ glossary
 :maxdepth: 1
 :caption: Development
 
+architecture
 contributing
 sdd
 superpowers/index

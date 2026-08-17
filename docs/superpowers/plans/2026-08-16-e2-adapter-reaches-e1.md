@@ -679,12 +679,6 @@ export class AdapterRefusal extends Error {
 	}
 }
 
-<!-- Correction (found during Task 5 execution): the class originally used a
-TypeScript parameter property (`constructor(public readonly code: string, ...)`),
-which Node's strip-only type stripping rejects with
-ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX — it is a type transformation, not erasable
-syntax. The engine.ts guard ships the same way. Use the explicit field above. -->
-
 /** The minimal child-process surface the adapter needs (the test seam).
  *
  * `close` (not `exit`) is the event the adapter listens for: Node fires
@@ -854,6 +848,13 @@ export default function (pi: ExtensionAPI) {
 	});
 }
 ```
+
+> **Correction (found during Task 5 execution):** the class originally
+> used a TypeScript parameter property
+> (`constructor(public readonly code: string, ...)`), which Node's
+> strip-only type stripping rejects with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`
+> — it is a type transformation, not erasable syntax. The `engine.ts` guard
+> ships the same way. Use the explicit field above.
 
 - [ ] **Step 2: Sanity-check the module imports**
 
