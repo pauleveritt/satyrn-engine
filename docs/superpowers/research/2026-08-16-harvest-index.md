@@ -30,6 +30,18 @@ and the incident that justifies it.
   invocation**, and `--approve` does not change it.
 - Source: `docs/superpowers/research/2026-08-03-phase3-cycle2-pi-gotchas.md`.
 
+### "The /implement command vanished"
+
+- Installing an extension **globally and passing the same file with `-e`**
+  makes pi register the command twice and suffix it (`/implement` becomes
+  `/implement:1`), so the **plain name stops dispatching** and the prompt
+  reaches the model as text. Verified 2026-08-16: global-only intercepts;
+  global plus `-e` does not. The fix is to pick one load path — the
+  documented global install (`cp` to `~/.pi/agent/extensions/`), not `-e`
+  for a file that is already installed.
+- Source: pi docs `extensions.md` (`registerCommand` suffixes duplicates);
+  observed live in this repository's E2 adapter.
+
 ### "The child behaved differently than the parent"
 
 - A delegated child loads **user-scope** resources unconditionally. Child

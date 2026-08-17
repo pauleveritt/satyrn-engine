@@ -130,3 +130,8 @@ export SATYRN_ENGINE_REPO=/path/to/satyrn-engine-checkout
 `SATYRN_ENGINE_REPO` names the engine checkout; the adapter starts the
 engine with `uv run --project $SATYRN_ENGINE_REPO satyrn-engine protocol`,
 so `uv` must be on `PATH`.
+
+Install the adapter **once**, globally. Do not also load it with pi's
+`-e` flag: pi then registers `/implement` twice and suffixes the command
+(`/implement:1`), so the plain name stops dispatching (recorded in the
+harvest index, "The /implement command vanished").
