@@ -1,0 +1,1 @@
+{"version":1,"outcome":"refused","code":"CLEANUP_FAILED","message":"cleanup failed after pending result OK","contract_id":"greeting","repository":"/src/app","base_commit":"base-sha","candidate_ref":"refs/satyrn/candidates/greeting/head","candidate_commit":"candidate-sha","changed_paths":["greeting.py"],"command_exit":0,"worktree_path":"/tmp/satyrn-engine-abc/worktree"}

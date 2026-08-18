@@ -1,0 +1,1 @@
+{"version":1,"outcome":"refused","code":"REPO_DIRTY","message":"repository has tracked or untracked changes","contract_id":"greeting","repository":"/src/app","base_commit":"base-sha","candidate_ref":null,"candidate_commit":null,"changed_paths":null,"command_exit":null,"worktree_path":null}

@@ -1,0 +1,1 @@
+{"version":1,"outcome":"discarded","code":"COMMAND_FAILED","message":"command exited with status 9","contract_id":"greeting","repository":"/src/app","base_commit":"base-sha","candidate_ref":"refs/satyrn/candidates/greeting/head","candidate_commit":null,"changed_paths":null,"command_exit":9,"worktree_path":null}
