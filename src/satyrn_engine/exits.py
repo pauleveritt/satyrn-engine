@@ -22,3 +22,4 @@ class ExitCode(IntEnum):
     CONTRACT_MISSING_FIELD = 5
     REPO_UNAVAILABLE = 6
     INVALID_REQUEST = 7  # the protocol surface received a malformed request
+    NO_CANDIDATE = 8  # an accepted delivery operation created no candidate
