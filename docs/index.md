@@ -31,8 +31,14 @@ Phases completed, each with its design spec and implementation plan:
 - [_E2_](https://github.com/pauleveritt/satyrn-engine/tree/e2) — the adapter reaches E1. `/implement CONTRACT` reaches the same
   refusal through the TypeScript adapter over one-shot, versioned JSON —
   one Python process per operation. ({doc}`spec <superpowers/specs/2026-08-16-e2-adapter-reaches-e1-design>`, {doc}`plan <superpowers/plans/2026-08-16-e2-adapter-reaches-e1>`)
+- _E3_ — delivery. `deliver` runs one trusted command in a detached worktree
+  pinned to the caller's exact `HEAD`, then emits one receipt without touching
+  the caller's checkout. A successful changed tree also publishes the candidate
+  named in that receipt. ({doc}`spec
+  <superpowers/specs/2026-08-18-e3-delivery-design>`, {doc}`plan
+  <superpowers/plans/2026-08-18-e3-delivery>`)
 
-The roadmap and the current phase (E3 — Delivery) live in
+The roadmap and the next phase (E3.5 — The guards, written here) live in
 [`ROADMAP.md`](https://github.com/pauleveritt/satyrn-engine/blob/main/ROADMAP.md).
 
 ## What is Satyrn Engine?
@@ -40,9 +46,9 @@ The roadmap and the current phase (E3 — Delivery) live in
 ### The big picture
 
 The engine is the Python core of a two-repo effort: a library and CLI
-that parse and validate a bounded contract, enforce writable paths and
-revision state, and deliver a candidate change as a reviewable ref or a
-receipt — never writing to the caller's tree. The sibling repository,
+that parse and validate a bounded contract and deliver a candidate change as a
+reviewable ref recorded in a receipt — never writing to the caller's tree. E4
+adds writable-path and revision enforcement; E5 adds validation. The sibling repository,
 satyrn-evals, runs the workloads and measurements; the features built
 into the engine are the ones that evidence surfaces. What the engine
 deliberately does **not** own: workloads, grading, repeated runs,
@@ -51,14 +57,12 @@ or remain a main-agent skill.
 
 ### How it works, from an end-user's perspective
 
-From your side it is a command: `uv run satyrn-engine check --repo REPO
-CONTRACT`, or `/implement CONTRACT` inside Pi. The engine parses and
-validates the contract, lints the repository path it names, and either
-accepts it silently (exit `0`; `OK` over the protocol) or refuses with a
-named cause and a stable exit code — no model calls, no processes
-started, on every path. In later phases, an accepted contract becomes a
-candidate change: a reviewable ref in an isolated worktree, or a receipt
-— yours to review and own.
+From your side it is `check`, `deliver`, or `/implement CONTRACT` inside Pi.
+`check` parses and validates without starting a process. `deliver` runs one
+explicit command in an isolated worktree and returns one JSON receipt. A
+successful receipt names its published candidate; other receipts publish no
+candidate, although `candidate_ref` can still record the intended identity. It
+never merges the result or writes to the caller's checkout.
 
 ### What is planned
 
@@ -68,8 +72,10 @@ One phase at a time, each shipping one user-visible behavior:
   path-lints a contract. *Complete.*
 - **E2 — The adapter reaches E1.** `/implement` reaches the same refusal
   through the TypeScript adapter. *Complete.*
-- **E3 — Delivery.** `deliver` creates or discards a candidate ref in an
-  isolated worktree. *Current.*
+- **E3 — Delivery.** `deliver` emits a receipt for one isolated attempt and
+  publishes a candidate ref only for a successful changed tree. *Complete.*
+- **E3.5 — The guards, written here.** The loop breaker is implemented fresh
+  and proven against replay fixtures. *Not started.*
 - **E4 — One bounded replacement.** A single file replacement runs Pi →
   TypeScript → Python with revision checking. *Not started.*
 - **E5 — One real attempt.** `attempt` and `/implement` complete one named

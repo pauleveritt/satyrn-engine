@@ -35,7 +35,7 @@ The flow, for a `/implement CONTRACT`:
 
 | side | owns |
 |------|------|
-| {term}`engine` | contract semantics: parsing, validation, path linting; the `check` seam, the {term}`protocol` surface, exit codes `0`–`7` |
+| {term}`engine` | contract semantics and delivery: parsing, path linting, isolated Git execution, candidate publication, receipts; the `check` seam, the {term}`protocol` surface, and stable exit codes |
 | {term}`adapter` | transport — spawning, the deadline, refusal conversion — and the command surface. It never reinterprets an engine refusal |
 
 The split is what keeps the adapter thin: Pi-specific concerns (no host
@@ -60,12 +60,85 @@ malformed response — into a named refusal instead of letting it escape.
 
 ## Refusals, split by side
 
-Engine causes (`2`–`7`): `USAGE`, `CONTRACT_UNREADABLE`,
+Check and protocol engine causes (`2`–`7`): `USAGE`, `CONTRACT_UNREADABLE`,
 `CONTRACT_INVALID_YAML`, `CONTRACT_MISSING_FIELD`, `REPO_UNAVAILABLE`,
 `INVALID_REQUEST`. Adapter causes: `ENGINE_START_FAILED`,
 `ENGINE_TIMEOUT`, `ENGINE_CRASHED`, `ENGINE_MALFORMED_RESPONSE`. The
 adapter's are transport failures the engine never sees; the engine's pass
-through verbatim.
+through verbatim. Delivery preserves contract and repository-path refusal
+codes `3`–`6`. Its delivery-specific handled results that publish no candidate
+use exit `8`, and the receipt carries the specific cause. CLI usage remains
+`2`; an uncaught bug remains `1`.
 
 The design record — arguments considered and rejected — is the E2 spec
 and plan under `docs/superpowers/`.
+
+## Why delivery uses a detached worktree
+
+`deliver` is the layer below model and mutation policy. It accepts one trusted
+command and gives it a real directory in which to write, while keeping those
+writes physically separate from the caller's checkout:
+
+```text
+clean caller root -- capture exact HEAD --> detached temporary worktree
+                                              |
+                                         run COMMAND once
+                                              |
+                       discard <--- no acceptable change ---> commit tree
+                                                              |
+                     remove temporary worktree -- CAS-create candidate ref
+```
+
+The exact base commit is captured once before the command starts. This is the
+Git equivalent of snapshot isolation: if the caller commits on the real branch
+while delivery is running, the attempt still sees and reports a diff against
+the state it actually started from. A separate directory protects the caller's
+files and index; detached `HEAD` avoids creating or checking out a branch in the
+user's branch namespace. After the command returns, the engine verifies both
+that `HEAD` still resolves to the captured base and that it is still detached;
+attaching that same commit to a branch is therefore discarded as
+`COMMAND_CHANGED_HEAD`.
+
+The result is a commit under
+`refs/satyrn/candidates/<contract-id>/head`, not a branch and not an automatic
+merge. The ref lives in Git's shared ref namespace, so the same repository
+reached through a symlink or another linked worktree still has one identity for
+that contract id. Publication happens only after cleanup, using Git's
+create-if-absent compare-and-swap, so concurrent attempts can produce at most
+one published candidate.
+
+This is not a security sandbox. The command can write absolute paths, mutate
+the repository's shared Git state, or deliberately escape its POSIX process
+group; E3 does not prevent those actions. It isolates ordinary file writes and
+bounds ordinary descendants on timeout, so it accepts only a trusted,
+synchronous command. E4 adds mutation rules; E5 adds validation and a real
+attempt.
+
+Worktree isolation is established practice in agent tooling. E3's specific use
+is single-attempt safety, rather than parallelism, plus a dedicated non-branch
+candidate namespace. The detailed decisions, prior work, and Git references
+are recorded in the {doc}`E3 design spec
+<superpowers/specs/2026-08-18-e3-delivery-design>`.
+
+## Delivery result and cleanup order
+
+Once the command succeeds, the engine stages the isolated files, writes a tree,
+and compares it with the captured base. An unchanged tree is discarded before
+commit creation. For a changed tree, the engine creates a commit with the base
+as its only parent, derives `changed_paths`, removes the worktree and temporary
+parent, and only then publishes the ref. A cleanup failure supersedes the
+pending result and reports the retained path; an unexpected Python exception
+attempts the same cleanup and is re-raised as exit `1` without fabricating a
+receipt.
+
+The cleanup guard has two independent axes: whether Git may still have a linked
+worktree registered, and whether process teardown is known safe. The Git axis
+becomes uncertain before `git worktree add` starts, because an interruption can
+arrive after Git mutates shared metadata but before Python sees the return. The
+process axis closes before command creation and reopens only after normal child
+completion or confirmed timeout teardown. If either axis remains uncertain,
+the engine retains the path instead of deleting files beneath a possibly live
+process or leaving an invisible stale registration.
+
+Receipt `code` is a closed typed vocabulary. The coarser `outcome` and numeric
+shell exit are derived from it, so those three representations cannot drift.

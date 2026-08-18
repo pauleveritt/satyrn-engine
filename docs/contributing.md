@@ -9,16 +9,19 @@ ordinary Python with hermetic tests.
 ```bash
 uv sync                  # install the project and the dev group
 uv run pytest            # default, hermetic suite
-uv run pytest -m integration   # subprocess tier: engine over the JSON protocol
+uv run pytest -m integration   # local subprocess/Git tier; excluded from CI
+uv run pytest -m "" --cov      # both tiers, 100% statement + branch coverage
 node tools/replay_orchestrator.mjs   # adapter replay harness (TypeScript, no Python)
 uv run ruff check .      # lint
 uv run pyrefly check     # type-check
 ```
 
 The default suite never starts a process or opens a socket (enforced
-mechanically); the integration tier does — it spawns the engine as a real
-subprocess over the {term}`protocol` and is excluded from the default run
-and from CI. See {doc}`architecture`.
+mechanically). The integration tier spawns the engine over the {term}`protocol`
+and exercises delivery with temporary local Git repositories and real
+commands. It is excluded from the default run and from CI. The combined
+coverage command enables coverage's subprocess patch and fails below 100%
+statement or branch coverage. See {doc}`architecture`.
 
 `just docs` runs the same strict Sphinx build CI runs; `just watch-docs`
 serves a live-rebuilding copy at http://127.0.0.1:8000.
