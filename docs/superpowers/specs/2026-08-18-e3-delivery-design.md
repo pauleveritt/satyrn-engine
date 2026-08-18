@@ -2,7 +2,20 @@
 
 **Date:** 2026-08-18
 **Phase:** E3 (current)
-**Status:** draft — revised after architecture review
+**Status:** accepted — implementation follows in the companion plan
+
+> **Correction — 2026-08-19:** Implementation review exposed three unsafe
+> assumptions in the accepted text. Direct pipe forwarding was replaced by a
+> temporary-file spool plus synchronous process-group teardown, because an
+> escaped descendant can retain a pipe descriptor and block the engine.
+> A short-lived empty hooks directory was replaced by
+> `core.hooksPath=/dev/null` and `core.fsmonitor=false` on every engine-owned
+> Git call, covering publication-time `reference-transaction` hooks and
+> external fsmonitor hooks. Finally, the worktree-registration guard now
+> becomes uncertain before `git worktree add`, rather than after confirmed
+> registration, because interruption can occur after Git mutates shared
+> metadata but before Python observes the return. The current text below is
+> normative; these statements record the superseded design and why it changed.
 
 ## Goal
 
@@ -51,8 +64,9 @@ refs/satyrn/candidates/<contract-id>/head
 
 The terminal `head` leaves room for later revision or metadata refs without
 adding that machinery now. The engine first rejects any contract id containing
-`/`, because the id must be exactly one ref component. It then constructs the
-full ref and validates it with `git check-ref-format` without `--normalize`.
+`/`, NUL, or a value that cannot be encoded as UTF-8, because the id must be
+exactly one processable Git ref component. It then constructs the full ref and
+validates it with `git check-ref-format` without `--normalize`.
 It never rewrites, case-folds, normalizes, or hashes the id: two visible ids
 cannot silently become the same candidate. An invalid id, including
 `team/foo`, produces `INVALID_CANDIDATE_ID` before a worktree is created.
@@ -92,15 +106,21 @@ The command is invoked as its exact argument vector with `shell=False`, the
 isolated worktree as `cwd`, and stdin connected to `DEVNULL`. It inherits the
 caller's environment, including `PATH` and normal Git configuration, except
 that repository-local routing variables and `GIT_NAMESPACE` are removed so a
-Git command discovers the isolated worktree. E3 does not send the contract or
-task through argv, environment, or stdin. Command stdout and stderr are
-forwarded to the engine's stderr so stdout remains machine-readable.
+Git command discovers the isolated worktree, and `GIT_TERMINAL_PROMPT=0`
+prevents an engine-owned Git command from waiting for interactive credentials.
+E3 does not send the contract or task through argv, environment, or stdin.
+Command stdout and stderr are
+spooled to an engine-owned temporary file and then forwarded to the engine's
+stderr in bounded chunks, so arbitrary command output is not retained in
+memory and stdout remains machine-readable.
 
 The default timeout is 30 seconds. On POSIX the engine starts `COMMAND` in a
 new session, making the direct child the leader of a new process group. On
 timeout it sends `SIGTERM` to that group, waits up to five seconds for the
 process group to exit, then sends `SIGKILL` to any group that remains and reaps
-the direct child. A missing process group during either signal is treated as
+the direct child. Because output goes to a temporary file rather than a pipe,
+an escaped descendant cannot keep the engine blocked merely by retaining an
+output descriptor. A missing process group during either signal is treated as
 already exited. Process-group teardown completes before worktree cleanup
 begins.
 
@@ -116,6 +136,11 @@ delivery starts.
 Every accepted operation writes exactly one UTF-8 JSON object followed by a
 newline to stdout. An unexpected engine bug remains an uncaught exit `1` and
 does not fabricate a receipt.
+
+If the caller closes stdout, delivery cannot transmit that receipt. The engine
+suppresses the resulting broken-pipe traceback and returns the reserved
+abnormal exit `1`; publication may already have completed, so the caller must
+inspect the candidate ref before retrying.
 
 The receipt always has the same fields:
 
@@ -165,7 +190,10 @@ a numeric exit code to every Git or process detail.
 | `OK` | `candidate-created` | the candidate ref is created atomically |
 
 `outcome` describes the candidate lifecycle; `code` describes the specific
-cause. E3 deliberately does not expose `infrastructure-failure` as a fourth
+cause. The code vocabulary is closed, and both `outcome` and the numeric exit
+status are derived from it so contradictory receipt states are not
+representable in the implementation. E3 deliberately does not expose
+`infrastructure-failure` as a fourth
 outcome. A generic `COMMAND` boundary cannot reliably distinguish a model
 failure from a broken model server, missing executable, or other setup failure.
 Later model and eval phases may classify their own evidence without changing
@@ -250,17 +278,30 @@ git worktree prune
 
 A locked worktree can alternatively be removed by giving `--force` twice. The
 temporary parent is retained until Git confirms the linked worktree is absent.
+If Git removes the worktree but deleting the temporary parent fails, the same
+`CLEANUP_FAILED` result reports that parent as the retained cleanup path.
 Abrupt termination can still leave an engine-owned worktree; automatic crash
 recovery is deferred.
 
-The registered-worktree lifetime is enclosed by `try`/`finally`. A guard is set
-only after Git confirms registration and cleared after confirmed removal, so
-normal cleanup is not repeated. After an unexpected Python exception, the
+The registered-worktree lifetime is enclosed by `try`/`finally`. The cleanup
+guard becomes uncertain immediately before the mutating `git worktree add`
+call, because an interruption can arrive after Git registers the worktree but
+before the call returns. The command runs only after Git confirms registration.
+A failed lookup keeps the guard uncertain, conservatively retaining or removing
+that state rather than running the command. It is cleared only after confirmed
+absence, so normal cleanup is not repeated. After an unexpected Python exception, the
 engine attempts cleanup while the guard is set and then re-raises the original
 error as exit `1`, without inventing a receipt. If cleanup also fails, stderr
 reports the retained path without hiding the original exception. Signals that
 prevent `finally` from running, such as `SIGKILL`, still require the manual
 recovery above.
+
+Process lifetime is a separate cleanup gate. It closes before command creation
+and reopens after normal direct-child completion or only when timeout teardown
+confirms the process group is gone and the direct child was reaped. If teardown
+cannot establish both facts, `CLEANUP_FAILED` supersedes the pending command
+result and retains the worktree; Git cleanup does not race a possibly live
+process.
 
 The new commit is created before cleanup and published afterward. A crash or
 lost race can therefore leave a dangling Git object, but never a partial
@@ -274,8 +315,10 @@ not justified in E3.
 | Resolve `--repo` with `git rev-parse --show-toplevel` and pin `HEAD^{commit}` | Operate from the root and base every later action on an immutable commit. [git-rev-parse](https://git-scm.com/docs/git-rev-parse) |
 | Check `git --no-optional-locks status --porcelain=v1 -z --untracked-files=all --ignore-submodules=none` | Stable, NUL-safe scripting output; no optional caller-index refresh. [git-status](https://git-scm.com/docs/git-status), [git](https://git-scm.com/docs/git#Documentation/git.txt---no-optional-locks) |
 | Remove repository-local routing variables named by `git rev-parse --local-env-vars`, plus `GIT_NAMESPACE`, from engine and command environments | Prevent inherited `GIT_DIR`, `GIT_WORK_TREE`, and ref namespace from redirecting operations. Git documents the foreign-repository pattern; `GIT_NAMESPACE` is an additional ref-routing variable not in that reported list. [git-rev-parse](https://git-scm.com/docs/git-rev-parse), [gitnamespaces](https://git-scm.com/docs/gitnamespaces), [githooks](https://git-scm.com/docs/githooks) |
-| Preserve normal system, global, and repository config; override `core.hooksPath` with an engine-owned empty directory | Standard Git features such as LFS and clean/smudge filters continue to work, while engine-owned checkout does not run repository hooks. Filters remain part of the trusted-repository boundary. [git-config](https://git-scm.com/docs/git-config), [githooks](https://git-scm.com/docs/githooks) |
-| Use `git worktree add --detach PATH BASE` in a unique temporary parent | Isolate index and tree while sharing Git objects. [git-worktree](https://git-scm.com/docs/git-worktree), [tempfile](https://docs.python.org/3/library/tempfile.html) |
+| Force `GIT_TERMINAL_PROMPT=0` for engine and command Git use | A non-interactive delivery operation must fail rather than wait for credential input. This retains the earlier prototype's behavior without discarding normal system or global configuration. [git](https://git-scm.com/docs/git#Documentation/git.txt-codeGITTERMINALPROMPTcode) |
+| Preserve normal system, global, and repository config; force `core.hooksPath=/dev/null` and `core.fsmonitor=false` on every engine-owned Git invocation; ignore inherited `GIT_AUTHOR_DATE` and `GIT_COMMITTER_DATE` only for those invocations | Standard Git features such as LFS and clean/smudge filters continue to work, while repository hooks, reference-transaction hooks, external fsmonitor hooks, and caller date overrides cannot alter engine-owned commit creation. The trusted command still receives the date variables. Filters remain part of the trusted-repository boundary. [git-config](https://git-scm.com/docs/git-config), [git-commit-tree](https://git-scm.com/docs/git-commit-tree), [githooks](https://git-scm.com/docs/githooks) |
+| Use `git worktree add --detach PATH BASE` in a unique temporary parent verified outside every registered worktree | Isolate index and tree while sharing Git objects, without trusting `TMPDIR` to stay outside a caller checkout. [git-worktree](https://git-scm.com/docs/git-worktree), [tempfile](https://docs.python.org/3/library/tempfile.html) |
+| Spool combined command output to `tempfile.TemporaryFile` in the verified safe temporary parent, then copy it to engine stderr in 64 KiB chunks | Keep receipt stdout separate without writing even transient output files in the caller tree, retaining unbounded output in engine memory, or letting a descendant-held pipe block teardown. The trusted command and the spool can still consume temporary disk within the command deadline; E3 adds no general resource supervisor or byte quota. [tempfile](https://docs.python.org/3/library/tempfile.html#tempfile.TemporaryFile), [subprocess](https://docs.python.org/3/library/subprocess.html) |
 | Start `COMMAND` with `start_new_session=True`; on timeout terminate its POSIX process group with `SIGTERM`, then `SIGKILL` after five seconds | Bound the attempt and its ordinary descendants without introducing a container or persistent supervisor. This re-earns a behavior retained by the earlier prototype. [subprocess](https://docs.python.org/3/library/subprocess.html), [os.killpg](https://docs.python.org/3/library/os.html#os.killpg) |
 | Stage with `git add -A`, then `write-tree` and `commit-tree TREE -p BASE` | Include additions, modifications, and deletions and make the parent explicit without editor or signing behavior. Use identity `satyrn-engine <satyrn-engine@localhost>`, disable signing, and pass message `candidate: ID` plus `base: SHA` on stdin. [git-add](https://git-scm.com/docs/git-add), [git-write-tree](https://git-scm.com/docs/git-write-tree), [git-commit-tree](https://git-scm.com/docs/git-commit-tree) |
 | Derive paths from `git diff-tree --no-commit-id --name-only -r -z --no-renames --no-ext-diff BASE COMMIT` | The final commit is authoritative. Split NUL-delimited bytes, require UTF-8, and sort by those bytes so Git config and locale cannot change the receipt. Non-UTF-8 paths produce `GIT_FAILED` and no publication rather than a new encoding scheme. [git-diff-tree](https://git-scm.com/docs/git-diff-tree) |
@@ -287,9 +330,13 @@ part of the isolation guarantee, not an implementation convenience.
 
 The Python surface stays small: `delivery.py` owns `DeliveryReceipt` and the
 `deliver()` lifecycle; `cli.py` owns parsing and rendering; `exits.py` adds
-`NO_CANDIDATE`. E3 adds no Python dependency. Git is an explicit external
-runtime requirement. There is no injected Git-runner or test-only failure
-hook: the production library seam is the test and extension seam.
+`NO_CANDIDATE`. E3 adds no runtime Python dependency. `pytest-cov` is a
+development-only dependency used to enforce the coverage gate. Git 2.36 or
+newer is an explicit external runtime requirement because that release added
+the NUL-delimited `git worktree list --porcelain -z` format used for safe path
+parsing ([Git 2.36 release notes](https://github.com/git/git/blob/v2.36.0/Documentation/RelNotes/2.36.0.txt)). There is no injected Git-runner or
+test-only failure hook: the production library seam is the test and extension
+seam.
 
 The earlier prototype is evidence, not source. Its candidate lifecycle and
 process teardown were inspected at the repository's pinned handoff revision
@@ -303,8 +350,8 @@ No implementation is copied from it.
 ## Testing and phase work
 
 Default-tier tests cover parsing, timeout validation, receipt construction,
-the pure `/` id rejection, and result precedence. Git-specific ref-name rules
-are integration-only because `git check-ref-format` is a real subprocess. The
+and result precedence. Candidate-id rejection and Git-specific ref-name rules
+are integration-only because preflight includes real Git subprocesses. The
 default tier preserves E1's process and network tripwire. Marked integration
 tests use temporary local Git repositories and production CLI seams—never a
 network or test-only injected backend—to prove:
@@ -328,6 +375,14 @@ network or test-only injected backend—to prove:
    `GIT_FAILED` and no candidate, paired with a UTF-8 success fixture.
 8. A hook sentinel does not fire, while a normal repository filter remains
    usable with the preserved Git configuration.
+9. An interruption after real worktree registration leaves neither a linked nor
+   prunable registration, while uncertain cleanup retains a visible path.
+10. Attaching the isolated `HEAD` to a branch at the same base is discarded;
+    detached sibling delivery succeeds.
+11. The caller can advance its own `HEAD` after preflight without changing the
+    candidate's captured base or sole parent.
+12. Candidate metadata uses the fixed engine identity and exact message and
+    ignores repository commit-signing configuration.
 
 E3 also updates `README.md`, `ROADMAP.md`, architecture, usage, glossary,
 the documentation index, contributing guidance, and the pytest
@@ -342,7 +397,8 @@ Planned completion commands:
 
 ```console
 uv run pytest
-uv run pytest -m integration tests/test_delivery.py -v
+uv run pytest -m integration tests/test_integration_delivery.py -v
+uv run pytest -m "" --cov
 uv run ruff check .
 uv run pyrefly check
 uv run --group docs sphinx-build -W -b html docs docs/_build/html

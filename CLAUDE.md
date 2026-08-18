@@ -71,3 +71,10 @@ named in the harvest index. The one exception, already made: the guards
 (`packages/engine/engine.ts`, `tools/replay_guards.mjs`, and
 `tests/fixtures/guards/`) were copied in verbatim and must not be
 "improved" in transit — they are proven and pinned by replay fixtures.
+
+**Correction, 2026-08-18:** the provenance paragraph above is retained as the
+historical claim, but it is wrong. The pinned evidence revision is now
+`local-ai-pi@8588ba4`, and the guards were not copied into this repository.
+They are phase E3.5: implement them fresh here and use the old implementation
+and replay fixtures as evidence, not source. `BRIEF.md` and `ROADMAP.md` carry
+the same correction.
