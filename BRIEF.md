@@ -41,9 +41,18 @@ sibling directory, not beside it).
 explicit decision, argued at the moment the need arises. Do not transplant its
 `harness/` package. Re-earn behavior from the named fixture and incident.
 
-One exception, already decided: the guards (`engine.ts` and its replay
-fixtures) are copied verbatim. They are TypeScript, zero-dependency, proven,
-and outside the Python core entirely.
+The guards are the one piece of prior work worth reusing — but as reference
+material for a real phase (`ROADMAP.md`, phase E3.5), not a verbatim copy.
+Their behavior is proven (the loop breaker's window/threshold, its replay
+fixtures against a recorded 245-call loop) and should be matched; the
+TypeScript implementing it is written fresh in this repository, through the
+same spec → plan → code loop as every other phase.
+
+**Correction, recorded rather than edited away:** this section previously
+said the guards were "copied verbatim" and treated that as already done. They
+were not. No TypeScript existed in this repository when that line was
+written or for some time after. `ROADMAP.md`'s "Now" section carries the same
+correction.
 
 ## The trap we are avoiding
 
@@ -106,9 +115,17 @@ This is slower and much smaller. It has no session lifetime and no lifecycle
 question. If startup cost is later *measured* as material, the same request
 and response objects gain a persistent transport then.
 
-**The guards stay TypeScript and stay out of the roadmap.** They fired zero
-times across a recorded 24-run comparison. Moving them would put Python on
-every ordinary Pi tool call, and they have not earned that cost.
+**The guards stay TypeScript.** They run inside `emitToolCall`, which Pi
+neither times out nor wraps in `try/catch`, on every ordinary tool call in a
+live session — not only during a deliberate `/implement`. A Python sidecar
+there would make an always-on, zero-dependency check depend on a spawned
+process succeeding before every single tool call, for a component that fired
+zero times across a recorded 24-run comparison. This is not a latency
+argument — tool calls are seconds apart, a subprocess hop is invisible at
+that scale — it is blast radius: a broken or missing sidecar here breaks
+every tool call in an ordinary session, where the Python core's own sidecar
+(E3–E6) only runs during an operation the user deliberately started. See
+phase E3.5 in `ROADMAP.md` for how they land in this repository.
 
 **Facts about Pi that constrain the adapter** (verified against Pi v0.84.2):
 extension handlers are awaited sequentially with no host deadline;

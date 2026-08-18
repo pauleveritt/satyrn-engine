@@ -12,10 +12,15 @@ Backlog, not into the current phase.*
 
 **Repository scaffolding — complete.** The toolchain (`uv`, `ruff`,
 `pyrefly`, `pytest`), the docs stack, CI for Pages, and the superpowers
-structure are initialized. `BRIEF.md` is landed. The guards
-(`packages/engine/engine.ts`, `tools/replay_guards.mjs`, their replay
-fixtures) are copied in verbatim from `local-ai-pi` and are **not a
-phase** — see `BRIEF.md`.
+structure are initialized. `BRIEF.md` is landed.
+
+**Correction, recorded rather than edited away.** This section previously
+said the guards (`packages/engine/engine.ts`, `tools/replay_guards.mjs`,
+their replay fixtures) were copied in verbatim from `local-ai-pi` and were
+not a phase. They were not copied — no TypeScript existed in this
+repository. That work is now phase **E3.5** below: written fresh here, not
+transplanted, using `local-ai-pi`'s guard and its replay fixtures as
+reference. See `BRIEF.md`'s Provenance section for the same correction.
 
 **Phase E1 — It installs and refuses. Complete.** `satyrn-engine check
 --repo REPO CONTRACT` parses, validates, and path-lints a contract and
@@ -63,6 +68,7 @@ E1's working terms, plus **adapter** and **protocol** (E2), in
 | E1 | It installs and refuses | `check` parses, validates, path-lints, and refuses a contract with a named cause, zero model calls, zero processes started | **done** |
 | E2 | The adapter reaches E1 | `/implement CONTRACT` reaches the same refusal through the TypeScript adapter, on POSIX and Windows — the architecture gate | **done** (POSIX recorded; Windows leg deferred, see Backlog) |
 | E3 | Delivery | `deliver` creates or discards a candidate ref in an isolated worktree, from a trivial executable standing in for the model | not started |
+| E3.5 | The guards, written here | The loop-breaker guard — the one check whose job doesn't already belong to the mutation engine (E4) — is implemented fresh in this repository and proven against replay fixtures, so `pi install` ships a guard that actually exists rather than one asserted in prose | not started |
 | E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | not started |
 | E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | not started |
 | E6 | Packaged | The same `/implement` works outside either source checkout, on POSIX and Windows | not started |
