@@ -1,11 +1,13 @@
 """Default-tier tests for E3's pure CLI and receipt boundaries."""
 
+import io
 import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+import satyrn_engine.cli as cli
 import satyrn_engine.delivery as delivery
 from satyrn_engine.cli import parse_args
 from satyrn_engine.delivery import (
@@ -17,6 +19,22 @@ from satyrn_engine.delivery import (
 from satyrn_engine.exits import ExitCode
 
 FIXTURES = Path(__file__).parent / "fixtures" / "delivery"
+
+
+class _BrokenStdout:
+    @property
+    def buffer(self) -> _BrokenStdout:
+        return self
+
+    def write(self, value: bytes) -> int:
+        del value
+        raise BrokenPipeError
+
+    def flush(self) -> None:
+        raise AssertionError("write fails before flush")
+
+    def fileno(self) -> int:
+        raise OSError("closed")
 
 
 def _receipt(code: DeliveryCode) -> DeliveryReceipt:
@@ -268,3 +286,21 @@ def test_deliver_help_without_separator_remains_available(
         parse_args(argv)
     assert excinfo.value.code == 0
     assert "CONTRACT -- COMMAND [ARG ...]" in capsys.readouterr().out
+
+
+def test_deliver_cli_supports_an_embedded_text_only_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
+    stdout = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", stdout)
+    monkeypatch.setattr(cli, "deliver", lambda *args: _receipt(DeliveryCode.OK))
+    code = cli.main(["deliver", "--repo", ".", "contract.yaml", "--", "tool"])
+    assert code == 0
+    assert stdout.getvalue() == _receipt(DeliveryCode.OK).render()
+
+
+def test_deliver_cli_reserves_exit_one_when_receipt_stdout_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli.sys, "stdout", _BrokenStdout())
+    monkeypatch.setattr(cli, "deliver", lambda *args: _receipt(DeliveryCode.OK))
+
+    assert cli.main(["deliver", "--repo", ".", "contract.yaml", "--", "tool"]) == 1

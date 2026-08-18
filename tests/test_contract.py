@@ -52,3 +52,11 @@ def test_load_contract_ignores_unknown_fields(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert load_contract(path) == Contract(id="e1-extra", task="Replace the greeting text")
+
+
+def test_load_blank_required_field_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "blank.yaml"
+    path.write_text("id: ''\ntask: test\n", encoding="utf-8")
+    with pytest.raises(ContractError) as excinfo:
+        load_contract(path)
+    assert excinfo.value.code is ExitCode.CONTRACT_MISSING_FIELD

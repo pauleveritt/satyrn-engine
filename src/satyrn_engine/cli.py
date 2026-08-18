@@ -2,12 +2,13 @@
 
 import argparse
 import math
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from .check import check
-from .delivery import DEFAULT_TIMEOUT
+from .delivery import DEFAULT_TIMEOUT, deliver
 from .exits import ExitCode
 from .protocol import run_protocol
 
@@ -81,8 +82,41 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "protocol":
         return run_protocol(sys.stdin.buffer, sys.stdout.buffer)
     if args.command == "deliver":
-        raise RuntimeError("delivery execution is not wired until E3 Task 2")
+        receipt = deliver(
+            Path(args.repo),
+            Path(args.contract),
+            args.attempt_command,
+            args.timeout,
+        )
+        rendered = receipt.render()
+        if not _write_receipt(rendered):
+            return 1
+        return int(receipt.exit_code)
     result = check(Path(args.repo), Path(args.contract))
     if result.code != ExitCode.OK:
         print(f"satyrn-engine: {result.code.name}: {result.message}", file=sys.stderr)
     return int(result.code)
+
+
+def _write_receipt(rendered: str) -> bool:
+    """Write one receipt, suppressing interpreter noise for a closed pipe."""
+    try:
+        if hasattr(sys.stdout, "buffer"):
+            sys.stdout.buffer.write(rendered.encode("utf-8"))
+            sys.stdout.buffer.flush()
+        else:
+            sys.stdout.write(rendered)
+            sys.stdout.flush()
+    except BrokenPipeError:
+        _silence_broken_stdout()
+        return False
+    return True
+
+
+def _silence_broken_stdout() -> None:
+    """Prevent Python's shutdown flush from reporting the same broken pipe."""
+    try:
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            os.dup2(devnull.fileno(), sys.stdout.fileno())
+    except (AttributeError, OSError, ValueError):
+        pass
