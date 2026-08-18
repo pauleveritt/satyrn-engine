@@ -48,6 +48,14 @@ reopen the phase list or the architecture — both are settled by the
 two-repo rewrite research, cited in
 `docs/superpowers/research/2026-08-16-harvest-index.md`.
 
+**Phase E3 — Delivery. Complete.** `deliver` captures the repository's exact
+`HEAD`, runs one trusted command in a temporary detached worktree, and emits
+one receipt. A successful changed tree also publishes a candidate commit under
+`refs/satyrn/candidates/<id>/head`; every other handled result publishes none.
+The caller's checkout, index, branch, and `HEAD` remain untouched. Spec and plan:
+`docs/superpowers/specs/2026-08-18-e3-delivery-design.md`,
+`docs/superpowers/plans/2026-08-18-e3-delivery.md`.
+
 ## Concept budget
 
 *Every term below is a cost against a 5–10 h/wk volunteer's ability to hold
@@ -55,11 +63,10 @@ the design in mind. Checked and updated at the end of each cycle; a term
 earns its place by naming something the design actually needs, not by being
 convenient shorthand.*
 
-Seed terms, not yet defined in this repository's own words — define each
-when the phase that needs it lands: **candidate**, **receipt**,
-**guard**, **worktree isolation**. Defined so far: **contract**, with
-E1's working terms, plus **adapter** and **protocol** (E2), in
-`docs/glossary.md`.
+Seed term not yet defined in this repository's own words — define it when the
+phase that needs it lands: **guard**. Defined so far: **contract**, with E1's
+working terms; **adapter** and **protocol** (E2); and **candidate**,
+**receipt**, and **worktree isolation** (E3), in `docs/glossary.md`.
 
 ## Phases
 
@@ -67,7 +74,7 @@ E1's working terms, plus **adapter** and **protocol** (E2), in
 |---|-------|--------------------------|--------|
 | E1 | It installs and refuses | `check` parses, validates, path-lints, and refuses a contract with a named cause, zero model calls, zero processes started | **done** |
 | E2 | The adapter reaches E1 | `/implement CONTRACT` reaches the same refusal through the TypeScript adapter, on POSIX and Windows — the architecture gate | **done** (POSIX recorded; Windows leg deferred, see Backlog) |
-| E3 | Delivery | `deliver` creates or discards a candidate ref in an isolated worktree, from a trivial executable standing in for the model | not started |
+| E3 | Delivery | `deliver` runs a trivial executable in an isolated worktree, always emits a receipt, and publishes a candidate ref only for a successful changed tree | **done** |
 | E3.5 | The guards, written here | The loop-breaker guard — the one check whose job doesn't already belong to the mutation engine (E4) — is implemented fresh in this repository and proven against replay fixtures, so `pi install` ships a guard that actually exists rather than one asserted in prose | not started |
 | E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | not started |
 | E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | not started |
@@ -107,6 +114,12 @@ when the roadmap outgrows the front page.
   leg is deferred — see the Backlog. Spec:
   `docs/superpowers/specs/2026-08-16-e2-adapter-reaches-e1-design.md`.
   Plan: `docs/superpowers/plans/2026-08-16-e2-adapter-reaches-e1.md`.
+- **E3 — Delivery.** One synchronous trusted command runs in a detached
+  worktree at the captured base commit. Every handled result is a stable
+  receipt; a successful changed tree also becomes one create-once candidate
+  ref.
+  Spec: `docs/superpowers/specs/2026-08-18-e3-delivery-design.md`. Plan:
+  `docs/superpowers/plans/2026-08-18-e3-delivery.md`.
 
 ## Workflow
 
@@ -115,6 +128,7 @@ This repository runs on spec-driven development — see
 spec, an implementation plan, then code. The default test suite needs no
 model, network, or subprocess; process behavior lives in a small marked
 integration tier that does not run in CI. The tier's first tests
-(`tests/test_integration_protocol.py`, E2) start the engine as a
-subprocess over the JSON protocol; run them explicitly with
+(`tests/test_integration_protocol.py`, E2) start the engine as a subprocess
+over the JSON protocol; E3 adds real local Git and process-group evidence in
+`tests/test_integration_delivery.py`. Run the tier explicitly with
 `uv run pytest -m integration`.

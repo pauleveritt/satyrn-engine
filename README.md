@@ -29,10 +29,12 @@ surface it serves through a thin TypeScript adapter.
 The engine owns:
 
 - contract parsing and validation;
-- writable-path and revision enforcement;
-- candidate worktree, validation, commit-or-discard, and receipt behavior;
+- candidate worktree, commit-or-discard, and receipt behavior;
 - the Pi package and its thin TypeScript adapter;
 - the internal Pi-adapter protocol and its compatibility fixtures.
+
+The roadmap adds writable-path and revision enforcement in E4 and candidate
+validation in E5.
 
 It does **not** own workloads, grading, repeated runs, comparison
 statistics, or contract authoring. Those live in the satyrn-evals
@@ -47,10 +49,12 @@ that evidence surfaces — no machinery ahead of its contract.
 ## Usage
 
 From a checkout, `uv sync` installs the engine into the project
-environment. The CLI validates a contract against a repository:
+environment. The CLI validates a contract or runs one delivery command in
+an isolated Git worktree. Delivery requires POSIX and Git 2.36 or newer:
 
 ```console
 $ uv run satyrn-engine check --repo REPO CONTRACT
+$ uv run satyrn-engine deliver --repo REPO CONTRACT -- COMMAND [ARG ...]
 ```
 
 Inside Pi, the adapter exposes the same engine as a command:
@@ -59,9 +63,11 @@ Inside Pi, the adapter exposes the same engine as a command:
 /implement CONTRACT
 ```
 
-Acceptance is silent over the CLI (`OK` over the protocol); a refusal is
-a one-line `satyrn-engine: <CAUSE>: <detail>` on stderr with a stable
-exit code — no model calls, no processes started, on every path.
+`check` acceptance is silent (`OK` over the protocol); its refusal is a
+one-line `satyrn-engine: <CAUSE>: <detail>` on stderr. `deliver` writes one
+JSON receipt to stdout and sends command output to stderr. A successful command
+that changes the tree creates a candidate commit under
+`refs/satyrn/candidates/<id>/head`; no result is ever applied or merged.
 
 > More: [usage](docs/usage.md) — contract format, the exit-code table, and
 > how to install the adapter.
@@ -76,8 +82,13 @@ Phases completed, each with its design spec and implementation plan:
 - [_E2_](https://github.com/pauleveritt/satyrn-engine/tree/e2) — the adapter reaches E1. `/implement CONTRACT` reaches the same
   refusal through the TypeScript adapter over one-shot, versioned JSON —
   one Python process per operation. ([_spec_](https://github.com/pauleveritt/satyrn-engine/blob/main/docs/superpowers/specs/2026-08-16-e2-adapter-reaches-e1-design.md), [_plan_](https://github.com/pauleveritt/satyrn-engine/blob/main/docs/superpowers/plans/2026-08-16-e2-adapter-reaches-e1.md))
+- _E3_ — delivery. On POSIX systems, `deliver` runs one trusted command in a
+  detached worktree pinned to the caller's exact `HEAD` and always emits a
+  receipt. A successful changed tree also publishes one reviewable candidate
+  ref.
+  ([_spec_](docs/superpowers/specs/2026-08-18-e3-delivery-design.md), [_plan_](docs/superpowers/plans/2026-08-18-e3-delivery.md))
 
-The roadmap and the current phase (E3 — Delivery) live in
+The roadmap and the next phase (E3.5 — The guards, written here) live in
 [`ROADMAP.md`](ROADMAP.md).
 
 > More: [architecture](docs/architecture.md) — why the engine is one
@@ -90,6 +101,7 @@ This repository presumes `uv`, `ruff`, `pyrefly`, and `pytest`:
 ```bash
 uv sync                # install the project and the dev group
 uv run pytest          # default, hermetic suite: no model, no network, no subprocess
+uv run pytest -m "" --cov  # default + local integration tier, 100% branch coverage
 uv run ruff check .    # lint
 uv run pyrefly check   # type-check
 ```
