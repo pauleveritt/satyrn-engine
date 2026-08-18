@@ -20,6 +20,7 @@ packages = ["src/satyrn_engine"]
 [dependency-groups]
 dev = [
     "pytest>=8.3.4",
+    "pytest-cov>=7.1.0",
     "ruff>=0.12.8",
     "pyrefly>=1.1.1",
     "types-pyyaml>=6.0.12.20260815",
@@ -39,7 +40,7 @@ norecursedirs = ["docs/_build"]
 # `uv run pytest -m integration`.
 addopts = ["-m", "not integration"]
 markers = [
-    "integration: needs the real clone cache or network; excluded from the offline unit run",
+    "integration: starts real local subprocesses or Git; excluded from the hermetic default run and CI",
 ]
 
 [tool.ruff]
@@ -67,3 +68,12 @@ ignore = ["E501"]
 
 [tool.pyrefly]
 project-includes = ["src", "tests"]
+
+[tool.coverage.run]
+branch = true
+patch = ["subprocess"]
+source = ["satyrn_engine"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true

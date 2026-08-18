@@ -19,3 +19,5 @@ def test_check_refuses_unavailable_repo(tmp_path: Path) -> None:
     result = check(tmp_path / "nope", FIXTURES / "valid.yaml")
     assert result.code is ExitCode.REPO_UNAVAILABLE
     assert "nope" in result.message
+    assert result.contract is not None
+    assert result.contract.id == "e1-smoke"

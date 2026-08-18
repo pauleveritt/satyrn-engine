@@ -80,6 +80,12 @@ def test_refuses_not_json() -> None:
     assert "not valid JSON" in body["message"]
 
 
+def test_refuses_invalid_utf8() -> None:
+    out, code = _run(b"\xff")
+    assert code == int(ExitCode.INVALID_REQUEST)
+    assert json.loads(out)["code"] == "INVALID_REQUEST"
+
+
 def test_refuses_unsupported_operation() -> None:
     out, code = _run('{"version":1,"operation":"deliver","repo":".","contract":"x"}')
     assert code == int(ExitCode.INVALID_REQUEST)

@@ -31,6 +31,7 @@ def check(repo: Path, contract_path: Path) -> CheckResult:
         return CheckResult(
             code=ExitCode.REPO_UNAVAILABLE,
             message=f"repo is not a directory: {repo}",
+            contract=contract,
         )
 
     return CheckResult(code=ExitCode.OK, contract=contract)
