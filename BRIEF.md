@@ -32,9 +32,10 @@ machinery.
 ## Provenance
 
 This repository is seeded from research at
-`github.com/pauleveritt/local-ai-pi`, commit `c74c31f`, specifically
+`github.com/pauleveritt/local-ai-pi`, commit `8588ba4`, specifically
 `docs/superpowers/research/2026-08-16-two-repo-rewrite-and-python-engine.md`
-and the harvest index beside it.
+and `docs/superpowers/handoff/HARVEST-INDEX.md` (the harvest index, in a
+sibling directory, not beside it).
 
 **That repository is evidence, not source.** Nothing crosses over except by
 explicit decision, argued at the moment the need arises. Do not transplant its
