@@ -7,6 +7,9 @@ import {
 	DEFAULT_DEADLINE_MS,
 	PROTOCOL_VERSION,
 	exchange,
+	isEngineRefusalCode,
+	type AdapterRefusalCode,
+	type EngineRefusalCode,
 	type EngineResponse,
 	type Spawner,
 } from "./orchestrator.ts";
@@ -37,19 +40,51 @@ export interface ReplacementResult {
 	readonly sha256: string;
 }
 
-export interface ReplacementResponse extends EngineResponse {
-	readonly result: ReplacementResult | null;
+export interface ReplacementSuccessResponse {
+	readonly version: 1;
+	readonly ok: true;
+	readonly code: "OK";
+	readonly message: string;
+	readonly result: ReplacementResult;
 }
 
-export interface MutationToolDetails {
-	readonly satyrn: true;
-	readonly ok: boolean;
-	readonly code: string;
-	readonly result: ReplacementResult | null;
+export interface ReplacementRefusalResponse {
+	readonly version: 1;
+	readonly ok: false;
+	readonly code: EngineRefusalCode;
+	readonly message: string;
+	readonly result: null;
 }
+
+export type ReplacementResponse =
+	| ReplacementSuccessResponse
+	| ReplacementRefusalResponse;
+
+export type MutationToolRefusalCode =
+	| AdapterRefusalCode
+	| EngineRefusalCode
+	| "REVISION_UNAVAILABLE";
+
+export interface MutationToolSuccessDetails {
+	readonly satyrn: true;
+	readonly ok: true;
+	readonly code: "OK";
+	readonly result: ReplacementResult;
+}
+
+export interface MutationToolRefusalDetails {
+	readonly satyrn: true;
+	readonly ok: false;
+	readonly code: MutationToolRefusalCode;
+	readonly result: null;
+}
+
+export type MutationToolDetails =
+	| MutationToolSuccessDetails
+	| MutationToolRefusalDetails;
 
 export interface MutationToolResult {
-	readonly content: readonly [{ readonly type: "text"; readonly text: string }];
+	readonly content: [{ readonly type: "text"; readonly text: string }];
 	readonly details: MutationToolDetails;
 }
 
@@ -178,12 +213,27 @@ export function parseReplacementResponse(response: EngineResponse): ReplacementR
 		) {
 			throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "successful replacement response has an unexpected shape");
 		}
-		return response as ReplacementResponse;
+		return {
+			version: PROTOCOL_VERSION,
+			ok: true,
+			code: "OK",
+			message: response.message,
+			result: {
+				path: response.result.path,
+				sha256: response.result.sha256,
+			},
+		};
 	}
-	if (response.result !== null) {
+	if (!isEngineRefusalCode(response.code) || response.result !== null) {
 		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "refused replacement response must have a null result");
 	}
-	return response as ReplacementResponse;
+	return {
+		version: PROTOCOL_VERSION,
+		ok: false,
+		code: response.code,
+		message: response.message,
+		result: null,
+	};
 }
 
 function successResult(replacement: ReplacementResult): MutationToolResult {
@@ -193,7 +243,7 @@ function successResult(replacement: ReplacementResult): MutationToolResult {
 	};
 }
 
-function refusalResult(code: string, message: string): MutationToolResult {
+function refusalResult(code: MutationToolRefusalCode, message: string): MutationToolResult {
 	return {
 		content: [{ type: "text", text: `${code}: ${message}` }],
 		details: { satyrn: true, ok: false, code, result: null },

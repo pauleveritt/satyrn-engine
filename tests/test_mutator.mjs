@@ -153,7 +153,15 @@ test("engine and local failures always resolve to error results", async () => {
 
 test("base response parser rejects non-object JSON without leaking a type error", () => {
 	assert.deepEqual(parseResponse(JSON.stringify(success())), success());
-	for (const text of ["null", "[]", "{bad", '{"version":1}']) {
+	for (const text of [
+		"null",
+		"[]",
+		"{bad",
+		'{"version":1}',
+		'{"version":1,"ok":true,"code":"OTHER","message":""}',
+		'{"version":1,"ok":false,"code":"OK","message":""}',
+		'{"version":1,"ok":false,"code":"OTHER","message":""}',
+	]) {
 		assert.throws(() => parseResponse(text), AdapterRefusal);
 	}
 });
@@ -165,6 +173,7 @@ test("replacement response parser rejects malformed success and refusal", () => 
 		{ ...success(), result: null },
 		{ ...success(), result: { path: 1, sha256: SECOND_REVISION } },
 		{ ...success(), result: { path: "src/app.py", sha256: "bad" } },
+		{ version: 1, ok: false, code: "OTHER", message: "missing", result: null },
 		{ version: 1, ok: false, code: "ANCHOR_MISSING", message: "missing" },
 		{ version: 1, ok: false, code: "ANCHOR_MISSING", message: "missing", result: {} },
 	]) {
