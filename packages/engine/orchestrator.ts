@@ -59,6 +59,7 @@ export interface EngineResponse {
 	ok: boolean;
 	code: string;
 	message: string;
+	result?: unknown;
 }
 
 /** Build the versioned JSON request the engine's `protocol` subcommand reads. */
@@ -78,6 +79,9 @@ export function parseResponse(text: string): EngineResponse {
 		parsed = JSON.parse(text);
 	} catch {
 		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "engine response is not valid JSON");
+	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "engine response has an unexpected shape");
 	}
 	const body = parsed as Record<string, unknown>;
 	if (
