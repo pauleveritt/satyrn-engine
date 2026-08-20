@@ -24,16 +24,18 @@ TRANSCRIPT_ENV = "SATYRN_ATTEMPT_TRANSCRIPT"
 MUTATION_CONTEXT_ENV = "SATYRN_MUTATION_CONTEXT"
 ENGINE_REPO_ENV = "SATYRN_ENGINE_REPO"
 
-_GIT_ROUTING_ENV = (
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    "GIT_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_NAMESPACE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_PREFIX",
-    "GIT_WORK_TREE",
-)
+
+class _GitRoutingVariable(StrEnum):
+    """Git variables that could redirect owned commands from the attempt repo."""
+
+    ALTERNATE_OBJECT_DIRECTORIES = "GIT_ALTERNATE_OBJECT_DIRECTORIES"
+    COMMON_DIR = "GIT_COMMON_DIR"
+    DIR = "GIT_DIR"
+    INDEX_FILE = "GIT_INDEX_FILE"
+    NAMESPACE = "GIT_NAMESPACE"
+    OBJECT_DIRECTORY = "GIT_OBJECT_DIRECTORY"
+    PREFIX = "GIT_PREFIX"
+    WORK_TREE = "GIT_WORK_TREE"
 
 
 class AttemptCode(StrEnum):
@@ -471,7 +473,7 @@ def _run(
 
 def _clean_environment(source: Mapping[str, str]) -> dict[str, str]:
     environment = dict(source)
-    for name in _GIT_ROUTING_ENV:
+    for name in _GitRoutingVariable:
         environment.pop(name, None)
     virtual_environment = environment.pop("VIRTUAL_ENV", None)
     if virtual_environment:

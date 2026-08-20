@@ -16,6 +16,12 @@ import registerExtension, {
 } from "../packages/engine/orchestrator.ts";
 
 const CHECK_OK = JSON.stringify({ version: 1, ok: true, code: "OK", message: "" });
+const CHECK_REFUSAL = JSON.stringify({
+	version: 1,
+	ok: false,
+	code: "CONTRACT_UNREADABLE",
+	message: "missing",
+});
 const DELIVERY_OK = JSON.stringify({
 	version: 1,
 	outcome: "candidate-created",
@@ -110,6 +116,12 @@ test("check request and response stay compatible", () => {
 		'{"version":1,"operation":"check","repo":"/repo","contract":"/contract"}',
 	);
 	assert.deepEqual(parseResponse(CHECK_OK), { version: 1, ok: true, code: "OK", message: "" });
+	assert.deepEqual(parseResponse(CHECK_REFUSAL), {
+		version: 1,
+		ok: false,
+		code: "CONTRACT_UNREADABLE",
+		message: "missing",
+	});
 	for (const bad of ["bad", "null", "[]", "{}", '{"version":2,"ok":true,"code":"OK","message":""}']) {
 		assert.throws(() => parseResponse(bad), AdapterRefusal);
 	}
@@ -125,7 +137,9 @@ test("delivery receipt parser closes shape and outcome", () => {
 		"[]",
 		JSON.stringify({ ...valid, version: 2 }),
 		JSON.stringify({ ...valid, outcome: "unknown" }),
+		JSON.stringify({ ...valid, outcome: "discarded" }),
 		JSON.stringify({ ...valid, code: 1 }),
+		JSON.stringify({ ...valid, code: "UNKNOWN" }),
 		JSON.stringify({ ...valid, message: 1 }),
 		JSON.stringify({ ...valid, contract_id: 1 }),
 		JSON.stringify({ ...valid, repository: null }),
@@ -136,6 +150,7 @@ test("delivery receipt parser closes shape and outcome", () => {
 		JSON.stringify({ ...valid, command_exit: 1.5 }),
 		JSON.stringify({ ...valid, worktree_path: 1 }),
 		JSON.stringify({ ...valid, candidate_ref: null }),
+		JSON.stringify({ ...valid, changed_paths: null }),
 		JSON.stringify({ ...valid, outcome: "candidate-created", code: "FAILED" }),
 	];
 	for (const body of malformed) assert.throws(() => parseDeliveryReceipt(body), AdapterRefusal);
@@ -218,6 +233,20 @@ test("implement handler reports configuration, success, refusal, and crash", asy
 		await createAdapter(spawnerFor(child({ stdout: DELIVERY_OK })), 100).implement("task.yaml", ctx);
 		await createAdapter(spawnerFor(child({ stdout: DELIVERY_REFUSAL, exitCode: 8 })), 100).implement("task.yaml", ctx);
 		await createAdapter(spawnerFor(child({ stdout: "bad" })), 100).implement("task.yaml", ctx);
+		const unexpectedChild = child();
+		Object.defineProperty(unexpectedChild, "stdout", {
+			get() {
+				throw new Error("unexpected transport error");
+			},
+		});
+		await createAdapter(spawnerFor(unexpectedChild), 1).implement("task.yaml", ctx);
+		const nonErrorChild = child();
+		Object.defineProperty(nonErrorChild, "stdout", {
+			get() {
+				throw "non-error transport failure";
+			},
+		});
+		await createAdapter(spawnerFor(nonErrorChild), 1).implement("task.yaml", ctx);
 	} finally {
 		if (savedRepo === undefined) delete process.env.SATYRN_ENGINE_REPO;
 		else process.env.SATYRN_ENGINE_REPO = savedRepo;
@@ -230,6 +259,8 @@ test("implement handler reports configuration, success, refusal, and crash", asy
 	assert.match(notifications[3].message, /refs\/satyrn\/candidates/);
 	assert.match(notifications[4].message, /REPO_DIRTY/);
 	assert.match(notifications[5].message, /ENGINE_MALFORMED_RESPONSE/);
+	assert.match(notifications[6].message, /ADAPTER_ERROR.*unexpected transport error/);
+	assert.match(notifications[7].message, /ADAPTER_ERROR.*non-error transport failure/);
 });
 
 test("default extension registers the E5 command", () => {
