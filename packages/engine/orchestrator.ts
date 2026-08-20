@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -17,6 +17,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export const PROTOCOL_VERSION = 1;
 export const DEFAULT_DEADLINE_MS = 30_000;
 export const TERMINATION_GRACE_MS = 100;
+export const DEFAULT_ATTEMPT_TIMEOUT_SECONDS = 900;
+export const DEFAULT_DELIVERY_DEADLINE_MS = (DEFAULT_ATTEMPT_TIMEOUT_SECONDS + 10) * 1000;
+export const MAX_RECEIPT_BYTES = 64 * 1024;
 
 export const ENGINE_REFUSAL_CODES = [
 	"CONTRACT_UNREADABLE",
@@ -68,6 +71,7 @@ export interface SpawnedChild {
 		on?(event: "error", cb: (err: Error) => void): void;
 	};
 	stdout: { on(event: "data", cb: (chunk: string) => void): void };
+	stderr: { on(event: "data", cb: (chunk: string) => void): void };
 	on(event: "close", cb: (code: number | null) => void): void;
 	on(event: "error", cb: (err: Error) => void): void;
 	kill(signal?: "SIGTERM" | "SIGKILL"): boolean | void;
@@ -103,6 +107,29 @@ export function isEngineRefusalCode(value: unknown): value is EngineRefusalCode 
 		(ENGINE_REFUSAL_CODES as readonly string[]).includes(value)
 	);
 }
+
+export interface DeliveryReceipt {
+	readonly version: 1;
+	readonly outcome: "candidate-created" | "discarded" | "refused";
+	readonly code: string;
+	readonly message: string;
+	readonly contract_id: string | null;
+	readonly repository: string;
+	readonly base_commit: string | null;
+	readonly candidate_ref: string | null;
+	readonly candidate_commit: string | null;
+	readonly changed_paths: readonly string[] | null;
+	readonly command_exit: number | null;
+	readonly worktree_path: string | null;
+}
+
+export interface DeliveryInvocation {
+	readonly command: "uv";
+	readonly args: readonly string[];
+	readonly cwd: string;
+}
+
+export type DiagnosticSink = (chunk: string) => void;
 
 /** Build the versioned JSON request the engine's `protocol` subcommand reads. */
 export function buildRequest(repo: string, contract: string): string {
@@ -156,6 +183,91 @@ export function parseResponse(text: string): EngineResponse {
 		code: body.code,
 		message: body.message,
 		...optionalResult,
+	};
+}
+
+function isNullableString(value: unknown): value is string | null {
+	return value === null || typeof value === "string";
+}
+
+export function parseDeliveryReceipt(text: string): DeliveryReceipt {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "delivery receipt is not valid JSON");
+	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "delivery receipt has an unexpected shape");
+	}
+	const body = parsed as Record<string, unknown>;
+	if (
+		body.version !== PROTOCOL_VERSION ||
+		!(["candidate-created", "discarded", "refused"] as readonly unknown[]).includes(body.outcome) ||
+		typeof body.code !== "string" ||
+		typeof body.message !== "string" ||
+		!isNullableString(body.contract_id) ||
+		typeof body.repository !== "string" ||
+		!isNullableString(body.base_commit) ||
+		!isNullableString(body.candidate_ref) ||
+		!isNullableString(body.candidate_commit) ||
+		!(body.changed_paths === null || (Array.isArray(body.changed_paths) && body.changed_paths.every((path) => typeof path === "string"))) ||
+		!(body.command_exit === null || Number.isInteger(body.command_exit)) ||
+		!isNullableString(body.worktree_path)
+	) {
+		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "delivery receipt has an unexpected shape");
+	}
+	if (
+		(body.code === "OK" &&
+			(body.outcome !== "candidate-created" ||
+				typeof body.candidate_ref !== "string" ||
+				typeof body.candidate_commit !== "string")) ||
+		(body.code !== "OK" && body.outcome === "candidate-created")
+	) {
+		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "delivery receipt has inconsistent outcome fields");
+	}
+	return body as unknown as DeliveryReceipt;
+}
+
+export function buildDeliveryInvocation(
+	repo: string,
+	contract: string,
+	model: string,
+	engineRepo: string,
+	timeoutSeconds: number = DEFAULT_ATTEMPT_TIMEOUT_SECONDS,
+): DeliveryInvocation {
+	const sourceRepo = resolve(repo);
+	const resolvedContract = resolve(sourceRepo, contract);
+	const relativeContract = relative(sourceRepo, resolvedContract);
+	const innerContract =
+		relativeContract !== "" && !relativeContract.startsWith("..")
+			? relativeContract
+			: resolvedContract;
+	return {
+		command: "uv",
+		cwd: engineRepo,
+		args: [
+			"run",
+			"--project",
+			engineRepo,
+			"satyrn-engine",
+			"deliver",
+			"--repo",
+			sourceRepo,
+			"--timeout",
+			String(timeoutSeconds),
+			resolvedContract,
+			"--",
+			"uv",
+			"run",
+			"--project",
+			engineRepo,
+			"satyrn-engine",
+			"attempt",
+			"--model",
+			model,
+			innerContract,
+		],
 	};
 }
 
@@ -256,16 +368,87 @@ export async function exchange(
 	});
 }
 
+export async function runDelivery(
+	spawner: Spawner,
+	invocation: DeliveryInvocation,
+	deadlineMs: number,
+	diagnostic: DiagnosticSink = (chunk) => process.stderr.write(chunk),
+): Promise<DeliveryReceipt> {
+	return new Promise((resolvePromise, rejectPromise) => {
+		let child: SpawnedChild;
+		try {
+			child = spawner(invocation.command, invocation.args, { cwd: invocation.cwd });
+		} catch (err) {
+			rejectPromise(new AdapterRefusal("ENGINE_START_FAILED", `could not start delivery: ${String(err)}`));
+			return;
+		}
+
+		let stdout = "";
+		let oversized = false;
+		let settled = false;
+		const timer = setTimeout(() => {
+			child.kill();
+			settled = true;
+			rejectPromise(new AdapterRefusal("ENGINE_TIMEOUT", `delivery did not finish within ${deadlineMs} ms`));
+		}, deadlineMs);
+
+		child.stdout.on("data", (chunk) => {
+			if (Buffer.byteLength(stdout) + Buffer.byteLength(chunk) > MAX_RECEIPT_BYTES) {
+				oversized = true;
+				return;
+			}
+			stdout += chunk;
+		});
+		child.stderr.on("data", diagnostic);
+		child.on("error", (err) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			rejectPromise(new AdapterRefusal("ENGINE_START_FAILED", `delivery failed to start: ${err.message}`));
+		});
+		child.on("close", (code) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			if (oversized) {
+				rejectPromise(new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "delivery receipt exceeds 65536 bytes"));
+				return;
+			}
+			try {
+				resolvePromise(parseDeliveryReceipt(stdout));
+			} catch (refusal) {
+				rejectPromise(
+					code !== 0
+						? new AdapterRefusal("ENGINE_CRASHED", `delivery exited ${code} with no valid receipt`)
+						: (refusal as AdapterRefusal),
+				);
+			}
+		});
+		try {
+			child.stdin.end();
+		} catch (err) {
+			settled = true;
+			clearTimeout(timer);
+			rejectPromise(new AdapterRefusal("ENGINE_START_FAILED", `could not close delivery stdin: ${String(err)}`));
+		}
+	});
+}
+
 /** The command surface, with the spawner and deadline injected (test seams). */
-export function createAdapter(spawner: Spawner, deadlineMs: number = DEFAULT_DEADLINE_MS) {
+export function createAdapter(spawner: Spawner, deadlineMs: number = DEFAULT_DELIVERY_DEADLINE_MS) {
 	return {
 		async implement(
 			args: string,
 			ctx: { cwd: string; ui: { notify(message: string, level: "info" | "error"): void } },
 		): Promise<void> {
 			const engineRepo = process.env.SATYRN_ENGINE_REPO;
+			const model = process.env.SATYRN_MODEL;
 			if (!engineRepo) {
 				ctx.ui.notify("satyrn-engine: ENGINE_START_FAILED: SATYRN_ENGINE_REPO is not set", "error");
+				return;
+			}
+			if (!model) {
+				ctx.ui.notify("satyrn-engine: ENGINE_START_FAILED: SATYRN_MODEL is not set", "error");
 				return;
 			}
 			const contractArg = args.trim();
@@ -273,15 +456,16 @@ export function createAdapter(spawner: Spawner, deadlineMs: number = DEFAULT_DEA
 				ctx.ui.notify("satyrn-engine: USAGE: expected a CONTRACT path", "error");
 				return;
 			}
-			const repo = ctx.cwd;
-			const contract = resolve(repo, contractArg);
-			const request = buildRequest(repo, contract);
+			const invocation = buildDeliveryInvocation(ctx.cwd, contractArg, model, engineRepo);
 			try {
-				const response = await exchange(spawner, request, engineRepo, deadlineMs);
-				if (response.ok) {
-					ctx.ui.notify("satyrn-engine: OK", "info");
+				const receipt = await runDelivery(spawner, invocation, deadlineMs);
+				if (receipt.code === "OK") {
+					ctx.ui.notify(
+						`satyrn-engine: OK: ${receipt.candidate_ref} ${receipt.candidate_commit}`,
+						"info",
+					);
 				} else {
-					ctx.ui.notify(`satyrn-engine: ${response.code}: ${response.message}`, "error");
+					ctx.ui.notify(`satyrn-engine: ${receipt.code}: ${receipt.message}`, "error");
 				}
 			} catch (err) {
 				const refusal =
@@ -298,9 +482,9 @@ export function createAdapter(spawner: Spawner, deadlineMs: number = DEFAULT_DEA
 }
 
 export default function (pi: ExtensionAPI) {
-	const adapter = createAdapter(spawn, DEFAULT_DEADLINE_MS);
+	const adapter = createAdapter(spawn, DEFAULT_DELIVERY_DEADLINE_MS);
 	pi.registerCommand("implement", {
-		description: "Run the satyrn engine on a contract (accept or named refusal)",
+		description: "Run one isolated model attempt and create or discard a candidate",
 		handler: adapter.implement,
 	});
 }
