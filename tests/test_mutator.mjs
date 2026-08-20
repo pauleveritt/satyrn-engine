@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AdapterRefusal } from "../packages/engine/orchestrator.ts";
+import { AdapterRefusal, parseResponse } from "../packages/engine/orchestrator.ts";
 import mutationExtension, {
 	buildReplacementRequest,
 	createEngineExchange,
@@ -148,6 +148,13 @@ test("engine and local failures always resolve to error results", async () => {
 		const response = await mutator.execute("call", input());
 		assert.equal(response.details.ok, false);
 		assert.equal(response.details.result, null);
+	}
+});
+
+test("base response parser rejects non-object JSON without leaking a type error", () => {
+	assert.deepEqual(parseResponse(JSON.stringify(success())), success());
+	for (const text of ["null", "[]", "{bad", '{"version":1}']) {
+		assert.throws(() => parseResponse(text), AdapterRefusal);
 	}
 });
 
