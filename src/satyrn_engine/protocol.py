@@ -1,22 +1,18 @@
-"""The one-shot JSON protocol surface the Pi adapter talks to.
-
-One request in on stdin, one response out on stdout, then exit. The
-verdict travels in the JSON; the process exit code mirrors it so a caller
-that cannot parse the response still has a named signal. stderr stays
-empty on every protocol path.
-"""
+"""The one-shot JSON protocol surface used by the Pi adapters."""
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Literal, TypedDict
 
 from .check import check
 from .exits import ExitCode
+from .mutation import MutationReceipt, normalize_relative_path, replace_once
 
 PROTOCOL_VERSION = 1
-OPERATIONS = ("check",)
-REQUEST_FIELDS = ("repo", "contract")
+OPERATIONS = ("check", "replace")
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
 class ProtocolError(Exception):
@@ -27,11 +23,51 @@ class ProtocolError(Exception):
         self.message = message
 
 
-@dataclass(frozen=True)
-class Request:
-    operation: str
+@dataclass(frozen=True, slots=True)
+class CheckRequest:
+    """A contract-check protocol request."""
+
+    operation: Literal["check"]
     repo: Path
     contract: Path
+
+
+@dataclass(frozen=True, slots=True)
+class ReplaceRequest:
+    """A bounded-replacement protocol request."""
+
+    operation: Literal["replace"]
+    repo: Path
+    contract: Path
+    path: str
+    expected_sha256: str
+    old_text: str
+    new_text: str
+
+
+type ProtocolRequest = CheckRequest | ReplaceRequest
+
+
+class ResponsePayload(TypedDict):
+    """Stable response fields shared by every protocol operation."""
+
+    version: int
+    ok: bool
+    code: str
+    message: str
+
+
+class MutationResultPayload(TypedDict):
+    """JSON result of a successful replacement."""
+
+    path: str
+    sha256: str
+
+
+class ReplaceResponsePayload(ResponsePayload):
+    """Replacement response, including an operation-specific result."""
+
+    result: MutationResultPayload | None
 
 
 def _decode(data: str | bytes) -> str:
@@ -43,8 +79,16 @@ def _decode(data: str | bytes) -> str:
     return data
 
 
-def parse_request(data: str | bytes) -> Request:
-    """Parse and validate one protocol request; raise ProtocolError."""
+def _required_string(payload: dict[str, object], field: str, *, allow_empty: bool = False) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or (not allow_empty and not value):
+        qualifier = "a string" if allow_empty else "a non-empty string"
+        raise ProtocolError(f"request field {field!r} must be {qualifier}")
+    return value
+
+
+def parse_request(data: str | bytes) -> ProtocolRequest:
+    """Parse and validate one operation-discriminated request."""
     text = _decode(data)
     try:
         payload = json.loads(text)
@@ -56,34 +100,104 @@ def parse_request(data: str | bytes) -> Request:
         raise ProtocolError(
             f"unsupported protocol version {payload.get('version')!r}; expected {PROTOCOL_VERSION}"
         )
-    if payload.get("operation") not in OPERATIONS:
-        raise ProtocolError(
-            f"unsupported operation {payload.get('operation')!r}; expected {OPERATIONS[0]!r}"
-        )
-    for field in REQUEST_FIELDS:
-        value = payload.get(field)
-        if not isinstance(value, str) or not value:
-            raise ProtocolError(f"request field {field!r} must be a non-empty string")
-    return Request(operation=payload["operation"], repo=Path(payload["repo"]), contract=Path(payload["contract"]))
+
+    operation = payload.get("operation")
+    if operation not in OPERATIONS:
+        raise ProtocolError(f"unsupported operation {operation!r}; expected one of {OPERATIONS!r}")
+    repo = Path(_required_string(payload, "repo"))
+    contract = Path(_required_string(payload, "contract"))
+
+    match operation:
+        case "check":
+            return CheckRequest(operation=operation, repo=repo, contract=contract)
+        case "replace":
+            if not repo.is_absolute() or not contract.is_absolute():
+                raise ProtocolError("replace request fields 'repo' and 'contract' must be absolute paths")
+            try:
+                path = normalize_relative_path(_required_string(payload, "path"))
+            except ValueError as exc:
+                raise ProtocolError(f"invalid replacement path: {exc}") from exc
+            expected_sha256 = _required_string(payload, "expected_sha256")
+            if SHA256_PATTERN.fullmatch(expected_sha256) is None:
+                raise ProtocolError("request field 'expected_sha256' must be 64 lowercase hexadecimal characters")
+            return ReplaceRequest(
+                operation=operation,
+                repo=repo,
+                contract=contract,
+                path=path,
+                expected_sha256=expected_sha256,
+                old_text=_required_string(payload, "old_text"),
+                new_text=_required_string(payload, "new_text", allow_empty=True),
+            )
+        case _:  # pragma: no cover - membership check above closes the union
+            raise AssertionError(operation)
+
+
+def _base_payload(code: ExitCode, message: str) -> ResponsePayload:
+    return {
+        "version": PROTOCOL_VERSION,
+        "ok": code is ExitCode.OK,
+        "code": code.name,
+        "message": message,
+    }
 
 
 def render_response(code: ExitCode, message: str) -> str:
-    """Render one protocol response as a JSON string."""
-    return json.dumps(
-        {"version": PROTOCOL_VERSION, "ok": code is ExitCode.OK, "code": code.name, "message": message},
-        separators=(",", ":"),
-    )
+    """Render one check response as a compact JSON string."""
+    return json.dumps(_base_payload(code, message), separators=(",", ":"))
+
+
+def render_replace_response(receipt: MutationReceipt) -> str:
+    """Render one operation-specific replacement response."""
+    result: MutationResultPayload | None = None
+    if receipt.result is not None:
+        result = {"path": receipt.result.path, "sha256": receipt.result.sha256}
+    payload: ReplaceResponsePayload = {
+        "version": PROTOCOL_VERSION,
+        "ok": receipt.ok,
+        "code": receipt.code.value,
+        "message": receipt.message,
+        "result": result,
+    }
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def _render_replace_check_failure(code: ExitCode, message: str) -> str:
+    payload: ReplaceResponsePayload = {
+        **_base_payload(code, message),
+        "result": None,
+    }
+    return json.dumps(payload, separators=(",", ":"))
 
 
 def handle_protocol(data: str | bytes) -> tuple[str, int]:
-    """Turn one request into (response_text, exit_code); never raises for input problems."""
+    """Turn one request into ``(response_text, exit_code)``."""
     try:
         request = parse_request(data)
     except ProtocolError as exc:
         response = render_response(ExitCode.INVALID_REQUEST, exc.message)
         return response, int(ExitCode.INVALID_REQUEST)
-    result = check(request.repo, request.contract)
-    return render_response(result.code, result.message), int(result.code)
+
+    if isinstance(request, CheckRequest):
+        result = check(request.repo, request.contract)
+        return render_response(result.code, result.message), int(result.code)
+
+    checked = check(request.repo, request.contract)
+    if checked.code is not ExitCode.OK or checked.contract is None:
+        return (
+            _render_replace_check_failure(checked.code, checked.message),
+            int(checked.code),
+        )
+    receipt = replace_once(
+        request.repo,
+        checked.contract,
+        request.path,
+        request.expected_sha256,
+        request.old_text,
+        request.new_text,
+    )
+    exit_code = ExitCode.OK if receipt.ok else ExitCode.MUTATION_REFUSED
+    return render_replace_response(receipt), int(exit_code)
 
 
 def run_protocol(stdin: BinaryIO, stdout: BinaryIO) -> int:

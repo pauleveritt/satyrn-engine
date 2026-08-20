@@ -1,12 +1,8 @@
-"""Contract loading and validation.
-
-A contract is a YAML mapping with two required string fields: ``id`` and
-``task``. Loading either yields a :class:`Contract` or raises
-:class:`ContractError`, a named refusal carrying the stable exit code.
-"""
+"""Contract loading and validation."""
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import yaml
 
@@ -30,6 +26,7 @@ class Contract:
 
     id: str
     task: str
+    writable_paths: tuple[str, ...] = ()
 
 
 def load_contract(path: Path) -> Contract:
@@ -65,7 +62,12 @@ def load_contract(path: Path) -> Contract:
     if problems:
         raise ContractError(ExitCode.CONTRACT_MISSING_FIELD, "; ".join(problems))
 
-    return Contract(id=data["id"], task=data["task"])
+    normalized_paths = tuple(cast(list[str], data.get("writable_paths", [])))
+    return Contract(
+        id=data["id"],
+        task=data["task"],
+        writable_paths=normalized_paths,
+    )
 
 
 def _field_problems(data: dict[str, object]) -> list[str]:
@@ -76,4 +78,14 @@ def _field_problems(data: dict[str, object]) -> list[str]:
             problems.append(f"missing required field {field!r}")
         elif not isinstance(value, str) or not value.strip():
             problems.append(f"required field {field!r} must be a non-empty string")
+    if "writable_paths" not in data:
+        return problems
+
+    match data["writable_paths"]:
+        case list() as paths if all(isinstance(path, str) and path.strip() for path in paths):
+            pass
+        case list():
+            problems.append("optional field 'writable_paths' must contain only non-empty strings")
+        case _:
+            problems.append("optional field 'writable_paths' must be a list")
     return problems
