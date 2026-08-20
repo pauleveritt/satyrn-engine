@@ -16,10 +16,10 @@ avoids the problems instead of stumbling over them; and the change it
 produces reads the way you would have written it — your conventions, your
 standards, your repo — ready for you to review and own.
 
-Despite the name, it is not an engine in the AI sense: no model, no
-inference, no server. It is ordinary Python that runs anywhere Python
-runs — a library, a CLI, in CI, from other tooling — with Pi as one
-surface it serves through a thin TypeScript adapter.
+Despite the name, it is not a model or inference server. It is ordinary Python
+that runs anywhere Python runs — a library, a CLI, in CI, from other tooling —
+and it can start one explicitly selected Pi model through a thin TypeScript
+adapter.
 
 ## Status
 
@@ -47,8 +47,13 @@ Phases completed, each with its design spec and implementation plan:
   enforcement. ({doc}`spec
   <superpowers/specs/2026-08-20-e4-bounded-replacement-design>`, {doc}`plan
   <superpowers/plans/2026-08-20-e4-bounded-replacement>`)
+- _E5_ — one real attempt. `attempt` starts one explicit Pi model with only
+  `read` and E4's bounded `edit`; `/implement` runs it inside E3 delivery and
+  reports the candidate or refusal. ({doc}`spec
+  <superpowers/specs/2026-08-20-e5-real-attempt-design>`, {doc}`plan
+  <superpowers/plans/2026-08-20-e5-real-attempt>`)
 
-The roadmap and the next phase (E5 — One real attempt) live in
+The roadmap and the next phase (E6 — Packaged) live in
 [`ROADMAP.md`](https://github.com/pauleveritt/satyrn-engine/blob/main/ROADMAP.md).
 
 ## What is Satyrn Engine?
@@ -59,7 +64,7 @@ The engine is the Python core of a two-repo effort: a library and CLI
 that parse and validate a bounded contract and deliver a candidate change as a
 reviewable ref recorded in a receipt — never writing to the caller's tree. E4
 adds writable-path and revision enforcement; E5 connects it to one real
-validated attempt. The sibling repository,
+bounded attempt. The sibling repository,
 satyrn-evals, runs the workloads and measurements; the features built
 into the engine are the ones that evidence surfaces. What the engine
 deliberately does **not** own: workloads, grading, repeated runs,
@@ -68,12 +73,14 @@ or remain a main-agent skill.
 
 ### How it works, from an end-user's perspective
 
-From your side it is `check`, `deliver`, or `/implement CONTRACT` inside Pi.
+From your side it is `check`, `deliver`, `attempt`, or `/implement CONTRACT`
+inside Pi.
 `check` parses and validates without starting a process. `deliver` runs one
 explicit command in an isolated worktree and returns one JSON receipt. A
 successful receipt names its published candidate; other receipts publish no
 candidate, although `candidate_ref` can still record the intended identity. It
-never merges the result or writes to the caller's checkout.
+never merges the result or writes to the caller's checkout. `attempt` is the
+bounded command E5 runs inside that isolation; `/implement` connects both.
 
 ### What is planned
 
@@ -90,9 +97,9 @@ One phase at a time, each shipping one user-visible behavior:
 - **E4 — One bounded replacement.** A single file replacement runs Pi →
   TypeScript → Python with revision checking. *Complete.*
 - **E5 — One real attempt.** `attempt` and `/implement` complete one named
-  task end to end. *Current.*
+  task end to end. *Complete.*
 - **E6 — Packaged.** The same `/implement` works outside either source
-  checkout. *Not started.*
+  checkout. *Current.*
 
 The roadmap, concept budget, and backlog live in `ROADMAP.md` at the
 repository root; the mission and status live in the README.

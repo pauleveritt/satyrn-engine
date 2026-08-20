@@ -1,47 +1,59 @@
 # Architecture
 
-**One Python process per operation.** The {term}`engine` never lingers:
-the {term}`adapter` starts it, hands it one request, reads one response,
-and the process exits. No sidecar, no session, no supervisor — a
-deliberate cut, argued in `BRIEF.md`, with the measured cost as the only
-condition that reopens it.
+**One bounded attempt, delivered as Git state.** The {term}`adapter` starts
+one E3 delivery process. Inside its detached worktree, E5 starts one explicit
+Pi model with only `read` and E4's bounded `edit`. The result is either a
+reviewable candidate ref or a named refusal; the caller's checkout is never the
+model workspace.
 
 ## The shape
 
 ```text
-┌─────────────────┐   one JSON request (stdin)   ┌───────────────────────────────┐
-│      Pi         │ ───────────────────────────▶ │ uv run --project $SATYRN_ENGINE_REPO │
-│  /implement     │                              │     satyrn-engine protocol     │
-│    adapter      │ ◀─────────────────────────── │                               │
-└─────────────────┘   one JSON response (stdout) └───────────────────────────────┘
+parent Pi /implement
+        │
+        ▼
+satyrn-engine deliver ── detached worktree at exact HEAD
+        │
+        ▼
+satyrn-engine attempt ── explicit child Pi model
+        │                       │
+        │                       ├── read
+        │                       └── bounded edit
+        │                              │ one JSON request/response
+        │                              ▼
+        │                     Python mutation protocol
+        ▼
+candidate ref or named delivery refusal
 ```
 
-The first flow, for a `/implement CONTRACT` check:
+The E5 `/implement CONTRACT` flow is:
 
-1. The adapter resolves `CONTRACT` against `ctx.cwd`; the repository is
-   `ctx.cwd`. Nothing else is asked of the user.
-2. It builds one JSON request — `{"version": 1, "operation": "check",
-   "repo": ..., "contract": ...}` — and starts the engine with
-   `uv run --project $SATYRN_ENGINE_REPO satyrn-engine protocol`, stdio
-   piped. It writes the request, closes stdin, and waits.
-3. The engine parses and validates the request, calls the same
-   {term}`check` seam E1 exposed, writes one JSON response, and exits with
-   the verdict's exit code. stderr stays empty on every protocol path.
-4. The adapter reads the response. The JSON is authoritative — the exit
-   code is only the fallback when the response is unreadable. It reports
-   the verdict as `satyrn-engine: <CAUSE>: <detail>`.
+1. The parent adapter resolves `CONTRACT` against `ctx.cwd` and requires an
+   explicit `SATYRN_MODEL`.
+2. It starts `satyrn-engine deliver`, whose trusted command is
+   `satyrn-engine attempt --model MODEL CONTRACT` with transcript and patch
+   destinations outside the repository.
+3. Delivery captures the caller's exact `HEAD`, creates a detached linked
+   worktree, and runs the command once there.
+4. Attempt freezes the contract and exact writable-file revisions, then starts
+   Pi with only the shipped `engine.ts` and `mutator.ts` extensions and the
+   `read,edit` tool set.
+5. Every edit crosses the one-shot JSON protocol into Python. The bounded
+   mutation seam owns path, revision, and unique-anchor checks.
+6. Delivery cleans the worktree and either atomically publishes a candidate
+   ref or returns one named refusal. The adapter reports that receipt without
+   reinterpreting it.
 
 ## Who owns what
 
 | side | owns |
 |------|------|
-| {term}`engine` | contract and mutation semantics plus delivery: parsing, path linting, writable-path matching, revision and anchor checks, isolated Git execution, candidate publication, receipts; the `check` seam, the {term}`protocol` surface, and stable exit codes |
+| {term}`engine` | contract and mutation semantics plus delivery: parsing, path linting, writable-path matching, revision and anchor checks, isolated Git execution, one model attempt, candidate publication, receipts; the `check` seam, the {term}`protocol` surface, and stable exit codes |
 | {term}`adapter` | transport — spawning, the deadline, refusal conversion — and Pi's command/tool surfaces. It never reinterprets an engine refusal or duplicates path policy |
 
-The split is what keeps the adapter thin: Pi-specific concerns (no host
-deadline, uncaught errors escaping the turn) live in TypeScript; contract
-semantics live once, in Python, shared with the CLI and any future
-caller.
+The split keeps the adapter thin: Pi-specific concerns live in TypeScript;
+contract, mutation, Git, and attempt semantics live in Python, shared with the
+CLI and any future caller.
 
 ## Why one process per operation
 
@@ -52,11 +64,12 @@ response objects gain a persistent transport then — not before.
 
 ## Why the adapter carries its own deadline and exception boundary
 
-Verified Pi facts (v0.84.2) from `BRIEF.md`: extension handlers are
-awaited sequentially with no host deadline, and an uncaught adapter error
-escapes the turn. So the adapter enforces a 30-second deadline of its own
-and converts every transport failure — spawn error, timeout, crash,
-malformed response — into a named refusal instead of letting it escape.
+Verified Pi facts (v0.84.2) from `BRIEF.md`: extension handlers are awaited
+sequentially with no host deadline, and an uncaught adapter error escapes the
+turn. The check/protocol transport therefore keeps its short deadline, while
+E5 gives the nested model attempt fifteen minutes plus a small delivery margin.
+Both paths convert spawn errors, timeouts, crashes, and malformed responses
+into contained results instead of letting them escape.
 
 ## Why the loop breaker stays in TypeScript
 
@@ -110,8 +123,8 @@ no later edit; E5 discards its isolated worktree.
 
 The replacement is intentionally one anchor in one existing UTF-8 file. File
 creation, whole-file writes, multiple edits, fuzzy matching, symbol analysis,
-validation, and model orchestration are not hidden behind an abstraction. E5
-will supply this context inside E3's worktree and consume the same seam.
+and validation are not hidden behind an abstraction. E5 supplies the context
+inside E3's worktree and consumes the same seam.
 
 ## Refusals, split by side
 
@@ -126,6 +139,9 @@ use exit `8`, and the receipt carries the specific cause. CLI usage remains
 `2`; an uncaught bug remains `1`. E4 replacement refusals use exit `9`; their
 JSON `code` distinguishes `PATH_UNDECLARED`, `REVISION_UNAVAILABLE`, `REVISION_STALE`,
 `ANCHOR_MISSING`, `ANCHOR_AMBIGUOUS`, and `MUTATION_FAILED`.
+An E5 model process that cannot start or exits nonzero uses `ATTEMPT_FAILED`
+and exit `10`; when wrapped by delivery that becomes `COMMAND_FAILED`. The E3
+owner reports an expired outer deadline separately as `COMMAND_TIMEOUT`.
 
 The design record — arguments considered and rejected — is the E2 spec
 and plan under `docs/superpowers/`.
@@ -168,8 +184,8 @@ This is not a security sandbox. The command can write absolute paths, mutate
 the repository's shared Git state, or deliberately escape its POSIX process
 group; E3 does not prevent those actions. It isolates ordinary file writes and
 bounds ordinary descendants on timeout, so it accepts only a trusted,
-synchronous command. E4 now supplies mutation rules when its tool is used; E5
-connects them to delivery, validation, and a real attempt.
+synchronous command. E4 supplies mutation rules when its tool is used; E5
+connects them to delivery and a real attempt. Grading remains in satyrn-evals.
 
 Worktree isolation is established practice in agent tooling. E3's specific use
 is single-attempt safety, rather than parallelism, plus a dedicated non-branch

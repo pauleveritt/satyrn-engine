@@ -58,6 +58,7 @@ The {term}`exit code`s are a stable contract:
 | `7` | `INVALID_REQUEST` | malformed versioned protocol input |
 | `8` | `NO_CANDIDATE` | accepted delivery produced no candidate |
 | `9` | `MUTATION_REFUSED` | accepted replacement was safely refused; JSON carries the exact cause |
+| `10` | `ATTEMPT_FAILED` | accepted model attempt failed after preparation; artifacts are preserved when possible |
 
 Exit code `1` is deliberately unused: Python reports an uncaught internal
 error as `1`, so reserving it keeps a crash distinguishable from a {term}`refusal`.
@@ -212,10 +213,37 @@ or deliberately escape its POSIX process group; E3 does not prevent those
 actions. Therefore it accepts only a trusted command expected to run
 synchronously. Git is an explicit runtime requirement. E4's writable-path and
 revision rules apply only when the attempt uses its bounded replacement tool;
-E5 connects that tool to delivery and validation. Command output is spooled to temporary storage
+E5 connects that tool to one model attempt and E3 delivery. Command output is
+spooled to temporary storage
 to bound engine memory and avoid a descendant-held pipe; E3 does not impose a
 byte quota on that storage, just as it does not limit files written by the
 trusted command itself.
+
+## Run one model attempt
+
+Run `attempt` from the root of a clean, disposable Git worktree:
+
+```console
+SATYRN_ATTEMPT_TRANSCRIPT=/output/transcript.jsonl \
+SATYRN_ATTEMPT_PATCH=/output/patch.diff \
+satyrn-engine attempt --model omlx/gemma-4-12B-it-MLX-8bit CONTRACT
+```
+
+The model is explicit: `--model` wins, then `SATYRN_MODEL`; omitting both is a
+usage error. The command freezes the parsed contract, records exact revisions
+for its tracked writable files, and starts Pi with only `read` and E4's bounded
+`edit`. Pi skills, prompt templates, themes, context files, sessions, and
+ambient extensions are disabled. The current worktree remains the model's
+workspace, so direct `attempt` is intended for E3's disposable worktree rather
+than a developer's checkout.
+
+Both artifact paths are optional, must be absent, and must resolve outside the
+repository. The transcript is Pi's exact JSONL output. The patch is written
+only when the tracked tree changed. Neither artifact is a grading verdict;
+they record what happened. A Pi start or nonzero-exit failure returns
+`ATTEMPT_FAILED` with exit `10` after preserving any requested artifacts. The
+`/implement` wrapper additionally gives E3 fifteen minutes to complete the
+attempt and reports `COMMAND_TIMEOUT` if that deadline expires.
 
 ## The Pi adapter
 
@@ -226,24 +254,24 @@ The {term}`adapter` exposes the engine inside Pi as a command:
 ```
 
 The command resolves `CONTRACT` against the current working directory and
-runs the engine's `protocol` operation against that directory as the
-repository. Acceptance reports `satyrn-engine: OK`; a refusal reports
-`satyrn-engine: <CAUSE>: <detail>` — the same named causes as `check`
-(`CONTRACT_UNREADABLE` through `REPO_UNAVAILABLE`, plus `INVALID_REQUEST`),
-and the adapter's own transport refusals (`ENGINE_START_FAILED`,
-`ENGINE_TIMEOUT`, `ENGINE_CRASHED`, `ENGINE_MALFORMED_RESPONSE`) when the
-engine process itself cannot serve the request.
+starts E3 `deliver` there. Delivery runs the same E5 `attempt` once in a
+detached worktree. A success reports the candidate ref and commit; a refusal
+reports the exact delivery receipt code and detail. A start failure, deadline,
+crash, or malformed receipt is contained and reported by the adapter rather
+than escaping the Pi turn.
 
 Install the Pi package from the engine checkout:
 
 ```console
 pi install /path/to/satyrn-engine/packages/engine
 export SATYRN_ENGINE_REPO=/path/to/satyrn-engine-checkout
+export SATYRN_MODEL=omlx/gemma-4-12B-it-MLX-8bit
 ```
 
 `SATYRN_ENGINE_REPO` names the engine checkout; the adapter starts the
-engine with `uv run --project $SATYRN_ENGINE_REPO satyrn-engine protocol`,
-so `uv` must be on `PATH`.
+engine with `uv run --project $SATYRN_ENGINE_REPO satyrn-engine deliver`,
+passing `SATYRN_MODEL` to the nested attempt. Therefore `uv`, `pi`, and the
+selected model provider must be installed and configured.
 
 Install the package **once**, globally. Do not also load any extension with pi's
 `-e` flag: pi then registers `/implement` twice and suffixes the command
@@ -252,11 +280,10 @@ harvest index, "The /implement command vanished").
 
 ### Bounded replacement
 
-E4 adds a conditional replacement for Pi's `edit` tool. It is deliberately not
-enabled by a normal package install: E5's parent attempt must first supply a
-versioned `SATYRN_MUTATION_CONTEXT` containing the disposable workspace,
-contract, and captured revisions. Without that context, Pi keeps its built-in
-`edit` tool.
+E4 adds a conditional replacement for Pi's `edit` tool. A normal package
+install alone does not enable it: E5 supplies a versioned
+`SATYRN_MUTATION_CONTEXT` containing the disposable workspace, contract, and
+captured revisions. Without that context, Pi keeps its built-in `edit` tool.
 
 With context, exactly one `edits[]` entry is sent over the existing one-shot
 protocol. Python normalizes the workspace-relative path, matches
@@ -270,11 +297,10 @@ error and does not advance its revision map. A transport failure has an
 indeterminate write result, so the adapter poisons that mutation context and
 refuses later edits until E5 discards the isolated worktree.
 
-This is an engine building block, not yet a complete `/implement` run. The
-marked `tests/test_integration_mutator.py` fixture and
-`tools/exercise_mutator.mjs` prove the shipped Pi adapter → TypeScript → Python
-path without calling a model. E5 is the phase that will create the context and
-run a real attempt inside E3's disposable worktree.
+The marked `tests/test_integration_mutator.py` fixture and
+`tools/exercise_mutator.mjs` prove the mutation path without calling a model.
+E5 creates the context and runs that same path inside E3's disposable
+worktree.
 
 ### Repeated-call protection
 

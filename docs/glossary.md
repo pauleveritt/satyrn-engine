@@ -7,11 +7,16 @@ budget tracks which names the design actually needs.
 adapter
   The thin TypeScript layer that makes the engine reachable inside Pi as the
   ``/implement`` command and, with an explicit mutation context, a bounded
-  ``edit`` tool. It starts the engine as a subprocess
-  (``uv run --project $SATYRN_ENGINE_REPO satyrn-engine protocol``), sends
-  one versioned JSON request, reads one JSON response, and converts every
-  transport failure into a named refusal. It owns transport only; contract
-  semantics stay in Python.
+  ``edit`` tool. ``/implement`` starts E3 delivery with an E5 attempt inside;
+  each bounded edit sends one versioned request to the Python mutation
+  protocol. It converts transport failures into contained results and owns no
+  contract, mutation, or Git policy.
+
+attempt
+  One E5 run of an explicitly selected Pi model in a clean disposable Git
+  worktree. The model receives only ``read`` and E4's bounded ``edit``. The
+  transcript and patch are evidence artifacts, not a grading verdict; E3
+  decides whether the resulting tree becomes a candidate.
 
 check
   The engine's first operation: parse and validate a contract, lint the
@@ -40,17 +45,18 @@ contract
 
 engine
   The Python core of satyrn-engine: a library and command-line tool that
-  parses and validates a contract, applies one bounded replacement, and delivers a candidate
-  change without modifying the caller's working tree. Invoked from the
-  shell as ``satyrn-engine``.
+  parses and validates a contract, applies one bounded replacement, runs one
+  model attempt, and delivers a candidate change without modifying the
+  caller's working tree. Invoked from the shell as ``satyrn-engine``.
 
 exit code
   The process exit status returned by ``satyrn-engine``. The values are a
   stable contract: ``0`` succeeds; ``2`` through ``7`` retain the check and
   protocol meanings; delivery uses ``8`` for every handled result without a
-  candidate; mutation uses ``9`` for an accepted replacement refusal; and ``1``
-  is reserved for an uncaught internal error — a crash, never a refusal. A
-  delivery receipt or mutation JSON response gives the precise cause.
+  candidate; mutation uses ``9`` for an accepted replacement refusal; attempt
+  failures use ``10``; and ``1`` is reserved for an uncaught internal error —
+  a crash, never a refusal. A delivery receipt or mutation JSON response gives
+  the precise cause.
 
 guard
   A small TypeScript check that observes an ordinary Pi tool call before it
