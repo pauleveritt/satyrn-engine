@@ -186,7 +186,11 @@ def test_pi_installs_and_dispatches_package_extension_in_temporary_settings(
     assert installed_package == PACKAGE.resolve()
 
     manifest = json.loads((installed_package / "package.json").read_text())
-    assert manifest["pi"]["extensions"] == ["./engine.ts", "./orchestrator.ts"]
+    assert manifest["pi"]["extensions"] == [
+        "./engine.ts",
+        "./orchestrator.ts",
+        "./mutator.ts",
+    ]
 
     extension_environment = environment.copy()
     extension_environment["SATYRN_EXTENSION_PATH"] = str(
