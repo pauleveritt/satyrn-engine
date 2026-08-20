@@ -108,20 +108,59 @@ export function isEngineRefusalCode(value: unknown): value is EngineRefusalCode 
 	);
 }
 
-export interface DeliveryReceipt {
+export const DELIVERY_CODE_OUTCOMES = {
+	OK: "candidate-created",
+	CONTRACT_UNREADABLE: "refused",
+	CONTRACT_INVALID_YAML: "refused",
+	CONTRACT_MISSING_FIELD: "refused",
+	REPO_UNAVAILABLE: "refused",
+	REPO_NOT_GIT: "refused",
+	REPO_DIRTY: "refused",
+	INVALID_CANDIDATE_ID: "refused",
+	CANDIDATE_EXISTS: "refused",
+	COMMAND_UNAVAILABLE: "refused",
+	COMMAND_TIMEOUT: "discarded",
+	COMMAND_FAILED: "discarded",
+	COMMAND_CHANGED_HEAD: "discarded",
+	NO_CHANGES: "discarded",
+	GIT_FAILED: "refused",
+	CLEANUP_FAILED: "refused",
+} as const;
+
+export type DeliveryCode = keyof typeof DELIVERY_CODE_OUTCOMES;
+export type DeliveryRefusalCode = Exclude<DeliveryCode, "OK">;
+export type DeliveryRefusalOutcome =
+	(typeof DELIVERY_CODE_OUTCOMES)[DeliveryRefusalCode];
+
+interface DeliveryReceiptBase {
 	readonly version: 1;
-	readonly outcome: "candidate-created" | "discarded" | "refused";
-	readonly code: string;
 	readonly message: string;
 	readonly contract_id: string | null;
 	readonly repository: string;
 	readonly base_commit: string | null;
-	readonly candidate_ref: string | null;
-	readonly candidate_commit: string | null;
-	readonly changed_paths: readonly string[] | null;
 	readonly command_exit: number | null;
 	readonly worktree_path: string | null;
 }
+
+export interface CandidateCreatedReceipt extends DeliveryReceiptBase {
+	readonly outcome: "candidate-created";
+	readonly code: "OK";
+	readonly candidate_ref: string;
+	readonly candidate_commit: string;
+	readonly changed_paths: readonly string[];
+}
+
+export interface DeliveryRefusalReceipt extends DeliveryReceiptBase {
+	readonly outcome: DeliveryRefusalOutcome;
+	readonly code: DeliveryRefusalCode;
+	readonly candidate_ref: string | null;
+	readonly candidate_commit: string | null;
+	readonly changed_paths: readonly string[] | null;
+}
+
+export type DeliveryReceipt =
+	| CandidateCreatedReceipt
+	| DeliveryRefusalReceipt;
 
 export interface DeliveryInvocation {
 	readonly command: "uv";
@@ -190,6 +229,21 @@ function isNullableString(value: unknown): value is string | null {
 	return value === null || typeof value === "string";
 }
 
+function isDeliveryCode(value: unknown): value is DeliveryCode {
+	return typeof value === "string" && Object.hasOwn(DELIVERY_CODE_OUTCOMES, value);
+}
+
+function isNullableStringArray(value: unknown): value is readonly string[] | null {
+	return (
+		value === null ||
+		(Array.isArray(value) && value.every((path) => typeof path === "string"))
+	);
+}
+
+function isNullableInteger(value: unknown): value is number | null {
+	return value === null || (typeof value === "number" && Number.isInteger(value));
+}
+
 export function parseDeliveryReceipt(text: string): DeliveryReceipt {
 	let parsed: unknown;
 	try {
@@ -203,30 +257,54 @@ export function parseDeliveryReceipt(text: string): DeliveryReceipt {
 	const body = parsed as Record<string, unknown>;
 	if (
 		body.version !== PROTOCOL_VERSION ||
-		!(["candidate-created", "discarded", "refused"] as readonly unknown[]).includes(body.outcome) ||
-		typeof body.code !== "string" ||
+		!isDeliveryCode(body.code) ||
+		body.outcome !== DELIVERY_CODE_OUTCOMES[body.code] ||
 		typeof body.message !== "string" ||
 		!isNullableString(body.contract_id) ||
 		typeof body.repository !== "string" ||
 		!isNullableString(body.base_commit) ||
 		!isNullableString(body.candidate_ref) ||
 		!isNullableString(body.candidate_commit) ||
-		!(body.changed_paths === null || (Array.isArray(body.changed_paths) && body.changed_paths.every((path) => typeof path === "string"))) ||
-		!(body.command_exit === null || Number.isInteger(body.command_exit)) ||
+		!isNullableStringArray(body.changed_paths) ||
+		!isNullableInteger(body.command_exit) ||
 		!isNullableString(body.worktree_path)
 	) {
 		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "delivery receipt has an unexpected shape");
 	}
-	if (
-		(body.code === "OK" &&
-			(body.outcome !== "candidate-created" ||
-				typeof body.candidate_ref !== "string" ||
-				typeof body.candidate_commit !== "string")) ||
-		(body.code !== "OK" && body.outcome === "candidate-created")
-	) {
-		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "delivery receipt has inconsistent outcome fields");
+	const base: DeliveryReceiptBase = {
+		version: PROTOCOL_VERSION,
+		message: body.message,
+		contract_id: body.contract_id,
+		repository: body.repository,
+		base_commit: body.base_commit,
+		command_exit: body.command_exit,
+		worktree_path: body.worktree_path,
+	};
+	if (body.code === "OK") {
+		if (
+			typeof body.candidate_ref !== "string" ||
+			typeof body.candidate_commit !== "string" ||
+			body.changed_paths === null
+		) {
+			throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "delivery receipt has inconsistent candidate fields");
+		}
+		return {
+			...base,
+			outcome: "candidate-created",
+			code: "OK",
+			candidate_ref: body.candidate_ref,
+			candidate_commit: body.candidate_commit,
+			changed_paths: body.changed_paths,
+		};
 	}
-	return body as unknown as DeliveryReceipt;
+	return {
+		...base,
+		outcome: DELIVERY_CODE_OUTCOMES[body.code],
+		code: body.code,
+		candidate_ref: body.candidate_ref,
+		candidate_commit: body.candidate_commit,
+		changed_paths: body.changed_paths,
+	};
 }
 
 export function buildDeliveryInvocation(

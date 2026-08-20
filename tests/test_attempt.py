@@ -175,6 +175,22 @@ def test_attempt_result_has_exhaustive_stable_exit_mapping() -> None:
         replace(AttemptResult(AttemptCode.OK), code="TYPO")  # type: ignore[arg-type]
 
 
+def test_git_routing_environment_has_a_closed_sanitized_vocabulary() -> None:
+    expected = {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PREFIX",
+        "GIT_WORK_TREE",
+    }
+    assert {variable.value for variable in attempt_module._GitRoutingVariable} == expected
+    cleaned = attempt_module._clean_environment(dict.fromkeys(expected, "/redirect"))
+    assert expected.isdisjoint(cleaned)
+
+
 def test_attempt_success_exports_exact_artifacts_and_context(tmp_path: Path) -> None:
     output = tmp_path / "artifacts"
     output.mkdir()
