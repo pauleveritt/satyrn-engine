@@ -54,6 +54,14 @@ were not. No TypeScript existed in this repository when that line was
 written or for some time after. `ROADMAP.md`'s "Now" section carries the same
 correction.
 
+**Correction, 2026-08-20:** Git history shows that the preceding correction's
+factual claim was also wrong: commit `565e652` added the TypeScript bundle,
+replay harness, and fixtures directly from the prior project. The architectural
+decision remains the same. Those copied files are not an accepted phase; E3.5
+replaces the implementation with fresh code derived from the recorded policy
+and replay evidence. The preserve-symbols guard is removed because its job
+belongs to E4's contract-aware mutation engine.
+
 ## The trap we are avoiding
 
 Three prior attempts became engineering efforts about orchestration —

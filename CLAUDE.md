@@ -78,3 +78,11 @@ historical claim, but it is wrong. The pinned evidence revision is now
 They are phase E3.5: implement them fresh here and use the old implementation
 and replay fixtures as evidence, not source. `BRIEF.md` and `ROADMAP.md` carry
 the same correction.
+
+**Correction, 2026-08-20:** the preceding correction is itself wrong about the
+repository history. Commit `565e652` did add `packages/engine/engine.ts`,
+`tools/replay_guards.mjs`, and the replay fixtures as a direct import from the
+old project. The governing decision is unchanged: that copied implementation
+is superseded, not accepted E3.5 code. Rewrite the loop breaker here from the
+recorded behavior and fixtures, and remove the copied preserve-symbols guard,
+whose contract-aware replacement belongs to E4.
