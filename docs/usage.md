@@ -24,15 +24,17 @@ The command accepts exactly two things:
 | `CONTRACT` | required positional | path to the contract file. It must exist and be readable YAML. |
 
 A **contract** is a YAML document whose top level is a mapping with two
-required fields, both non-empty strings:
+required fields, both non-empty strings, plus an optional mutation scope:
 
 | Field | Meaning |
 |-------|---------|
 | `id`   | a stable identifier for the contract (names receipts and candidates in later phases) |
 | `task` | the description of the change to make |
+| `writable_paths` | optional list of non-empty workspace-relative patterns; an omitted list permits no E4 mutation |
 
-Unknown extra fields are ignored, so later phases can extend a contract by
-adding keys rather than changing the parser.
+Patterns use Python `fnmatch` semantics, including `*` crossing `/`. Unknown
+extra fields remain ignored, so later phases can extend a contract by adding
+keys rather than changing the parser.
 
 ### Exit codes
 
@@ -53,6 +55,9 @@ The {term}`exit code`s are a stable contract:
 | `4` | `CONTRACT_INVALID_YAML` | `CONTRACT` is not valid YAML |
 | `5` | `CONTRACT_MISSING_FIELD` | a required field is absent, empty, or the wrong type |
 | `6` | `REPO_UNAVAILABLE` | `--repo` is missing or not a directory |
+| `7` | `INVALID_REQUEST` | malformed versioned protocol input |
+| `8` | `NO_CANDIDATE` | accepted delivery produced no candidate |
+| `9` | `MUTATION_REFUSED` | accepted replacement was safely refused; JSON carries the exact cause |
 
 Exit code `1` is deliberately unused: Python reports an uncaught internal
 error as `1`, so reserving it keeps a crash distinguishable from a {term}`refusal`.
@@ -67,6 +72,8 @@ install step. Write a contract:
 # greeting.yaml
 id: greeting
 task: Replace the greeting text
+writable_paths:
+  - greeting.py
 ```
 
 Run `check` against the current checkout:
@@ -203,8 +210,9 @@ Worktree isolation protects the caller's working tree, index, branch, and
 sandbox. `COMMAND` can write arbitrary absolute paths, mutate shared Git state,
 or deliberately escape its POSIX process group; E3 does not prevent those
 actions. Therefore it accepts only a trusted command expected to run
-synchronously. Git is an explicit runtime requirement. Writable-path rules and
-validation arrive in E4 and E5. Command output is spooled to temporary storage
+synchronously. Git is an explicit runtime requirement. E4's writable-path and
+revision rules apply only when the attempt uses its bounded replacement tool;
+E5 connects that tool to delivery and validation. Command output is spooled to temporary storage
 to bound engine memory and avoid a descendant-held pipe; E3 does not impose a
 byte quota on that storage, just as it does not limit files written by the
 trusted command itself.
@@ -237,10 +245,33 @@ export SATYRN_ENGINE_REPO=/path/to/satyrn-engine-checkout
 engine with `uv run --project $SATYRN_ENGINE_REPO satyrn-engine protocol`,
 so `uv` must be on `PATH`.
 
-Install the package **once**, globally. Do not also load either extension with pi's
+Install the package **once**, globally. Do not also load any extension with pi's
 `-e` flag: pi then registers `/implement` twice and suffixes the command
 (`/implement:1`), so the plain name stops dispatching (recorded in the
 harvest index, "The /implement command vanished").
+
+### Bounded replacement
+
+E4 adds a conditional replacement for Pi's `edit` tool. It is deliberately not
+enabled by a normal package install: E5's parent attempt must first supply a
+versioned `SATYRN_MUTATION_CONTEXT` containing the disposable workspace,
+contract, and captured revisions. Without that context, Pi keeps its built-in
+`edit` tool.
+
+With context, exactly one `edits[]` entry is sent over the existing one-shot
+protocol. Python normalizes the workspace-relative path, matches
+`writable_paths`, checks the exact-byte SHA-256 {term}`revision`, and requires
+`oldText` to occur once. A success atomically publishes the replacement and
+returns the next revision. A refusal returns one of `PATH_UNDECLARED`,
+`REVISION_STALE`, `ANCHOR_MISSING`, `ANCHOR_AMBIGUOUS`, or
+`MUTATION_FAILED`, with protocol exit `9`; the TypeScript tool reports the
+error and does not advance its revision map.
+
+This is an engine building block, not yet a complete `/implement` run. The
+marked `tests/test_integration_mutator.py` fixture and
+`tools/exercise_mutator.mjs` prove the shipped Pi adapter → TypeScript → Python
+path without calling a model. E5 is the phase that will create the context and
+run a real attempt inside E3's disposable worktree.
 
 ### Repeated-call protection
 
@@ -256,4 +287,5 @@ The state is local to one Pi registration and never carries into another
 session or replay. The guard only sees schema-valid calls that reach
 `tool_call`; it cannot stop a loop in Pi's earlier argument validation. It also
 does not detect churn where calls keep changing their content. Contract-aware
-file and symbol protection belongs to E4 rather than this always-on check.
+path and revision enforcement belongs to E4's bounded replacement rather than
+this always-on check; symbol analysis remains deferred.
