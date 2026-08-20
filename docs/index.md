@@ -42,8 +42,13 @@ Phases completed, each with its design spec and implementation plan:
   window. ({doc}`spec
   <superpowers/specs/2026-08-20-e3-5-loop-breaker-design>`, {doc}`plan
   <superpowers/plans/2026-08-20-e3-5-loop-breaker>`)
+- _E4_ — one bounded replacement. Pi's conditional `edit` adapter sends one
+  exact replacement to Python for writable-path, revision, and unique-anchor
+  enforcement. ({doc}`spec
+  <superpowers/specs/2026-08-20-e4-bounded-replacement-design>`, {doc}`plan
+  <superpowers/plans/2026-08-20-e4-bounded-replacement>`)
 
-The roadmap and the next phase (E4 — One bounded replacement) live in
+The roadmap and the next phase (E5 — One real attempt) live in
 [`ROADMAP.md`](https://github.com/pauleveritt/satyrn-engine/blob/main/ROADMAP.md).
 
 ## What is Satyrn Engine?
@@ -53,7 +58,8 @@ The roadmap and the next phase (E4 — One bounded replacement) live in
 The engine is the Python core of a two-repo effort: a library and CLI
 that parse and validate a bounded contract and deliver a candidate change as a
 reviewable ref recorded in a receipt — never writing to the caller's tree. E4
-adds writable-path and revision enforcement; E5 adds validation. The sibling repository,
+adds writable-path and revision enforcement; E5 connects it to one real
+validated attempt. The sibling repository,
 satyrn-evals, runs the workloads and measurements; the features built
 into the engine are the ones that evidence surfaces. What the engine
 deliberately does **not** own: workloads, grading, repeated runs,
@@ -82,9 +88,9 @@ One phase at a time, each shipping one user-visible behavior:
 - **E3.5 — The guards, written here.** The loop breaker is implemented fresh
   and proven against replay fixtures. *Complete.*
 - **E4 — One bounded replacement.** A single file replacement runs Pi →
-  TypeScript → Python with revision checking. *Not started.*
+  TypeScript → Python with revision checking. *Complete.*
 - **E5 — One real attempt.** `attempt` and `/implement` complete one named
-  task end to end. *Not started.*
+  task end to end. *Current.*
 - **E6 — Packaged.** The same `/implement` works outside either source
   checkout. *Not started.*
 

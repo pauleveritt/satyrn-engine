@@ -160,6 +160,76 @@ schema refusal, while the two excerpt fixtures now carry explicit
 resolves `engine.ts` from the installed package manifest, loads it, observes
 registration, and dispatches six calls through its real handler.
 
+## E4 verification record — 2026-08-21
+
+The corrected bounded-replacement phase was checked through the hermetic
+Python core, the shipped TypeScript policies, and the real TypeScript → Python
+process path:
+
+```console
+.venv/bin/pytest -q
+# 161 passed, 61 deselected
+
+.venv/bin/pytest -m integration -q
+# 60 passed, 1 platform skip, 161 deselected
+
+.venv/bin/pytest -m "" --cov --cov-report=term -q
+# 221 passed, 1 platform skip; 827 statements and 214 branches, 100%
+
+node --test --experimental-strip-types --experimental-test-coverage \
+  --test-coverage-lines=100 --test-coverage-branches=100 \
+  --test-coverage-functions=100 \
+  --test-coverage-include=packages/engine/mutator.ts tests/test_mutator.mjs
+# 17 passed; mutator.ts 100% lines, branches, and functions
+
+node --test --experimental-strip-types tests/test_transport.mjs
+# 3 passed
+
+.venv/bin/ruff check .
+.venv/bin/pyrefly check
+uv run --group docs sphinx-build -W -b html docs docs/_build/html
+git diff --check aa918b0 --
+# all passed
+```
+
+Named E4 evidence includes:
+
+- Python success and next revision:
+  `test_replaces_one_unique_anchor_and_returns_next_revision`;
+- the five policy refusals and unchanged-file siblings:
+  `test_refuses_undeclared_path_without_changing_file`,
+  `test_refuses_unavailable_revision_after_path_and_target_checks`,
+  `test_refuses_stale_revision_without_changing_file`,
+  `test_refuses_missing_anchor_without_changing_file`, and
+  `test_refuses_ambiguous_anchor_without_changing_file`;
+- filesystem boundary and atomicity:
+  `test_refuses_symlink_escape_without_changing_external_file`, the internal
+  symlink leaf/component siblings,
+  `test_atomic_replace_failure_is_named_and_removes_temporary`, and
+  `test_crlf_bytes_are_preserved_outside_replacement`;
+- revision-map behavior in the shipped adapter: `success advances the revision
+  used by the next request`, `a refusal does not advance the revision`, and
+  `missing revision reaches the engine as an explicit null`;
+- Pi exception containment: `indeterminate engine outcomes poison the mutation
+  context`, `base response parser rejects non-object JSON without leaking a
+  type error`, and `a mismatched successful path is a contained malformed
+  response`;
+- ordinary-session safety: `default extension leaves built-in edit alone
+  without explicit context`;
+- real vertical slice:
+  `test_shipped_adapter_replaces_one_anchor_through_real_engine` and its
+  parameterized unavailable, stale, undeclared, missing, and ambiguous refusal
+  siblings plus the real internal-symlink refusal/regular-file success pair;
+- package surface:
+  `test_pi_installs_and_dispatches_package_extension_in_temporary_settings`,
+  pinning all three extension paths and dispatching the shipped loop breaker.
+
+The real refusal fixture snapshots the target before each process run and
+compares its bytes afterward. The success fixture computes the expected next
+SHA independently from the bytes on disk. Together they prove that the JSON
+code, revision map, and filesystem result agree rather than merely exercising
+three implementations of the same assertion.
+
 The disciplines review holds you to:
 
 - **Concept budget** — new jargon is a cost against a 5–10 h/wk
