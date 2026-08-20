@@ -22,6 +22,13 @@ repository. That work is now phase **E3.5** below: written fresh here, not
 transplanted, using `local-ai-pi`'s guard and its replay fixtures as
 reference. See `BRIEF.md`'s Provenance section for the same correction.
 
+**Correction, 2026-08-20.** Commit `565e652` proves that the files named above
+were in fact copied into this repository. The second sentence of the preceding
+correction is therefore false, but its phase decision still stands: the copied
+implementation is superseded and E3.5 replaces it with fresh loop-breaker code
+proven against the retained evidence fixtures. The copied preserve-symbols
+guard is removed; contract-aware mutation checks arrive in E4.
+
 **Phase E1 — It installs and refuses. Complete.** `satyrn-engine check
 --repo REPO CONTRACT` parses, validates, and path-lints a contract and
 refuses with a named cause and a stable exit code — zero model calls, zero
