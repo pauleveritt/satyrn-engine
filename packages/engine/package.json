@@ -4,6 +4,6 @@
 	"keywords": ["pi-package"],
 	"type": "module",
 	"pi": {
-		"extensions": ["./engine.ts", "./orchestrator.ts"]
+		"extensions": ["./engine.ts", "./orchestrator.ts", "./mutator.ts"]
 	}
 }
