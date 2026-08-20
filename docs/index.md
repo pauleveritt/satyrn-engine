@@ -37,8 +37,13 @@ Phases completed, each with its design spec and implementation plan:
   named in that receipt. ({doc}`spec
   <superpowers/specs/2026-08-18-e3-delivery-design>`, {doc}`plan
   <superpowers/plans/2026-08-18-e3-delivery>`)
+- _E3.5_ — the loop breaker, written here. A sixth identical tool call is
+  refused while five matching admitted calls remain in the twenty-call
+  window. ({doc}`spec
+  <superpowers/specs/2026-08-20-e3-5-loop-breaker-design>`, {doc}`plan
+  <superpowers/plans/2026-08-20-e3-5-loop-breaker>`)
 
-The roadmap and the next phase (E3.5 — The guards, written here) live in
+The roadmap and the next phase (E4 — One bounded replacement) live in
 [`ROADMAP.md`](https://github.com/pauleveritt/satyrn-engine/blob/main/ROADMAP.md).
 
 ## What is Satyrn Engine?
@@ -75,7 +80,7 @@ One phase at a time, each shipping one user-visible behavior:
 - **E3 — Delivery.** `deliver` emits a receipt for one isolated attempt and
   publishes a candidate ref only for a successful changed tree. *Complete.*
 - **E3.5 — The guards, written here.** The loop breaker is implemented fresh
-  and proven against replay fixtures. *Not started.*
+  and proven against replay fixtures. *Complete.*
 - **E4 — One bounded replacement.** A single file replacement runs Pi →
   TypeScript → Python with revision checking. *Not started.*
 - **E5 — One real attempt.** `attempt` and `/implement` complete one named

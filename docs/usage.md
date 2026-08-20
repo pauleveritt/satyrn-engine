@@ -226,10 +226,10 @@ and the adapter's own transport refusals (`ENGINE_START_FAILED`,
 `ENGINE_TIMEOUT`, `ENGINE_CRASHED`, `ENGINE_MALFORMED_RESPONSE`) when the
 engine process itself cannot serve the request.
 
-Install the adapter next to the guards:
+Install the Pi package from the engine checkout:
 
 ```console
-cp packages/engine/engine.ts packages/engine/orchestrator.ts ~/.pi/agent/extensions/
+pi install /path/to/satyrn-engine/packages/engine
 export SATYRN_ENGINE_REPO=/path/to/satyrn-engine-checkout
 ```
 
@@ -237,7 +237,23 @@ export SATYRN_ENGINE_REPO=/path/to/satyrn-engine-checkout
 engine with `uv run --project $SATYRN_ENGINE_REPO satyrn-engine protocol`,
 so `uv` must be on `PATH`.
 
-Install the adapter **once**, globally. Do not also load it with pi's
+Install the package **once**, globally. Do not also load either extension with pi's
 `-e` flag: pi then registers `/implement` twice and suffixes the command
 (`/implement:1`), so the plain name stops dispatching (recorded in the
 harvest index, "The /implement command vanished").
+
+### Repeated-call protection
+
+The same package installs a TypeScript {term}`guard` on Pi's ordinary
+`tool_call` hook. It remembers the last twenty admitted calls. When five calls
+in that window have the same tool name and structurally identical JSON input,
+the sixth is refused with a message asking the model to take a different
+action. Object key order does not matter; array order does. A refused retry is
+not added to the window, so repeating it remains blocked. Each block appends a
+`loop_broken` entry.
+
+The state is local to one Pi registration and never carries into another
+session or replay. The guard only sees schema-valid calls that reach
+`tool_call`; it cannot stop a loop in Pi's earlier argument validation. It also
+does not detect churn where calls keep changing their content. Contract-aware
+file and symbol protection belongs to E4 rather than this always-on check.

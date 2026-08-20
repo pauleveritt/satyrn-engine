@@ -30,6 +30,7 @@ The engine owns:
 
 - contract parsing and validation;
 - candidate worktree, commit-or-discard, and receipt behavior;
+- the Pi-side loop breaker for repeated identical tool calls;
 - the Pi package and its thin TypeScript adapter;
 - the internal Pi-adapter protocol and its compatibility fixtures.
 
@@ -87,8 +88,12 @@ Phases completed, each with its design spec and implementation plan:
   receipt. A successful changed tree also publishes one reviewable candidate
   ref.
   ([_spec_](docs/superpowers/specs/2026-08-18-e3-delivery-design.md), [_plan_](docs/superpowers/plans/2026-08-18-e3-delivery.md))
+- _E3.5_ — the loop breaker, written here. The Pi package refuses a sixth
+  identical tool call while five matching admitted calls remain in its
+  twenty-call window, with registration-local state and `loop_broken`
+  telemetry. ([_spec_](docs/superpowers/specs/2026-08-20-e3-5-loop-breaker-design.md), [_plan_](docs/superpowers/plans/2026-08-20-e3-5-loop-breaker.md))
 
-The roadmap and the next phase (E3.5 — The guards, written here) live in
+The roadmap and the next phase (E4 — One bounded replacement) live in
 [`ROADMAP.md`](ROADMAP.md).
 
 > More: [architecture](docs/architecture.md) — why the engine is one
@@ -102,6 +107,11 @@ This repository presumes `uv`, `ruff`, `pyrefly`, and `pytest`:
 uv sync                # install the project and the dev group
 uv run pytest          # default, hermetic suite: no model, no network, no subprocess
 uv run pytest -m "" --cov  # default + local integration tier, 100% branch coverage
+node --test --experimental-strip-types --experimental-test-coverage \
+  --test-coverage-lines=100 --test-coverage-branches=100 \
+  --test-coverage-functions=100 \
+  --test-coverage-include=packages/engine/engine.ts tests/test_loop_breaker.mjs
+node --experimental-strip-types tools/replay_guards.mjs
 uv run ruff check .    # lint
 uv run pyrefly check   # type-check
 ```

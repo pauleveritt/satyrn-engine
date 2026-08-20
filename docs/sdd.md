@@ -65,6 +65,59 @@ finishes before Git cleanup. The registration-interrupt fixture compares the
 complete pre/post `git worktree list --porcelain -z` state, so it also rejects a
 stale prunable registration.
 
+## E3.5 verification record — 2026-08-20
+
+The completed loop-breaker phase was checked against the Python repository
+gates and an independent Node coverage gate for the shipped TypeScript:
+
+```console
+.venv/bin/pytest -q
+# 103 passed, 51 deselected
+
+.venv/bin/pytest -m integration -q
+# 50 passed, 1 platform skip, 103 deselected
+
+.venv/bin/pytest -m "" --cov -q
+# 153 passed, 1 platform skip; 100% Python statements and branches
+
+node --test --experimental-strip-types --experimental-test-coverage \
+  --test-coverage-lines=100 --test-coverage-branches=100 \
+  --test-coverage-functions=100 \
+  --test-coverage-include=packages/engine/engine.ts tests/test_loop_breaker.mjs
+# 14 passed; engine.ts 100% lines, branches, and functions
+
+node --experimental-strip-types tools/replay_guards.mjs
+# 6 fixtures matched
+
+.venv/bin/ruff check .
+.venv/bin/pyrefly check
+uv run --group docs sphinx-build -W -b html docs docs/_build/html
+git diff --check
+# all passed
+```
+
+Named evidence includes:
+
+- threshold and steering: `the sixth identical admitted call is refused with
+  typed telemetry`, with `a varied sixth call is admitted` as its sibling;
+- rolling state: `twenty newer admitted calls evict an older key` and `blocked
+  calls never enter the admitted window`;
+- registration lifetime: `each extension registration owns an empty breaker`;
+- Pi blast radius: `telemetry failure cannot escape or admit an already
+  blocked call`, `unexpected canonicalization errors cannot escape the Pi
+  handler`, and `unexpected Pi event access errors cannot escape the handler`;
+- real artifact replay:
+  `test_all_evidence_fixtures_replay_in_one_process`, including the 60-call
+  anchor-mismatch fixture (46 blocks, first at call 14), its healthy siblings,
+  and the six-call runaway excerpt (one block at call 6);
+- package surface: `test_pi_installs_package_only_in_temporary_settings`.
+
+Before replacement, the copied bundle failed six of the first eleven Node
+behavior tests. Its module-scope state also made an all-fixture replay report
+two runaway blocks instead of the committed expectation of one. Those failures
+are the non-vacuity evidence for the fresh implementation and its
+registration-local state.
+
 The disciplines review holds you to:
 
 - **Concept budget** — new jargon is a cost against a 5–10 h/wk

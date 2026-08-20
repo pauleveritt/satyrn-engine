@@ -58,6 +58,28 @@ escapes the turn. So the adapter enforces a 30-second deadline of its own
 and converts every transport failure — spawn error, timeout, crash,
 malformed response — into a named refusal instead of letting it escape.
 
+## Why the loop breaker stays in TypeScript
+
+The loop breaker runs on Pi's ordinary `tool_call` hook, not only during a
+deliberate `/implement`. Sending every tool call through Python would make a
+missing or broken sidecar capable of breaking an otherwise ordinary Pi
+session. The guard therefore remains a zero-dependency TypeScript check beside
+the adapter.
+
+One extension registration owns one rolling window of twenty admitted call
+keys. Five matching keys are allowed; the next exact repeat is blocked and
+recorded as `loop_broken`. Blocked calls do not enter the window. Input is
+canonical JSON, so recursively reordered object keys compare equal while array
+order remains meaningful. Unsupported or cyclic input is admitted rather than
+guessed at.
+
+Pi does not catch an exception escaping tool-call dispatch. Inspection and
+telemetry therefore have separate exception boundaries: an inspection error
+admits the call without breaking Pi, while a telemetry failure cannot reverse
+an already-made block decision. This mechanism only handles exact repetition.
+Schema-validation loops happen before the hook, and content churn produces
+different keys. Contract-aware mutation enforcement starts in E4.
+
 ## Refusals, split by side
 
 Check and protocol engine causes (`2`–`7`): `USAGE`, `CONTRACT_UNREADABLE`,

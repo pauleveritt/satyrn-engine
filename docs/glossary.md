@@ -49,6 +49,13 @@ exit code
   candidate; and ``1`` is reserved for an uncaught internal error — a crash,
   never a refusal. A delivery receipt's ``code`` gives the precise cause.
 
+guard
+  A small TypeScript check that observes an ordinary Pi tool call before it
+  runs. E3.5 ships one guard: the loop breaker, which remembers the last twenty
+  admitted call keys and refuses a sixth exact repeat while five matches remain
+  in that window. Its state belongs to one extension registration. It is not a
+  mutation policy or a Python engine operation.
+
 integration tier
   The marked test tier (``@pytest.mark.integration``) that starts real
   subprocesses and, for delivery, real local Git repositories and commands.

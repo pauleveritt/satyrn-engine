@@ -63,6 +63,20 @@ The caller's checkout, index, branch, and `HEAD` remain untouched. Spec and plan
 `docs/superpowers/specs/2026-08-18-e3-delivery-design.md`,
 `docs/superpowers/plans/2026-08-18-e3-delivery.md`.
 
+**Phase E3.5 — The loop breaker, written here. Complete.** The Pi package
+keeps the last twenty admitted call keys and refuses a sixth exact repeat when
+five matching calls remain in that window. State is local to one extension
+registration; each block records `loop_broken`. The shipped TypeScript was
+written fresh and all six retained evidence fixtures replay against it in one
+process. Spec and plan:
+`docs/superpowers/specs/2026-08-20-e3-5-loop-breaker-design.md`,
+`docs/superpowers/plans/2026-08-20-e3-5-loop-breaker.md`.
+
+**Phase E4 — One bounded replacement. Not started; the current phase.** A
+single file replacement runs Pi → TypeScript → Python with revision checking.
+Mutation policy is contract-aware here; the contract-blind preserve-symbols
+guard removed in E3.5 does not return.
+
 ## Concept budget
 
 *Every term below is a cost against a 5–10 h/wk volunteer's ability to hold
@@ -70,10 +84,9 @@ the design in mind. Checked and updated at the end of each cycle; a term
 earns its place by naming something the design actually needs, not by being
 convenient shorthand.*
 
-Seed term not yet defined in this repository's own words — define it when the
-phase that needs it lands: **guard**. Defined so far: **contract**, with E1's
-working terms; **adapter** and **protocol** (E2); and **candidate**,
-**receipt**, and **worktree isolation** (E3), in `docs/glossary.md`.
+Defined terms: **contract**, with E1's working terms; **adapter** and
+**protocol** (E2); **candidate**, **receipt**, and **worktree isolation**
+(E3); and **guard** (E3.5), in `docs/glossary.md`.
 
 ## Phases
 
@@ -82,8 +95,8 @@ working terms; **adapter** and **protocol** (E2); and **candidate**,
 | E1 | It installs and refuses | `check` parses, validates, path-lints, and refuses a contract with a named cause, zero model calls, zero processes started | **done** |
 | E2 | The adapter reaches E1 | `/implement CONTRACT` reaches the same refusal through the TypeScript adapter, on POSIX and Windows — the architecture gate | **done** (POSIX recorded; Windows leg deferred, see Backlog) |
 | E3 | Delivery | `deliver` runs a trivial executable in an isolated worktree, always emits a receipt, and publishes a candidate ref only for a successful changed tree | **done** |
-| E3.5 | The guards, written here | The loop-breaker guard — the one check whose job doesn't already belong to the mutation engine (E4) — is implemented fresh in this repository and proven against replay fixtures, so `pi install` ships a guard that actually exists rather than one asserted in prose | not started |
-| E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | not started |
+| E3.5 | The guards, written here | The loop-breaker guard — the one check whose job doesn't already belong to the mutation engine (E4) — is implemented fresh in this repository and proven against replay fixtures, so `pi install` ships a guard that actually exists rather than one asserted in prose | **done** |
+| E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | **current** |
 | E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | not started |
 | E6 | Packaged | The same `/implement` works outside either source checkout, on POSIX and Windows | not started |
 
@@ -127,6 +140,11 @@ when the roadmap outgrows the front page.
   ref.
   Spec: `docs/superpowers/specs/2026-08-18-e3-delivery-design.md`. Plan:
   `docs/superpowers/plans/2026-08-18-e3-delivery.md`.
+- **E3.5 — The loop breaker, written here.** One registration-local
+  TypeScript guard refuses repeated identical tool calls and records each
+  refusal. Six retained evidence fixtures replay through the shipped package.
+  Spec: `docs/superpowers/specs/2026-08-20-e3-5-loop-breaker-design.md`.
+  Plan: `docs/superpowers/plans/2026-08-20-e3-5-loop-breaker.md`.
 
 ## Workflow
 
@@ -137,5 +155,6 @@ model, network, or subprocess; process behavior lives in a small marked
 integration tier that does not run in CI. The tier's first tests
 (`tests/test_integration_protocol.py`, E2) start the engine as a subprocess
 over the JSON protocol; E3 adds real local Git and process-group evidence in
-`tests/test_integration_delivery.py`. Run the tier explicitly with
+`tests/test_integration_delivery.py`; E3.5 adds Node replay and a temporary Pi
+package install in `tests/test_integration_guards.py`. Run the tier explicitly with
 `uv run pytest -m integration`.

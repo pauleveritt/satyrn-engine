@@ -10,14 +10,10 @@ watch-docs:
 docs:
     uv run --group docs sphinx-build -W -b html docs docs/_build/html
 
-# Launch pi with the engine's adapter wired to this checkout. The adapter
-# must be installed globally (see docs/usage.md — `cp packages/engine/
-# orchestrator.ts ~/.pi/agent/extensions/`). Do NOT also pass it with `-e`:
-# pi then registers it twice and suffixes the command (`/implement:1`),
-# so the plain `/implement` stops dispatching. This recipe sets
-# SATYRN_ENGINE_REPO so /implement spawns this checkout. Run from the repo
-# root.
+# Launch pi with the package wired to this checkout. Install it once with
+# `pi install /path/to/satyrn-engine/packages/engine` (see docs/usage.md).
+# Do NOT also pass either extension with `-e`: duplicate registration suffixes
+# `/implement` as `/implement:1`. This recipe only sets SATYRN_ENGINE_REPO so
+# /implement spawns this checkout. Run it from the repository root.
 pi-engine:
-    @test -f ~/.pi/agent/extensions/orchestrator.ts \
-        || (echo "adapter not installed: cp packages/engine/orchestrator.ts ~/.pi/agent/extensions/ (see docs/usage.md)" >&2 && exit 1)
     SATYRN_ENGINE_REPO=$$PWD pi
