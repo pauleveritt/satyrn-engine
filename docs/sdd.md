@@ -238,13 +238,13 @@ recorded local model run:
 
 ```console
 uv run pytest -q
-# 176 passed, 63 deselected
+# 177 passed, 63 deselected
 
 uv run pytest -m integration -q
-# 62 passed, 1 platform skip, 176 deselected
+# 62 passed, 1 platform skip, 177 deselected
 
 uv run pytest -m "" --cov --cov-report=term -q
-# 238 passed, 1 platform skip; 1043 statements and 254 branches, 100%
+# 239 passed, 1 platform skip; 1051 statements and 254 branches, 100%
 
 node --experimental-strip-types --test \
   tests/test_loop_breaker.mjs tests/test_mutator.mjs tests/test_orchestrator.mjs
