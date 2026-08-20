@@ -1,101 +1,148 @@
 #!/usr/bin/env node
 
-/**
- * Replay recorded tool calls through the shipped TypeScript engine bundle.
- *
- * This deliberately uses a tiny ExtensionAPI double rather than copying the
- * loop-breaker algorithm into Python. The replay therefore tests the artifact
- * that contributors install, with no model or network involved.
- *
- * It imports `packages/engine/engine.ts` directly — the shipped engine
- * bundle, whose default export registers both guards (loop-breaker and
- * preserve-symbols) on `tool_call`. On the loop fixtures the calls are
- * `bash ls -R`, which preserve-symbols (edit-only) ignores, so the expected
- * block counts are unchanged from the standalone-loop-breaker era.
- *
- * **Fixtures must contain only calls that reach `beforeToolCall`.** Pi
- * validates tool arguments at `agent-loop.js:404` and invokes the hook on the
- * next line, inside the same `try` — so a call that fails schema validation
- * throws one line above every `tool_call` guard and is never seen by one.
- * A fixture extracted naively from `tool_execution_start` includes those
- * calls, and this harness will then report a guard blocking a loop it cannot
- * reach live. That happened: a fixture of 57 calls reported 44 blocks from
- * call 7, and the live run blocked nothing, because 52 of the 57 were
- * validation failures. Filter on the `tool_execution_end` result: drop
- * anything beginning "Validation failed for tool".
- */
-
-import { readFile } from "node:fs/promises";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { readFile, readdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const extensionPath = resolve(root, "packages/engine/engine.ts");
-const { default: guards } = await import(pathToFileURL(extensionPath));
+const fixtureDirectory = resolve(root, "tests/fixtures/guards");
+const extensionUrl = pathToFileURL(resolve(root, "packages/engine/engine.ts"));
 
-function loadFixture(contents) {
-	return JSON.parse(contents);
+function isRecord(value) {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-async function replay(fixture) {
-	const handlers = new Map();
-	const entries = [];
-	guards({
-		on(event, handler) {
-			handlers.set(event, handler);
-		},
-		appendEntry(customType, data) {
-			entries.push({ customType, data });
-		},
-	});
+function nonnegativeInteger(value) {
+	return Number.isInteger(value) && value >= 0;
+}
 
-	const handler = handlers.get("tool_call");
-	if (!handler) throw new Error("guards did not register tool_call");
-
-	let blocked = 0;
-	// 1-based index of the first refusal. A blocked count alone cannot
-	// tell a guard that fires early from one that fires after the model
-	// has already wasted most of its budget, and "how soon" is the whole
-	// value of a loop breaker.
-	let firstBlock = null;
-	let index = 0;
-	for (const call of fixture.calls) {
-		index += 1;
-		if (await handler(call)) {
-			blocked += 1;
-			if (firstBlock === null) firstBlock = index;
+export function parseFixture(text, path) {
+	let value;
+	try {
+		value = JSON.parse(text);
+	} catch (error) {
+		throw new Error(`${path}: invalid JSON: ${error.message}`);
+	}
+	if (!isRecord(value)) throw new Error(`${path}: fixture must be an object`);
+	if (typeof value.name !== "string" || value.name.length === 0) {
+		throw new Error(`${path}: name must be a non-empty string`);
+	}
+	if (!Array.isArray(value.calls)) throw new Error(`${path}: calls must be an array`);
+	for (const [index, call] of value.calls.entries()) {
+		if (!isRecord(call) || typeof call.toolName !== "string" || !("input" in call)) {
+			throw new Error(`${path}: calls[${index}] must contain toolName and input`);
 		}
 	}
-	return { calls: fixture.calls.length, blocked, firstBlock, entries };
-}
-
-const fixturePaths = process.argv.slice(2);
-if (fixturePaths.length === 0) {
-	console.error("usage: node --experimental-strip-types tools/replay_guards.mjs <fixture.json>");
-	process.exit(2);
-}
-
-for (const fixturePath of fixturePaths) {
-	const fixture = loadFixture(await readFile(resolve(fixturePath), "utf8"));
-	const result = await replay(fixture);
-	const expected = fixture.expected;
-	const mismatches = [];
-	if (result.blocked !== expected.blocked)
-		mismatches.push(`blocked ${result.blocked} != ${expected.blocked}`);
-	if (result.entries.length !== expected.entries)
-		mismatches.push(`entries ${result.entries.length} != ${expected.entries}`);
-	if ("firstBlock" in expected && result.firstBlock !== expected.firstBlock)
-		mismatches.push(`firstBlock ${result.firstBlock} != ${expected.firstBlock}`);
-	if (mismatches.length > 0) {
-		throw new Error(`${fixture.name}: ${mismatches.join("; ")}`);
+	if (!isRecord(value.expected)) throw new Error(`${path}: expected must be an object`);
+	if (!nonnegativeInteger(value.expected.blocked)) {
+		throw new Error(`${path}: expected.blocked must be a non-negative integer`);
 	}
-	console.log(
-		JSON.stringify({
-			name: fixture.name,
-			calls: result.calls,
-			blocked: result.blocked,
-			firstBlock: result.firstBlock,
-			entries: result.entries.length,
-		}),
+	if (!nonnegativeInteger(value.expected.entries)) {
+		throw new Error(`${path}: expected.entries must be a non-negative integer`);
+	}
+	if (
+		"firstBlock" in value.expected &&
+		value.expected.firstBlock !== null &&
+		(!Number.isInteger(value.expected.firstBlock) || value.expected.firstBlock < 1)
+	) {
+		throw new Error(`${path}: expected.firstBlock must be null or a positive integer`);
+	}
+	return value;
+}
+
+export async function replayFixture(registerExtension, fixture) {
+	let handler;
+	const entries = [];
+	registerExtension({
+		on(event, candidate) {
+			if (event === "tool_call") handler = candidate;
+		},
+		appendEntry(kind, data) {
+			entries.push({ kind, data });
+		},
+	});
+	if (typeof handler !== "function") {
+		throw new Error(`${fixture.name}: extension did not register tool_call`);
+	}
+
+	let blocked = 0;
+	let firstBlock = null;
+	for (const [index, call] of fixture.calls.entries()) {
+		if ((await handler(call))?.block === true) {
+			blocked += 1;
+			firstBlock ??= index + 1;
+		}
+	}
+	return {
+		name: fixture.name,
+		calls: fixture.calls.length,
+		blocked,
+		firstBlock,
+		entries: entries.length,
+	};
+}
+
+function verify(fixture, observed) {
+	const mismatches = [];
+	for (const field of ["blocked", "entries"]) {
+		if (observed[field] !== fixture.expected[field]) {
+			mismatches.push(`${field} ${observed[field]} != ${fixture.expected[field]}`);
+		}
+	}
+	if (
+		"firstBlock" in fixture.expected &&
+		observed.firstBlock !== fixture.expected.firstBlock
+	) {
+		mismatches.push(
+			`firstBlock ${observed.firstBlock} != ${fixture.expected.firstBlock}`,
+		);
+	}
+	if (mismatches.length > 0) throw new Error(`${fixture.name}: ${mismatches.join("; ")}`);
+}
+
+async function defaultFixturePaths() {
+	return (await readdir(fixtureDirectory))
+		.filter((name) => name.endsWith(".json"))
+		.sort()
+		.map((name) => resolve(fixtureDirectory, name));
+}
+
+function usage(stream) {
+	stream.write(
+		"usage: node --experimental-strip-types tools/replay_guards.mjs [FIXTURE ...]\n",
 	);
+}
+
+export async function main(arguments_, output = process.stdout, error = process.stderr) {
+	if (arguments_.includes("--help")) {
+		usage(output);
+		return 0;
+	}
+	if (arguments_.some((argument) => argument.startsWith("-"))) {
+		usage(error);
+		return 2;
+	}
+
+	try {
+		const { default: registerExtension } = await import(extensionUrl);
+		const paths = arguments_.length === 0 ? await defaultFixturePaths() : arguments_;
+		if (paths.length === 0) throw new Error("no guard fixtures found");
+		for (const path of paths) {
+			const absolutePath = resolve(path);
+			const fixture = parseFixture(await readFile(absolutePath, "utf8"), absolutePath);
+			const observed = await replayFixture(registerExtension, fixture);
+			verify(fixture, observed);
+			output.write(`${JSON.stringify(observed)}\n`);
+		}
+		return 0;
+	} catch (failure) {
+		const message = failure instanceof Error ? failure.message : String(failure);
+		error.write(`replay_guards: ${message}\n`);
+		return 1;
+	}
+}
+
+const invokedPath = process.argv[1] === undefined ? "" : resolve(process.argv[1]);
+if (invokedPath === fileURLToPath(import.meta.url)) {
+	process.exitCode = await main(process.argv.slice(2));
 }
