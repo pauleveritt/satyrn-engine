@@ -6,15 +6,20 @@ directly. Every refusal has a sibling success (binding rule 4).
 
 import io
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
 from satyrn_engine.exits import ExitCode
+from satyrn_engine.mutation import MutationCode, MutationReceipt, MutationResult
 from satyrn_engine.protocol import (
     PROTOCOL_VERSION,
+    CheckRequest,
     ProtocolError,
+    ReplaceRequest,
     parse_request,
+    render_replace_response,
     render_response,
     run_protocol,
 )
@@ -28,6 +33,27 @@ def _run(text: str | bytes) -> tuple[bytes, int]:
     stdout = io.BytesIO()
     code = run_protocol(stdin, stdout)
     return stdout.getvalue(), code
+
+
+def _replace_request(
+    repo: Path,
+    contract: Path,
+    *,
+    path: str = "app.py",
+    expected_sha256: str,
+    old_text: str = "value = 1",
+    new_text: str = "value = 2",
+) -> dict[str, object]:
+    return {
+        "version": 1,
+        "operation": "replace",
+        "repo": str(repo),
+        "contract": str(contract),
+        "path": path,
+        "expected_sha256": expected_sha256,
+        "old_text": old_text,
+        "new_text": new_text,
+    }
 
 
 def test_accepts_valid_request() -> None:
@@ -45,6 +71,56 @@ def test_accepts_valid_request() -> None:
         "code": "OK",
         "message": "",
     }
+    assert parse_request(json.dumps(request)) == CheckRequest(
+        operation="check",
+        repo=Path(__file__).parents[1],
+        contract=CONTRACTS / "valid.yaml",
+    )
+
+
+def test_accepts_replace_request_and_returns_next_revision(tmp_path: Path) -> None:
+    target = tmp_path / "app.py"
+    before = b"value = 1\n"
+    target.write_bytes(before)
+    request = _replace_request(
+        tmp_path,
+        CONTRACTS / "writable.yaml",
+        expected_sha256=sha256(before).hexdigest(),
+    )
+    request["path"] = "tests/fixtures/app.py"
+    nested = tmp_path / "tests" / "fixtures" / "app.py"
+    nested.parent.mkdir(parents=True)
+    target.replace(nested)
+
+    out, code = _run(json.dumps(request))
+
+    assert code == int(ExitCode.OK)
+    assert json.loads(out) == {
+        "version": 1,
+        "ok": True,
+        "code": "OK",
+        "message": "",
+        "result": {
+            "path": "tests/fixtures/app.py",
+            "sha256": sha256(b"value = 2\n").hexdigest(),
+        },
+    }
+    assert nested.read_bytes() == b"value = 2\n"
+
+
+def test_parse_replace_request_has_closed_shape(tmp_path: Path) -> None:
+    contract = CONTRACTS / "writable.yaml"
+    payload = _replace_request(tmp_path, contract, expected_sha256="0" * 64, new_text="")
+
+    assert parse_request(json.dumps(payload)) == ReplaceRequest(
+        operation="replace",
+        repo=tmp_path,
+        contract=contract,
+        path="app.py",
+        expected_sha256="0" * 64,
+        old_text="value = 1",
+        new_text="",
+    )
 
 
 def test_refuses_unreadable_contract() -> None:
@@ -92,6 +168,35 @@ def test_refuses_unsupported_operation() -> None:
     assert json.loads(out)["code"] == "INVALID_REQUEST"
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("repo", "."),
+        ("contract", "contract.yaml"),
+        ("path", "../app.py"),
+        ("expected_sha256", "not-a-hash"),
+        ("old_text", ""),
+        ("new_text", 1),
+    ],
+)
+def test_refuses_malformed_replace_request(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    payload = _replace_request(
+        tmp_path,
+        CONTRACTS / "writable.yaml",
+        expected_sha256="0" * 64,
+    )
+    payload[field] = value
+
+    out, code = _run(json.dumps(payload))
+
+    assert code == int(ExitCode.INVALID_REQUEST)
+    assert json.loads(out)["code"] == "INVALID_REQUEST"
+
+
 def test_refuses_unsupported_version() -> None:
     out, code = _run('{"version":2,"operation":"check","repo":".","contract":"x"}')
     assert code == int(ExitCode.INVALID_REQUEST)
@@ -119,3 +224,39 @@ def test_render_response_round_trips() -> None:
         "code": "REPO_UNAVAILABLE",
         "message": "repo is not a directory: /nonexistent",
     }
+
+
+def test_render_replace_response_round_trips_success_and_refusal() -> None:
+    success = MutationReceipt(
+        MutationCode.OK,
+        result=MutationResult(path="app.py", sha256="1" * 64),
+    )
+    refusal = MutationReceipt(MutationCode.ANCHOR_MISSING, "old_text was not found")
+
+    assert json.loads(render_replace_response(success)) == {
+        "version": 1,
+        "ok": True,
+        "code": "OK",
+        "message": "",
+        "result": {"path": "app.py", "sha256": "1" * 64},
+    }
+    assert json.loads(render_replace_response(refusal)) == {
+        "version": 1,
+        "ok": False,
+        "code": "ANCHOR_MISSING",
+        "message": "old_text was not found",
+        "result": None,
+    }
+
+
+def test_replace_contract_refusal_keeps_replace_response_shape(tmp_path: Path) -> None:
+    payload = _replace_request(
+        tmp_path,
+        tmp_path / "missing.yaml",
+        expected_sha256="0" * 64,
+    )
+
+    out, code = _run(json.dumps(payload))
+
+    assert code == int(ExitCode.CONTRACT_UNREADABLE)
+    assert json.loads(out)["result"] is None

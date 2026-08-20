@@ -23,3 +23,4 @@ class ExitCode(IntEnum):
     REPO_UNAVAILABLE = 6
     INVALID_REQUEST = 7  # the protocol surface received a malformed request
     NO_CANDIDATE = 8  # an accepted delivery operation created no candidate
+    MUTATION_REFUSED = 9  # an accepted replacement was safely refused
