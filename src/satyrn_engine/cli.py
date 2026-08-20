@@ -7,6 +7,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from .attempt import MODEL_ENV, AttemptCode, attempt
 from .check import check
 from .delivery import DEFAULT_TIMEOUT, deliver
 from .exits import ExitCode
@@ -34,6 +35,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help=f"command timeout in seconds (default: {DEFAULT_TIMEOUT:g})",
     )
+
+    attempt_parser = subparsers.add_parser(
+        "attempt",
+        help="run one Pi model attempt in the current disposable worktree",
+    )
+    attempt_parser.add_argument("--model", help=f"Pi model string; defaults to ${MODEL_ENV}")
+    attempt_parser.add_argument("contract", help="path to the contract YAML file")
     deliver_parser.add_argument("contract", help="path to the contract YAML file")
     deliver_parser.add_argument(
         "attempt_command",
@@ -81,6 +89,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     if args.command == "protocol":
         return run_protocol(sys.stdin.buffer, sys.stdout.buffer)
+    if args.command == "attempt":
+        model = args.model or os.environ.get(MODEL_ENV)
+        if not model:
+            print(f"satyrn-engine: USAGE: --model or ${MODEL_ENV} is required", file=sys.stderr)
+            return int(ExitCode.USAGE)
+        try:
+            result = attempt(Path.cwd(), Path(args.contract), model)
+        except BrokenPipeError:
+            _silence_broken_stdout()
+            return 1
+        if result.code is not AttemptCode.OK:
+            print(f"satyrn-engine: {result.code}: {result.message}", file=sys.stderr)
+        return int(result.exit_code)
     if args.command == "deliver":
         receipt = deliver(
             Path(args.repo),
