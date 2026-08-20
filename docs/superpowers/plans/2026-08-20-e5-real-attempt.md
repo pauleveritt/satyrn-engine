@@ -90,8 +90,8 @@ Steps:
 6. On nonzero Pi exit, preserve both artifacts first, then return
    `ATTEMPT_FAILED`. On any artifact failure, that failure takes precedence.
 7. Cover start failure, nonzero, empty output, no diff, binary-like diff,
-   pre-existing/symlink artifact paths, and write failures with success
-   siblings.
+   in-repository/pre-existing/symlink artifact paths, and write failures with
+   success siblings.
 
 Commit after default and integration evidence passes.
 
@@ -184,4 +184,3 @@ git diff --check
    functions for E5-owned TypeScript.
 6. Split the final history into design, implementation, and documentation
    branches so each stacked PR is understandable and independently checked.
-

@@ -4,6 +4,15 @@
 **Phase:** E5 (current)
 **Status:** accepted — implementation follows in the companion plan
 
+**Correction, 2026-08-20, before implementation:** the accepted proposal
+called patch/transcript paths "caller-owned" but did not say they must be
+outside the disposable repository. Allowing an in-repository destination
+would bypass E4's write boundary and could commit the transcript as product
+code. E5 therefore rejects either artifact destination when its existing
+parent and unresolved suffix place it inside the canonical repository. The
+normal V3 seam already supplies sibling output paths, so this closes a policy
+hole without changing that consumer.
+
 ## Goal
 
 Run one real Pi model against one contract in the current disposable Git
@@ -96,10 +105,10 @@ Two explicitly caller-owned artifact paths are the exception:
 | `SATYRN_ATTEMPT_TRANSCRIPT` | exact Pi JSONL stdout, including an empty stream |
 | `SATYRN_ATTEMPT_PATCH` | exact non-empty Git diff after the model exits |
 
-An absent variable means that artifact is not written. Transcript bytes are
-also forwarded to attempt stdout. Pi diagnostics are forwarded to attempt
-stderr. An empty diff leaves `SATYRN_ATTEMPT_PATCH` absent, matching V3's
-`NO_PATCH` distinction.
+An absent variable means that artifact is not written. Both destinations must
+be outside the canonical repository. Transcript bytes are also forwarded to
+attempt stdout. Pi diagnostics are forwarded to attempt stderr. An empty diff
+leaves `SATYRN_ATTEMPT_PATCH` absent, matching V3's `NO_PATCH` distinction.
 
 Artifact publication is atomic, exclusive, and no-follow: a sibling temporary
 file is flushed, then linked into the previously absent destination only after
