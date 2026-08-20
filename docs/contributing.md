@@ -12,6 +12,11 @@ uv run pytest            # default, hermetic suite
 uv run pytest -m integration   # local subprocess/Git tier; excluded from CI
 uv run pytest -m "" --cov      # both tiers, 100% statement + branch coverage
 node tools/replay_orchestrator.mjs   # adapter replay harness (TypeScript, no Python)
+node --test --experimental-strip-types --experimental-test-coverage \
+  --test-coverage-lines=100 --test-coverage-branches=100 \
+  --test-coverage-functions=100 \
+  --test-coverage-include=packages/engine/engine.ts tests/test_loop_breaker.mjs
+node --experimental-strip-types tools/replay_guards.mjs  # all guard evidence fixtures
 uv run ruff check .      # lint
 uv run pyrefly check     # type-check
 ```
@@ -22,6 +27,11 @@ and exercises delivery with temporary local Git repositories and real
 commands. It is excluded from the default run and from CI. The combined
 coverage command enables coverage's subprocess patch and fails below 100%
 statement or branch coverage. See {doc}`architecture`.
+
+The Node test command independently enforces 100% line, branch, and function
+coverage for the shipped loop breaker. The guard replay imports that same
+`engine.ts` and runs all six retained fixtures in one process; it uses no model
+or network.
 
 `just docs` runs the same strict Sphinx build CI runs; `just watch-docs`
 serves a live-rebuilding copy at http://127.0.0.1:8000.

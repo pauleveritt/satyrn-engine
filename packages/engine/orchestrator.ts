@@ -10,8 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
  * converts every transport failure into a named refusal. The engine's own
  * refusals pass through verbatim.
  *
- * Install: copy `engine.ts` and `orchestrator.ts` next to the package's
- * `package.json` (or into `~/.pi/agent/extensions/`), and set
+ * Install the containing package with `pi install`, then set
  * `SATYRN_ENGINE_REPO` to the engine checkout. See docs/usage.md.
  */
 
