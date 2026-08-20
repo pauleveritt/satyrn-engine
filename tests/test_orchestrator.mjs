@@ -122,7 +122,20 @@ test("check request and response stay compatible", () => {
 		code: "CONTRACT_UNREADABLE",
 		message: "missing",
 	});
-	for (const bad of ["bad", "null", "[]", "{}", '{"version":2,"ok":true,"code":"OK","message":""}']) {
+	assert.deepEqual(
+		parseResponse('{"version":1,"ok":true,"code":"OK","message":"","result":null}'),
+		{ version: 1, ok: true, code: "OK", message: "", result: null },
+	);
+	for (const bad of [
+		"bad",
+		"null",
+		"[]",
+		"{}",
+		'{"version":2,"ok":true,"code":"OK","message":""}',
+		'{"version":1,"ok":true,"code":"OTHER","message":""}',
+		'{"version":1,"ok":false,"code":"OK","message":""}',
+		'{"version":1,"ok":false,"code":"OTHER","message":""}',
+	]) {
 		assert.throws(() => parseResponse(bad), AdapterRefusal);
 	}
 });
