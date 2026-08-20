@@ -21,6 +21,10 @@ node --test --experimental-strip-types --experimental-test-coverage \
   --test-coverage-lines=100 --test-coverage-branches=100 \
   --test-coverage-functions=100 \
   --test-coverage-include=packages/engine/mutator.ts tests/test_mutator.mjs
+node --test --experimental-strip-types --experimental-test-coverage \
+  --test-coverage-lines=100 --test-coverage-branches=100 \
+  --test-coverage-functions=100 \
+  --test-coverage-include=packages/engine/orchestrator.ts tests/test_orchestrator.mjs
 uv run ruff check .      # lint
 uv run pyrefly check     # type-check
 ```
@@ -28,15 +32,17 @@ uv run pyrefly check     # type-check
 The default suite never starts a process or opens a socket (enforced
 mechanically). The integration tier spawns the engine over the {term}`protocol`,
 exercises delivery with temporary local Git repositories and real commands,
-and routes E4's shipped TypeScript mutator through the real Python process. It
-is excluded from the default run and from CI. The combined
+routes E4's shipped TypeScript mutator through the real Python process, and
+runs E5 through a fake Pi that drives that same mutation path. It is excluded
+from the default run and from CI. The combined
 coverage command enables coverage's subprocess patch and fails below 100%
 statement or branch coverage. See {doc}`architecture`.
 
 The Node test commands independently enforce 100% line, branch, and function
-coverage for the shipped loop breaker and bounded replacement adapter. The
-guard replay imports that same `engine.ts` and runs all six retained fixtures
-in one process; neither Node behavior suite uses a model or network.
+coverage for the shipped loop breaker, bounded replacement adapter, and E5
+orchestrator. The guard replay imports that same `engine.ts` and runs all six
+retained fixtures in one process; none of the Node behavior suites uses a model
+or network.
 
 `just docs` runs the same strict Sphinx build CI runs; `just watch-docs`
 serves a live-rebuilding copy at http://127.0.0.1:8000.

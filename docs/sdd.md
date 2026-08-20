@@ -230,6 +230,71 @@ SHA independently from the bytes on disk. Together they prove that the JSON
 code, revision map, and filesystem result agree rather than merely exercising
 three implementations of the same assertion.
 
+## E5 verification record — 2026-08-20
+
+The one-real-attempt phase was checked through the hermetic Python core, real
+Git and subprocess integration, all three shipped TypeScript policies, and one
+recorded local model run:
+
+```console
+uv run pytest -q
+# 176 passed, 63 deselected
+
+uv run pytest -m integration -q
+# 62 passed, 1 platform skip, 176 deselected
+
+uv run pytest -m "" --cov --cov-report=term -q
+# 238 passed, 1 platform skip; 1043 statements and 254 branches, 100%
+
+node --experimental-strip-types --test \
+  tests/test_loop_breaker.mjs tests/test_mutator.mjs tests/test_orchestrator.mjs
+# 38 passed
+
+node --test --experimental-strip-types --experimental-test-coverage \
+  --test-coverage-lines=100 --test-coverage-branches=100 \
+  --test-coverage-functions=100 \
+  --test-coverage-include=packages/engine/orchestrator.ts \
+  tests/test_orchestrator.mjs
+# 8 passed; orchestrator.ts 100% lines, branches, and functions
+
+node --experimental-strip-types tools/replay_guards.mjs
+node --experimental-strip-types tools/replay_orchestrator.mjs
+# 6 guard fixtures and all adapter replay cases matched
+
+uv run ruff check .
+uv run pyrefly check
+uv run --group docs sphinx-build -W -b html docs docs/_build/html
+git diff --check
+# all passed
+```
+
+Named E5 evidence includes:
+
+- hermetic child shape: `test_prompt_and_pi_command_are_small_and_hermetic`;
+- exact artifact and mutation-context transport:
+  `test_attempt_success_exports_exact_artifacts_and_context`;
+- refusal and artifact preservation:
+  `test_pi_nonzero_preserves_artifacts_then_refuses` and
+  `test_attempt_preserves_transcript_for_no_change_failure_and_refusal`;
+- the real E4 path under a fake Pi:
+  `test_attempt_uses_shipped_e4_mutator_and_exports_artifacts`;
+- the complete isolation boundary:
+  `test_e3_delivery_wraps_same_attempt_and_keeps_source_clean`;
+- TypeScript transport containment: `delivery converts every transport
+  failure` and `implement handler reports configuration, success, refusal,
+  and crash`.
+
+The recorded live run used Pi 0.84.1 and
+`omlx/gemma-4-12B-it-MLX-8bit`. From base
+`77ec376381ce7a41d2365166b3035de7b60fcecf`, the model read `app.py` and used
+one bounded edit to change its return value. Delivery published candidate
+`465431a480a21c72cb39274475afceb39eaac99b` at
+`refs/satyrn/candidates/e5-live-answer/head`; the source remained clean at the
+original base. The exact 50-line, 13,967-byte transcript had SHA-256
+`db7958d09b9d35d35872158e69ae05f4729d539fdd894706acaae8c9efc12f77`.
+The transcript itself remains an external evidence artifact and is not copied
+into the repository.
+
 The disciplines review holds you to:
 
 - **Concept budget** — new jargon is a cost against a 5–10 h/wk

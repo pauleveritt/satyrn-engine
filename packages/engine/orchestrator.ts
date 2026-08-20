@@ -5,14 +5,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /**
  * The adapter — makes the Python engine reachable inside Pi as
- * `/implement CONTRACT`. Starts the engine as a subprocess
- * (`uv run --project $SATYRN_ENGINE_REPO satyrn-engine protocol`), sends
- * one versioned JSON request on stdin, reads one JSON response, and
- * converts every transport failure into a named refusal. The engine's own
- * refusals pass through verbatim.
+ * `/implement CONTRACT`. Starts E3 delivery around one E5 attempt, reads its
+ * versioned receipt, and converts every transport failure into a named
+ * refusal. The engine's own refusals pass through verbatim. The one-shot
+ * protocol below remains the transport used by bounded mutation calls.
  *
  * Install the containing package with `pi install`, then set
- * `SATYRN_ENGINE_REPO` to the engine checkout. See docs/usage.md.
+ * `SATYRN_ENGINE_REPO` to the engine checkout and `SATYRN_MODEL` to an
+ * explicit model. See docs/usage.md.
  */
 
 export const PROTOCOL_VERSION = 1;
