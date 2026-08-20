@@ -38,16 +38,15 @@ export interface LoopBreaker {
 	inspect(call: ToolCall): BlockDecision | undefined;
 }
 
-function encodeJson(value: unknown, ancestors: WeakSet<object>): string | undefined {
-	if (value === null) return "null";
+function canonicalJson(value: unknown, ancestors: WeakSet<object>): JsonValue | undefined {
+	if (value === null) return null;
 
 	switch (typeof value) {
 		case "boolean":
-			return value ? "true" : "false";
-		case "number":
-			return Number.isFinite(value) ? JSON.stringify(value) : undefined;
 		case "string":
-			return JSON.stringify(value);
+			return value;
+		case "number":
+			return Number.isFinite(value) ? value : undefined;
 		case "object":
 			break;
 		default:
@@ -58,27 +57,35 @@ function encodeJson(value: unknown, ancestors: WeakSet<object>): string | undefi
 	ancestors.add(value);
 	try {
 		if (Array.isArray(value)) {
-			const encoded = value.map((item) => encodeJson(item, ancestors));
-			return encoded.includes(undefined) ? undefined : `[${encoded.join(",")}]`;
+			const canonical: JsonValue[] = [];
+			for (const item of value) {
+				const normalized = canonicalJson(item, ancestors);
+				if (normalized === undefined) return undefined;
+				canonical.push(normalized);
+			}
+			return canonical;
 		}
 
 		const prototype = Object.getPrototypeOf(value);
 		if (prototype !== Object.prototype && prototype !== null) return undefined;
-		const encoded: string[] = [];
+		const canonical: Record<string, JsonValue> = {};
 		for (const key of Object.keys(value).sort()) {
-			const item = encodeJson((value as Record<string, unknown>)[key], ancestors);
-			if (item === undefined) return undefined;
-			encoded.push(`${JSON.stringify(key)}:${item}`);
+			const normalized = canonicalJson(
+				(value as Record<string, unknown>)[key],
+				ancestors,
+			);
+			if (normalized === undefined) return undefined;
+			canonical[key] = normalized;
 		}
-		return `{${encoded.join(",")}}`;
+		return canonical;
 	} finally {
 		ancestors.delete(value);
 	}
 }
 
 function callKey(call: ToolCall): string | undefined {
-	const input = encodeJson(call.input, new WeakSet());
-	return input === undefined ? undefined : `${JSON.stringify(call.toolName)}:${input}`;
+	const input = canonicalJson(call.input, new WeakSet());
+	return input === undefined ? undefined : JSON.stringify([call.toolName, input]);
 }
 
 export function createLoopBreaker(): LoopBreaker {
