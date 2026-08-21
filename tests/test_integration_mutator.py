@@ -36,6 +36,16 @@ class ExerciseBody(TypedDict):
     details: ReplacementDetails
 
 
+class FixtureOptions(TypedDict, total=False):
+    content: str
+    path: str
+    writable: str
+    revision: str | None
+    include_revision: bool
+    old_text: str
+    new_text: str
+
+
 def _node() -> str:
     if executable := shutil.which("node"):
         return executable
@@ -49,6 +59,7 @@ def _fixture(
     path: str = "src/app.py",
     writable: str = "src/*.py",
     revision: str | None = None,
+    include_revision: bool = True,
     old_text: str = "return 1",
     new_text: str = "return 2",
 ) -> Fixture:
@@ -68,9 +79,11 @@ def _fixture(
                 "version": 1,
                 "repo": str(repo),
                 "contract": str(contract),
-                "revisions": {
-                    path: revision or sha256(target.read_bytes()).hexdigest(),
-                },
+                "revisions": (
+                    {path: revision or sha256(target.read_bytes()).hexdigest()}
+                    if include_revision
+                    else {}
+                ),
             }
         ),
         encoding="utf-8",
@@ -128,6 +141,7 @@ def test_shipped_adapter_replaces_one_anchor_through_real_engine(tmp_path: Path)
     ("expected_code", "fixture_options"),
     [
         ("REVISION_STALE", {"revision": "0" * 64}),
+        ("REVISION_UNAVAILABLE", {"include_revision": False}),
         ("PATH_UNDECLARED", {"path": "app.py"}),
         ("ANCHOR_MISSING", {"old_text": "return 3"}),
         ("ANCHOR_AMBIGUOUS", {"content": "return 1\nreturn 1\n"}),
@@ -136,7 +150,7 @@ def test_shipped_adapter_replaces_one_anchor_through_real_engine(tmp_path: Path)
 def test_shipped_adapter_returns_named_refusal_without_mutation(
     tmp_path: Path,
     expected_code: str,
-    fixture_options: dict[str, str],
+    fixture_options: FixtureOptions,
 ) -> None:
     fixture = _fixture(tmp_path, **fixture_options)
     before = fixture.target.read_bytes()
@@ -148,6 +162,28 @@ def test_shipped_adapter_returns_named_refusal_without_mutation(
     assert body["details"]["code"] == expected_code
     assert body["details"]["result"] is None
     assert fixture.target.read_bytes() == before
+
+
+def test_real_internal_symlink_is_refused_while_regular_sibling_succeeds(
+    tmp_path: Path,
+) -> None:
+    linked = _fixture(tmp_path / "linked")
+    original = linked.repo / "src" / "original.py"
+    linked.target.replace(original)
+    linked.target.symlink_to(original.name)
+    before = original.read_bytes()
+    regular = _fixture(tmp_path / "regular")
+
+    refused_process, refused = _run(linked)
+    success_process, success = _run(regular)
+
+    assert refused_process.returncode == 0, refused_process.stderr
+    assert refused["details"]["code"] == "MUTATION_FAILED"
+    assert refused["details"]["result"] is None
+    assert original.read_bytes() == before
+    assert success_process.returncode == 0, success_process.stderr
+    assert success["details"]["code"] == "OK"
+    assert regular.target.read_text(encoding="utf-8") == "def value():\n    return 2\n"
 
 
 def test_exercise_harness_has_distinct_usage_failure() -> None:

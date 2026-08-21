@@ -8,11 +8,26 @@ from typing import BinaryIO, Literal, TypedDict
 
 from .check import check
 from .exits import ExitCode
-from .mutation import MutationReceipt, normalize_relative_path, replace_once
+from .mutation import (
+    MutationCode,
+    MutationReceipt,
+    normalize_relative_path,
+    replace_once,
+)
 
 PROTOCOL_VERSION = 1
 OPERATIONS = ("check", "replace")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+_MUTATION_TO_EXIT: dict[MutationCode, ExitCode] = {
+    MutationCode.OK: ExitCode.OK,
+    MutationCode.PATH_UNDECLARED: ExitCode.MUTATION_REFUSED,
+    MutationCode.REVISION_UNAVAILABLE: ExitCode.MUTATION_REFUSED,
+    MutationCode.REVISION_STALE: ExitCode.MUTATION_REFUSED,
+    MutationCode.ANCHOR_MISSING: ExitCode.MUTATION_REFUSED,
+    MutationCode.ANCHOR_AMBIGUOUS: ExitCode.MUTATION_REFUSED,
+    MutationCode.MUTATION_FAILED: ExitCode.MUTATION_REFUSED,
+}
 
 
 class ProtocolError(Exception):
@@ -40,7 +55,7 @@ class ReplaceRequest:
     repo: Path
     contract: Path
     path: str
-    expected_sha256: str
+    expected_sha256: str | None
     old_text: str
     new_text: str
 
@@ -84,6 +99,21 @@ def _required_string(payload: dict[str, object], field: str, *, allow_empty: boo
     if not isinstance(value, str) or (not allow_empty and not value):
         qualifier = "a string" if allow_empty else "a non-empty string"
         raise ProtocolError(f"request field {field!r} must be {qualifier}")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ProtocolError(f"request field {field!r} must contain only UTF-8 scalar values") from exc
+    return value
+
+
+def _required_revision(payload: dict[str, object]) -> str | None:
+    if "expected_sha256" not in payload:
+        raise ProtocolError("request field 'expected_sha256' is required")
+    value = payload["expected_sha256"]
+    if value is None:
+        return None
+    if not isinstance(value, str) or SHA256_PATTERN.fullmatch(value) is None:
+        raise ProtocolError("request field 'expected_sha256' must be null or 64 lowercase hexadecimal characters")
     return value
 
 
@@ -96,9 +126,10 @@ def parse_request(data: str | bytes) -> ProtocolRequest:
         raise ProtocolError(f"request is not valid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise ProtocolError(f"request top level must be a mapping, not {type(payload).__name__}")
-    if payload.get("version") != PROTOCOL_VERSION:
+    version = payload.get("version")
+    if type(version) is not int or version != PROTOCOL_VERSION:
         raise ProtocolError(
-            f"unsupported protocol version {payload.get('version')!r}; expected {PROTOCOL_VERSION}"
+            f"unsupported protocol version {version!r}; expected {PROTOCOL_VERSION}"
         )
 
     operation = payload.get("operation")
@@ -117,15 +148,12 @@ def parse_request(data: str | bytes) -> ProtocolRequest:
                 path = normalize_relative_path(_required_string(payload, "path"))
             except ValueError as exc:
                 raise ProtocolError(f"invalid replacement path: {exc}") from exc
-            expected_sha256 = _required_string(payload, "expected_sha256")
-            if SHA256_PATTERN.fullmatch(expected_sha256) is None:
-                raise ProtocolError("request field 'expected_sha256' must be 64 lowercase hexadecimal characters")
             return ReplaceRequest(
                 operation=operation,
                 repo=repo,
                 contract=contract,
                 path=path,
-                expected_sha256=expected_sha256,
+                expected_sha256=_required_revision(payload),
                 old_text=_required_string(payload, "old_text"),
                 new_text=_required_string(payload, "new_text", allow_empty=True),
             )
@@ -196,8 +224,7 @@ def handle_protocol(data: str | bytes) -> tuple[str, int]:
         request.old_text,
         request.new_text,
     )
-    exit_code = ExitCode.OK if receipt.ok else ExitCode.MUTATION_REFUSED
-    return render_replace_response(receipt), int(exit_code)
+    return render_replace_response(receipt), int(_MUTATION_TO_EXIT[receipt.code])
 
 
 def run_protocol(stdin: BinaryIO, stdout: BinaryIO) -> int:
