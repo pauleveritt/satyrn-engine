@@ -1,7 +1,9 @@
 /** Node tests for the E2 transport and E5 delivery adapter. */
 
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 
 import registerExtension, {
@@ -222,6 +224,25 @@ test("delivery invocation keeps inside contract relative and outside absolute", 
 	const relativeEngine = buildDeliveryInvocation("/repo", "-task.yaml", "m", "engine");
 	assert.equal(relativeEngine.cwd, resolve("engine"));
 	assert.deepEqual(relativeEngine.args.slice(-3), ["--model=m", "--", "-task.yaml"]);
+});
+
+test("delivery invocation classifies existing path aliases by filesystem identity", () => {
+	const parent = mkdtempSync(join(tmpdir(), "satyrn-engine-alias-"));
+	try {
+		const repo = join(parent, "repo");
+		const repoAlias = join(parent, "repo-link");
+		const contract = join(repo, "task.yaml");
+		const contractAlias = join(parent, "task-link.yaml");
+		mkdirSync(repo);
+		writeFileSync(contract, "id: alias\n");
+		symlinkSync(repo, repoAlias, "dir");
+		symlinkSync(contract, contractAlias, "file");
+
+		assert.equal(buildDeliveryInvocation(repoAlias, contract, "m", "/engine").args.at(-1), "task.yaml");
+		assert.equal(buildDeliveryInvocation(repo, contractAlias, "m", "/engine").args.at(-1), "task.yaml");
+	} finally {
+		rmSync(parent, { recursive: true, force: true });
+	}
 });
 
 test("one-shot exchange handles success and transport refusals", async () => {

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -324,7 +325,7 @@ export function buildDeliveryInvocation(
 	const sourceRepo = resolve(repo);
 	const resolvedEngineRepo = resolve(engineRepo);
 	const resolvedContract = resolve(sourceRepo, contract);
-	const relativeContract = relative(sourceRepo, resolvedContract);
+	const relativeContract = relative(physicalPath(sourceRepo), physicalPath(resolvedContract));
 	const innerContract =
 		relativeContract !== "" &&
 		relativeContract !== ".." &&
@@ -357,6 +358,14 @@ export function buildDeliveryInvocation(
 			innerContract,
 		],
 	};
+}
+
+function physicalPath(path: string): string {
+	try {
+		return realpathSync.native(path);
+	} catch {
+		return path;
+	}
 }
 
 /**
