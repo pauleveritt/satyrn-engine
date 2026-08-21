@@ -6,7 +6,7 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import BinaryIO, cast
+from typing import BinaryIO, Never, cast
 
 import pytest
 
@@ -511,6 +511,101 @@ def test_artifact_parent_identity_is_rechecked_after_open(
     assert "parent changed during preparation" in result
 
 
+def test_artifact_descriptor_handoff_failure_closes_exactly_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "artifacts"
+    parent.mkdir()
+    descriptor: int | None = None
+    primary = MemoryError("cannot construct destination")
+    original_open = attempt_module.os.open
+    original_close = attempt_module.os.close
+    closed: list[int] = []
+
+    def capture_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal descriptor
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        return descriptor
+
+    monkeypatch.setattr(attempt_module.os, "open", capture_open)
+
+    def close_then_fail(selected: int) -> None:
+        closed.append(selected)
+        original_close(selected)
+        raise OSError("handoff close failed")
+
+    monkeypatch.setattr(attempt_module.os, "close", close_then_fail)
+    monkeypatch.setattr(
+        attempt_module,
+        "_ArtifactDestination",
+        lambda *args: (_ for _ in ()).throw(primary),
+    )
+    with pytest.raises(MemoryError) as excinfo:
+        attempt_module._artifact_destinations(
+            (),
+            {attempt_module.TRANSCRIPT_ENV: str(parent / "transcript")},
+        )
+    assert excinfo.value is primary
+    assert descriptor is not None
+    assert closed == [descriptor]
+    assert primary.__notes__ == ["secondary descriptor cleanup failure: handoff close failed"]
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+
+
+def test_prepare_handoff_interrupt_closes_artifact_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, contract, _ = _repo(tmp_path)
+    artifact_parent = tmp_path / "artifacts"
+    artifact_parent.mkdir()
+    primary = KeyboardInterrupt("after prepare")
+    original_prepare = attempt_module._prepare
+    descriptor: int | None = None
+
+    def interrupt_after_prepare(
+        selected_repo: Path,
+        selected_contract: Contract,
+        model: str,
+        environment: Mapping[str, str],
+        git: attempt_module.GitRunner,
+        owner: list[attempt_module._ArtifactDestination],
+    ) -> Never:
+        nonlocal descriptor
+        prepared = original_prepare(selected_repo, selected_contract, model, environment, git, owner)
+        assert not isinstance(prepared, AttemptResult)
+        descriptor = owner[0].descriptor()
+        raise primary
+
+    monkeypatch.setattr(attempt_module, "_prepare", interrupt_after_prepare)
+    with pytest.raises(KeyboardInterrupt) as excinfo:
+        attempt_module.attempt(
+            repo,
+            contract,
+            "model",
+            environment={
+                attempt_module.ENGINE_REPO_ENV: str(Path(__file__).parents[1]),
+                attempt_module.TRANSCRIPT_ENV: str(artifact_parent / "transcript"),
+            },
+            git_runner=FakeGit(repo),
+            pi_runner=FakePi(),
+            stdout=io.BytesIO(),
+            stderr=io.BytesIO(),
+        )
+    assert excinfo.value is primary
+    assert descriptor is not None
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+
+
 def test_partial_artifact_descriptor_acquisition_closes_the_first(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -894,6 +989,39 @@ def test_tracked_descriptor_cleanup_preserves_first_failure(
 
     assert raised.value is first
     assert first.__notes__ == ["secondary descriptor cleanup failure: second close"]
+
+
+def test_tracked_descriptor_handoff_failure_closes_exactly_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = MemoryError("cannot record descriptor")
+    original_close = attempt_module.os.close
+    descriptor: int | None = None
+
+    class RefusingOwner(list[int]):
+        def append(self, value: int) -> None:
+            del value
+            raise primary
+
+    def close_then_fail(selected: int) -> None:
+        nonlocal descriptor
+        descriptor = selected
+        original_close(selected)
+        raise OSError("tracked handoff close failed")
+
+    monkeypatch.setattr(attempt_module.os, "close", close_then_fail)
+    with pytest.raises(MemoryError) as excinfo:
+        attempt_module._open_owned_descriptor(
+            RefusingOwner(),
+            tmp_path,
+            os.O_RDONLY | os.O_DIRECTORY,
+        )
+    assert excinfo.value is primary
+    assert descriptor is not None
+    assert primary.__notes__ == ["secondary descriptor cleanup failure: tracked handoff close failed"]
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
 
 
 def test_engine_package_must_exist(tmp_path: Path) -> None:
