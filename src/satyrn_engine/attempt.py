@@ -2,7 +2,9 @@
 
 import json
 import os
+import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -11,7 +13,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import BinaryIO, Protocol
+from typing import BinaryIO, Never, Protocol
 
 from .check import check
 from .contract import Contract, ContractError, load_contract
@@ -89,8 +91,24 @@ class AttemptResult:
 class AttemptArtifacts:
     """Optional caller-owned artifact destinations outside the repository."""
 
-    patch: Path | None
-    transcript: Path | None
+    patch: _ArtifactDestination | None
+    transcript: _ArtifactDestination | None
+
+
+@dataclass(frozen=True, slots=True)
+class _FileIdentity:
+    """Filesystem identity used when spelling and case are not authoritative."""
+
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ArtifactDestination:
+    """An absent artifact path pinned to its already-validated parent."""
+
+    path: Path
+    parent_identity: _FileIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,8 +230,7 @@ def build_pi_command(engine_repo: Path, model: str, prompt: str) -> tuple[str, .
         "--mode",
         "json",
         "--no-session",
-        "--model",
-        model,
+        f"--model={model}",
         "--no-extensions",
         "--extension",
         os.fspath(package / "engine.ts"),
@@ -269,28 +286,53 @@ def attempt(
         temporary_parent = Path(tempfile.mkdtemp(prefix=".satyrn-attempt-", dir=root.parent))
     except OSError as exc:
         return _failed(model, f"cannot create attempt temporary directory: {exc}")
+    pending: AttemptResult | None = None
+    active_exception: BaseException | None = None
     try:
         frozen_contract = temporary_parent / "contract.yaml"
         try:
             _freeze_contract(contract_candidate, frozen_contract)
             frozen_value = load_contract(frozen_contract)
         except (ContractError, OSError) as exc:
-            return _failed(model, f"cannot freeze contract: {exc}")
-        if frozen_value != checked.contract:
-            return _failed(model, "contract changed while the attempt was being prepared")
-
-        context = AttemptContext(
-            repo=root,
-            contract=checked.contract,
-            frozen_contract=frozen_contract,
-            base_commit=base_commit,
-            revisions=revisions,
-            model=model,
-            engine_repo=engine_repo,
-        )
-        return _run(context, artifacts, env, git, pi, output, errors, temporary_parent)
+            pending = _failed(model, f"cannot freeze contract: {exc}")
+        else:
+            if frozen_value != checked.contract:
+                pending = _failed(model, "contract changed while the attempt was being prepared")
+            else:
+                context = AttemptContext(
+                    repo=root,
+                    contract=checked.contract,
+                    frozen_contract=frozen_contract,
+                    base_commit=base_commit,
+                    revisions=revisions,
+                    model=model,
+                    engine_repo=engine_repo,
+                )
+                pending = _run(context, artifacts, env, git, pi, output, errors, temporary_parent)
+    except BaseException as exc:
+        active_exception = exc
+        raise
     finally:
-        shutil.rmtree(temporary_parent, ignore_errors=True)
+        try:
+            shutil.rmtree(temporary_parent)
+        except BaseException as cleanup_error:
+            detail = (
+                f"cannot remove attempt temporary directory: {cleanup_error}; "
+                f"retained path: {temporary_parent}"
+            )
+            if active_exception is not None:
+                active_exception.add_note(f"secondary cleanup failure: {detail}")
+            elif pending is not None:
+                if isinstance(cleanup_error, OSError):
+                    pending = _failed(model, detail, command_exit=pending.command_exit)
+                else:
+                    cleanup_error.add_note(detail)
+                    raise
+            else:  # pragma: no cover - pending/result invariant
+                raise
+    if pending is None:  # pragma: no cover - pending/result invariant
+        raise AssertionError("attempt produced no result")
+    return pending
 
 
 def _prepare(
@@ -329,6 +371,17 @@ def _prepare(
             environment,
         )
         listed = git.run(root, ("ls-files", "-z", "--cached"), environment)
+        worktrees = git.run(root, ("worktree", "list", "--porcelain", "-z"), environment)
+        git_dir = git.run(
+            root,
+            ("rev-parse", "--path-format=absolute", "--git-dir"),
+            environment,
+        )
+        common_dir = git.run(
+            root,
+            ("rev-parse", "--path-format=absolute", "--git-common-dir"),
+            environment,
+        )
     except OSError as exc:
         return _failed(model, f"cannot inspect Git worktree: {exc}")
     if head.returncode != 0:
@@ -339,6 +392,11 @@ def _prepare(
         return _failed(model, "attempt requires a clean disposable worktree")
     if listed.returncode != 0:
         return _failed(model, _git_message("cannot enumerate tracked files", listed))
+    if worktrees.returncode != 0:
+        return _failed(model, _git_message("cannot enumerate registered worktrees", worktrees))
+    if git_dir.returncode != 0 or common_dir.returncode != 0:
+        failed = git_dir if git_dir.returncode != 0 else common_dir
+        return _failed(model, _git_message("cannot resolve Git administrative directories", failed))
 
     revisions: dict[str, str] = {}
     for raw_path in listed.stdout.split(b"\0"):
@@ -361,16 +419,24 @@ def _prepare(
     if not revisions:
         return _failed(model, "contract matches no existing tracked writable file")
 
-    artifacts = _artifact_destinations(root, environment)
+    forbidden_roots = _forbidden_artifact_roots(root, worktrees.stdout, git_dir.stdout, common_dir.stdout)
+    if isinstance(forbidden_roots, str):
+        return _failed(model, forbidden_roots)
+    artifacts = _artifact_destinations(forbidden_roots, environment)
     if isinstance(artifacts, str):
         return _failed(model, artifacts)
 
     engine_repo_text = environment.get(ENGINE_REPO_ENV)
-    engine_repo = (
-        Path(os.path.abspath(engine_repo_text))
-        if engine_repo_text
-        else Path(__file__).resolve().parents[2]
-    )
+    try:
+        if engine_repo_text:
+            configured_engine_repo = Path(engine_repo_text)
+            engine_repo = (
+                configured_engine_repo if configured_engine_repo.is_absolute() else root / configured_engine_repo
+            ).resolve()
+        else:
+            engine_repo = Path(__file__).resolve().parents[2]
+    except (OSError, RuntimeError) as exc:
+        return _failed(model, f"cannot resolve engine repository: {exc}")
     package = engine_repo / "packages" / "engine"
     if not all((package / name).is_file() for name in ("engine.ts", "mutator.ts")):
         return _failed(model, f"engine package is unavailable under {engine_repo}")
@@ -406,7 +472,9 @@ def _run(
     transcript_spool = temporary_parent / "transcript.jsonl"
 
     try:
-        with transcript_spool.open("xb") as transcript_output:
+        transcript_output = transcript_spool.open("xb")
+        active_exception: BaseException | None = None
+        try:
             command_exit = pi.run(
                 command,
                 context.repo,
@@ -416,8 +484,20 @@ def _run(
             )
             transcript_output.flush()
             os.fsync(transcript_output.fileno())
+        except BaseException as exc:
+            active_exception = exc
+            raise
+        finally:
+            try:
+                transcript_output.close()
+            except BaseException as cleanup_error:
+                detail = f"cannot close transcript spool {transcript_spool}: {cleanup_error}"
+                if active_exception is not None:
+                    active_exception.add_note(f"secondary cleanup failure: {detail}")
+                else:
+                    _raise_cleanup_failure(cleanup_error, detail)
     except OSError as exc:
-        return _failed(context.model, f"cannot run Pi: {exc}")
+        return _failed(context.model, f"cannot run Pi: {_exception_detail(exc)}")
 
     try:
         if artifacts.transcript is not None:
@@ -426,7 +506,7 @@ def _run(
     except (OSError, ValueError) as exc:
         return _failed(
             context.model,
-            f"cannot publish transcript: {exc}",
+            f"cannot publish transcript: {_exception_detail(exc)}",
             command_exit=command_exit,
         )
 
@@ -458,7 +538,7 @@ def _run(
         except (OSError, ValueError) as exc:
             return _failed(
                 context.model,
-                f"cannot publish patch: {exc}",
+                f"cannot publish patch: {_exception_detail(exc)}",
                 command_exit=command_exit,
             )
 
@@ -490,77 +570,223 @@ def _clean_environment(source: Mapping[str, str]) -> dict[str, str]:
     return environment
 
 
-def _artifact_destinations(
+def _forbidden_artifact_roots(
     repo: Path,
+    worktree_output: bytes,
+    git_dir_output: bytes,
+    common_dir_output: bytes,
+) -> tuple[tuple[Path, _FileIdentity], ...] | str:
+    paths: list[Path] = []
+    for field in worktree_output.split(b"\0"):
+        if field.startswith(b"worktree "):
+            paths.append(_absolute_git_path(repo, field.removeprefix(b"worktree ")))
+    if not paths:
+        return "Git reported no registered worktrees"
+    for label, output in (("Git directory", git_dir_output), ("Git common directory", common_dir_output)):
+        value = output.removesuffix(b"\n")
+        if not value or b"\0" in value:
+            return f"{label} has an invalid path"
+        paths.append(_absolute_git_path(repo, value))
+
+    roots: list[tuple[Path, _FileIdentity]] = []
+    for path in paths:
+        try:
+            identity = _identity(path.stat())
+        except (OSError, ValueError) as exc:
+            return f"cannot inspect protected Git path {path}: {exc}"
+        if all(identity != existing for _, existing in roots):
+            roots.append((path, identity))
+    return tuple(roots)
+
+
+def _absolute_git_path(repo: Path, value: bytes) -> Path:
+    path = Path(os.fsdecode(value))
+    return path if path.is_absolute() else repo / path
+
+
+def _artifact_destinations(
+    forbidden_roots: Sequence[tuple[Path, _FileIdentity]],
     environment: Mapping[str, str],
 ) -> AttemptArtifacts | str:
     patch = _artifact_path(environment.get(PATCH_ENV))
     transcript = _artifact_path(environment.get(TRANSCRIPT_ENV))
-    if patch is not None and transcript is not None and patch == transcript:
-        return "patch and transcript artifact paths must be different"
+    destinations: dict[str, _ArtifactDestination | None] = {"patch": None, "transcript": None}
     for label, candidate in (("patch", patch), ("transcript", transcript)):
         if candidate is None:
             continue
         parent = candidate.parent
-        if not parent.is_dir() or parent.is_symlink():
+        try:
+            parent_status = parent.stat(follow_symlinks=False)
+        except (OSError, ValueError):
+            return f"{label} artifact parent must be a real directory: {parent}"
+        if not stat.S_ISDIR(parent_status.st_mode):
             return f"{label} artifact parent must be a real directory: {parent}"
         if os.path.lexists(candidate):
             return f"{label} artifact already exists: {candidate}"
-        if _contains(repo, candidate):
-            return f"{label} artifact must be outside the repository: {candidate}"
-    return AttemptArtifacts(patch=patch, transcript=transcript)
+        parent_identity = _identity(parent_status)
+        if _inside_protected_root(parent, forbidden_roots):
+            return (
+                f"{label} artifact must be outside the repository, every registered worktree, "
+                f"and Git administrative directory: {candidate}"
+            )
+        destinations[label] = _ArtifactDestination(candidate, parent_identity)
+
+    patch_destination = destinations["patch"]
+    transcript_destination = destinations["transcript"]
+    if (
+        patch_destination is not None
+        and transcript_destination is not None
+        and patch_destination.parent_identity == transcript_destination.parent_identity
+        and patch_destination.path.name.casefold() == transcript_destination.path.name.casefold()
+    ):
+        return "patch and transcript artifact paths must be different"
+    return AttemptArtifacts(patch=patch_destination, transcript=transcript_destination)
 
 
 def _artifact_path(value: str | None) -> Path | None:
     return None if value is None else Path(os.path.abspath(value))
 
 
-def _contains(root: Path, candidate: Path) -> bool:
-    try:
-        canonical_root = root.resolve(strict=True)
-        canonical_candidate = candidate.parent.resolve(strict=True) / candidate.name
-        canonical_candidate.relative_to(canonical_root)
-    except (OSError, ValueError):
-        return False
-    return True
+def _identity(status: os.stat_result) -> _FileIdentity:
+    return _FileIdentity(status.st_dev, status.st_ino)
 
 
-def _publish_file(source: Path, destination: Path) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{destination.name}.satyrn-",
-        suffix=".tmp",
-        dir=destination.parent,
-    )
-    temporary = Path(temporary_name)
+def _inside_protected_root(
+    parent: Path,
+    forbidden_roots: Sequence[tuple[Path, _FileIdentity]],
+) -> bool:
     try:
-        with os.fdopen(descriptor, "wb") as output, source.open("rb") as input_file:
+        canonical_parent = parent.resolve(strict=True)
+        ancestors = (canonical_parent, *canonical_parent.parents)
+        identities = {_identity(ancestor.stat()) for ancestor in ancestors}
+    except (OSError, RuntimeError, ValueError):
+        return True
+    return any(identity in identities for _, identity in forbidden_roots)
+
+
+def _publish_file(source: Path, destination: _ArtifactDestination) -> None:
+    def write(output: BinaryIO) -> None:
+        with source.open("rb") as input_file:
             shutil.copyfileobj(input_file, output, length=64 * 1024)
-            output.flush()
-            os.fsync(output.fileno())
-        os.link(temporary, destination, follow_symlinks=False)
+
+    _publish(destination, write)
+
+
+def _publish_bytes(content: bytes, destination: _ArtifactDestination) -> None:
+    def write(output: BinaryIO) -> None:
+        output.write(content)
+
+    _publish(destination, write)
+
+
+def _publish(destination: _ArtifactDestination, write: _ArtifactWriter) -> None:
+    parent_descriptor = os.open(
+        destination.path.parent,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    parent_exception: BaseException | None = None
+    try:
+        actual_identity = _identity(os.fstat(parent_descriptor))
+        if actual_identity != destination.parent_identity:
+            raise OSError(f"artifact parent changed before publication: {destination.path.parent}")
+        temporary_name, temporary_descriptor = _create_artifact_temporary(parent_descriptor)
+        publication_exception: BaseException | None = None
+        try:
+            try:
+                _write_artifact_temporary(temporary_descriptor, write)
+            except BaseException as exc:
+                publication_exception = exc
+                raise
+            os.link(
+                temporary_name,
+                destination.path.name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except BaseException as exc:
+            publication_exception = exc
+            raise
+        finally:
+            try:
+                os.unlink(temporary_name, dir_fd=parent_descriptor)
+            except BaseException as cleanup_error:
+                retained = destination.path.parent / temporary_name
+                detail = f"cannot remove artifact temporary: {cleanup_error}; retained path: {retained}"
+                if publication_exception is not None:
+                    publication_exception.add_note(f"secondary cleanup failure: {detail}")
+                else:
+                    _raise_cleanup_failure(cleanup_error, detail)
+    except BaseException as exc:
+        parent_exception = exc
+        raise
     finally:
-        temporary.unlink(missing_ok=True)
+        try:
+            os.close(parent_descriptor)
+        except BaseException as cleanup_error:
+            detail = (
+                f"cannot close artifact parent directory: {cleanup_error}; "
+                f"retained path: {destination.path}"
+            )
+            if parent_exception is not None:
+                parent_exception.add_note(f"secondary cleanup failure: {detail}")
+            else:
+                _raise_cleanup_failure(cleanup_error, detail)
 
 
 def _freeze_contract(source: Path, destination: Path) -> None:
     destination.write_bytes(source.read_bytes())
 
 
-def _publish_bytes(content: bytes, destination: Path) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{destination.name}.satyrn-",
-        suffix=".tmp",
-        dir=destination.parent,
-    )
-    temporary = Path(temporary_name)
+class _ArtifactWriter(Protocol):
+    def __call__(self, output: BinaryIO) -> None: ...
+
+
+def _write_artifact_temporary(descriptor: int, write: _ArtifactWriter) -> None:
     try:
-        with os.fdopen(descriptor, "wb") as output:
-            output.write(content)
-            output.flush()
-            os.fsync(output.fileno())
-        os.link(temporary, destination, follow_symlinks=False)
+        output = os.fdopen(descriptor, "wb")
+    except BaseException as open_error:
+        try:
+            os.close(descriptor)
+        except BaseException as cleanup_error:
+            open_error.add_note(f"secondary cleanup failure: cannot close artifact temporary: {cleanup_error}")
+        raise
+    active_exception: BaseException | None = None
+    try:
+        write(output)
+        output.flush()
+        os.fsync(output.fileno())
+    except BaseException as exc:
+        active_exception = exc
+        raise
     finally:
-        temporary.unlink(missing_ok=True)
+        try:
+            output.close()
+        except BaseException as cleanup_error:
+            detail = f"cannot close artifact temporary: {cleanup_error}"
+            if active_exception is not None:
+                active_exception.add_note(f"secondary cleanup failure: {detail}")
+            else:
+                _raise_cleanup_failure(cleanup_error, detail)
+
+
+def _raise_cleanup_failure(error: BaseException, detail: str) -> Never:
+    """Map ordinary cleanup I/O failures while preserving unexpected exceptions."""
+    if isinstance(error, OSError):
+        raise OSError(detail) from error
+    error.add_note(detail)
+    raise error
+
+
+def _create_artifact_temporary(parent_descriptor: int) -> tuple[str, int]:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    for _ in range(128):
+        name = f".satyrn-attempt-{secrets.token_hex(12)}.tmp"
+        try:
+            return name, os.open(name, flags, 0o600, dir_fd=parent_descriptor)
+        except FileExistsError:
+            continue
+    raise FileExistsError("cannot allocate an exclusive artifact temporary")
 
 
 def _copy_file(source: Path, output: BinaryIO) -> None:
@@ -568,6 +794,11 @@ def _copy_file(source: Path, output: BinaryIO) -> None:
         while chunk := input_file.read(64 * 1024):
             output.write(chunk)
     output.flush()
+
+
+def _exception_detail(error: BaseException) -> str:
+    notes = getattr(error, "__notes__", ())
+    return "; ".join((str(error), *notes))
 
 
 def _failed(model: str, message: str, *, command_exit: int | None = None) -> AttemptResult:
