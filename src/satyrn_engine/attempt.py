@@ -880,6 +880,8 @@ def _merge_attempt_cleanup(
         previous = f"; prior result {pending.code}: {pending.message}" if pending.message else ""
         pending = _failed(model, f"{detail}{previous}", command_exit=pending.command_exit)
     else:
+        if pending is not None and pending.message:
+            error.add_note(f"prior result {pending.code}: {pending.message}")
         error.add_note(detail)
         cleanup_exception = error
     return pending, cleanup_exception
