@@ -141,6 +141,27 @@ def test_attempt_preserves_transcript_for_no_change_failure_and_refusal(
     assert target.read_text(encoding="utf-8") == "def value():\n    return 1\n"
 
 
+def test_attempt_rejects_artifacts_in_any_registered_worktree_and_git_admin(
+    tmp_path: Path,
+) -> None:
+    repo, contract, _, environment = _fixture(tmp_path)
+    sibling = tmp_path / "sibling-worktree"
+    added = _git(repo, "worktree", "add", "--detach", str(sibling), "HEAD")
+    assert added.returncode == 0, added.stderr
+    git_common = Path(os.fsdecode(_git(repo, "rev-parse", "--git-common-dir").stdout.strip()))
+    if not git_common.is_absolute():
+        git_common = repo / git_common
+
+    for destination in (sibling / "transcript", git_common / "transcript"):
+        selected = dict(environment)
+        selected[TRANSCRIPT_ENV] = str(destination)
+        result, stdout, _ = _attempt(repo, contract, selected)
+        assert result.code is AttemptCode.ATTEMPT_FAILED
+        assert "every registered worktree" in result.message
+        assert stdout == b""
+        assert not destination.exists()
+
+
 def test_e3_delivery_wraps_same_attempt_and_keeps_source_clean(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

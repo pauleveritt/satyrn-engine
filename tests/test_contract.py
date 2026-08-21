@@ -77,8 +77,9 @@ def test_load_blank_required_field_is_refused(tmp_path: Path) -> None:
 )
 def test_load_invalid_writable_paths_is_refused(tmp_path: Path, value: object) -> None:
     path = tmp_path / "invalid-writable.yaml"
+    rendered = "null" if value is None else repr(value)
     path.write_text(
-        "id: e4-invalid\ntask: test\nwritable_paths: " + repr(value) + "\n",
+        "id: e4-invalid\ntask: test\nwritable_paths: " + rendered + "\n",
         encoding="utf-8",
     )
     with pytest.raises(ContractError) as excinfo:
