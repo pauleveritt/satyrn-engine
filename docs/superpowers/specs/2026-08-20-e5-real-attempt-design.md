@@ -13,6 +13,32 @@ parent and unresolved suffix place it inside the canonical repository. The
 normal V3 seam already supplies sibling output paths, so this closes a policy
 hole without changing that consumer.
 
+**Correction, 2026-08-21:** final review found that “outside the current
+repository” was not a sufficient publication boundary. An artifact can point
+into the caller's source checkout, another registered worktree, or Git's
+administrative/common directory; lexical `resolve()` checks can also be
+bypassed by a case alias, and a validated parent can be replaced with a
+symlink before publication. E5 therefore discovers every registered worktree
+and both Git administrative roots, compares existing ancestors by filesystem
+identity, pins each accepted artifact parent with a directory descriptor, and
+publishes the basename relative to that descriptor without following links.
+No later path resolution chooses the destination.
+
+The same review corrected four related boundaries. Tracked symlinks never enter
+the E4 revision map. Temporary-contract, spool, artifact, and descriptor cleanup
+failures are visible `ATTEMPT_FAILED` results with a retained recovery path;
+cleanup does not silently turn a partial attempt into `OK`, and a secondary
+cleanup exception never replaces a primary catchable exception. Model and
+contract argv use option-safe forms (`--model=VALUE` and a literal `--`).
+Finally, the adapter's deadline is a backstop outside E3's attempt timeout: it
+requests termination but reports timeout only after the outer delivery process
+has closed. E3 remains responsible for stopping its attempt process group and
+cleaning the detached worktree. A real delayed-writer regression must prove
+that adapter cancellation leaves no descendant running.
+
+These corrections narrow unsafe implementation choices; they do not add an
+artifact service, process supervisor, or new phase.
+
 ## Goal
 
 Run one real Pi model against one contract in the current disposable Git
@@ -106,15 +132,17 @@ Two explicitly caller-owned artifact paths are the exception:
 | `SATYRN_ATTEMPT_PATCH` | exact non-empty Git diff after the model exits |
 
 An absent variable means that artifact is not written. Both destinations must
-be outside the canonical repository. Transcript bytes are also forwarded to
+be outside every registered worktree and outside Git's administrative and
+common directories. Transcript bytes are also forwarded to
 attempt stdout. Pi diagnostics are forwarded to attempt stderr. An empty diff
 leaves `SATYRN_ATTEMPT_PATCH` absent, matching V3's `NO_PATCH` distinction.
 
-Artifact publication is atomic, exclusive, and no-follow: a sibling temporary
-file is flushed, then linked into the previously absent destination only after
-the complete bytes exist. A pre-existing artifact path, symlink, non-regular
-parent, or write failure is an accepted operation failure, not permission to
-overwrite unrelated data.
+Artifact publication is atomic, exclusive, and no-follow: the validated parent
+is pinned by descriptor, a sibling temporary file is flushed, then linked to
+the previously absent basename relative to that same descriptor only after the
+complete bytes exist. A pre-existing artifact path, symlink, non-regular
+parent, identity change, or write failure is an accepted operation failure,
+not permission to overwrite unrelated data.
 
 ### `/implement CONTRACT`
 
@@ -155,9 +183,10 @@ The temporary contract is removed after Pi exits.
 ### Revision map
 
 The engine enumerates tracked paths with a NUL-delimited, engine-owned Git
-query. For every existing regular file whose safe POSIX relative path matches
-one of `contract.writable_paths` under E4's `fnmatch` rule, it records the
-SHA-256 of the exact bytes.
+query. For every existing regular file reached without following any symlink
+component, whose safe POSIX relative path matches one of
+`contract.writable_paths` under E4's `fnmatch` rule, it records the SHA-256 of
+the exact bytes.
 
 The resulting E4 mutation context is:
 
@@ -186,7 +215,7 @@ ordinary filters for the checked-out worktree, matching E3's trust boundary.
 The exact child shape is conceptually:
 
 ```text
-pi --print --mode json --no-session --model MODEL
+pi --print --mode json --no-session --model=MODEL
    --no-extensions
    --extension packages/engine/engine.ts
    --extension packages/engine/mutator.ts

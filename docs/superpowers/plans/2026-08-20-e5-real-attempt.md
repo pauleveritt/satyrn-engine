@@ -16,6 +16,20 @@ consumer and imports no engine code.
 **Scope guard:** no packaging, Windows proof, file creation, shell, subagent,
 validation, grading, retry, batching, or performance claim.
 
+## Correction, 2026-08-21
+
+Implement the accepted design with its 2026-08-21 correction. Artifact checks
+cover every registered worktree plus Git administrative/common roots using
+filesystem identity, and publication is descriptor-relative after pinning the
+parent. Revision enumeration follows no symlink. All engine-owned temporary
+and artifact cleanup failures have typed precedence and retained-path evidence;
+secondary cleanup exceptions preserve the primary exception identity. Inner
+and outer argv use `--model=VALUE` and literal `--` boundaries. Delivery
+cancellation reports completion only after E3 has torn down the attempt group,
+closed, and cleaned or retained its worktree. The default tier injects these
+seams; the marked integration tier proves real filesystem identity, parent
+swap, and delayed-descendant cases with successful siblings.
+
 ## Task 1: Freeze the public command and typed result
 
 Files:
@@ -56,7 +70,8 @@ Steps:
 2. Copy accepted contract bytes to an engine-owned temporary file outside the
    worktree and point E4 at that copy.
 3. Enumerate tracked paths with NUL-safe Git output, normalize safe POSIX
-   names, apply E4's `fnmatch` rule, and hash exact bytes.
+   names, reject every symlink component, apply E4's `fnmatch` rule, and hash
+   exact bytes.
 4. Refuse before Pi when no existing regular tracked file is writable.
 5. Build the version-1 mutation context and deterministic prompt from the
    sorted path list.
@@ -90,7 +105,9 @@ Steps:
 6. On nonzero Pi exit, preserve both artifacts first, then return
    `ATTEMPT_FAILED`. On any artifact failure, that failure takes precedence.
 7. Cover start failure, nonzero, empty output, no diff, binary-like diff,
-   in-repository/pre-existing/symlink artifact paths, and write failures with
+   artifacts in any registered worktree or Git administrative root,
+   case-alias containment, pre-existing/symlink paths, parent replacement,
+   write/cleanup failures, and primary/secondary exception precedence with
    success siblings.
 
 Commit after default and integration evidence passes.
@@ -110,15 +127,18 @@ Steps:
 
 1. Keep the one-shot E2/E4 exchange helper used by `mutator.ts`.
 2. Add typed E3 receipt parsing and a delivery-spawn seam with stdout, stderr,
-   close, error, deadline, and best-effort termination.
+   close, error, deadline, and synchronous termination observation. A timeout
+   result is not returned before the delivery child closes.
 3. Resolve an in-repository contract to a worktree-relative inner argument;
    retain an external contract as absolute.
 4. Build the exact outer E3 command and inner E5 command with
-   `SATYRN_ENGINE_REPO` and `SATYRN_MODEL` explicit.
+   `SATYRN_ENGINE_REPO` and `SATYRN_MODEL` explicit, `--model=VALUE`, and a
+   literal `--` before a potentially dash-leading contract.
 5. Replace the check-only `/implement` handler with delivery. Notify success
    with candidate ref/commit and refusal with exact receipt or adapter code.
 6. Contain missing model/repo, start failure, timeout, malformed/extra output,
-   nonzero without receipt, closed streams, and handler exceptions.
+   nonzero without receipt, asynchronous closed-stream errors, and handler
+   exceptions. Prove timeout teardown has completed before returning.
 7. Replay the real package through an isolated fake engine, then exercise real
    E3 delivery around the fake Pi attempt.
 
