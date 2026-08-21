@@ -22,6 +22,18 @@ dependency and no model call.
 **Spec:**
 `docs/superpowers/specs/2026-08-20-e4-bounded-replacement-design.md`
 
+## Correction, 2026-08-21
+
+The accepted plan is implemented with the design correction recorded at the
+top of the spec. In particular, `expected_sha256` is a required nullable wire
+field and Python returns `REVISION_UNAVAILABLE`; every target component is
+checked without following symlinks; transport failures poison the mutation
+context because publication may already have happened; and the shared
+one-shot exchange contains asynchronous stdin failure and waits for child
+close after bounded TERM/KILL teardown. Tests must prove each corrected rule
+with a successful sibling. This note supersedes the narrower revision lookup,
+symlink-escape, and inherited-lifecycle steps below.
+
 ## Phase-size decision
 
 Keep E4 to one existing-file replacement. If implementation asks for file
@@ -82,11 +94,12 @@ tuple; the E4 fixture exposes its exact patterns.
 
 1. Write the success test first: replace one unique anchor and assert exact
    content, mode, result path, and next hash.
-2. Add one refusal test and one success sibling for undeclared path, stale
-   revision, missing anchor, and ambiguous anchor. Assert unchanged bytes.
-3. Add malformed-path tests for absolute, parent, empty/dot segments, NUL, and
-   symlink escape; malformed requests are tested at the protocol boundary,
-   while a direct invalid mutation call remains a typed internal invariant.
+2. Add one refusal test and one success sibling for undeclared path,
+   unavailable revision, stale revision, missing anchor, and ambiguous anchor.
+   Assert unchanged bytes where the result is determinate.
+3. Add malformed-path tests for absolute, parent, empty/dot segments, and NUL.
+   Add operational refusal tests for internal and escaping symlink components;
+   no target path component may be followed.
 4. Add operational failure tests for missing/non-regular/non-UTF-8 targets and
    same-directory write/publish failures. Mocks are restricted to failures the
    real filesystem cannot safely force.
@@ -126,8 +139,9 @@ the bytes on disk.
 
 1. Split the existing request dataclass into operation-specific frozen types;
    keep `parse_request` as the single parser seam.
-2. Add exact field/type/SHA/path/anchor validation for `replace` and prove each
-   malformed sibling returns `INVALID_REQUEST` without touching the file.
+2. Add exact field/type/SHA/path/anchor validation for `replace`, including a
+   required nullable revision, and prove each malformed sibling returns
+   `INVALID_REQUEST` without touching the file.
 3. Dispatch with `match` over the parsed request type.
 4. Render `result` only for replacement responses; pin exact success and
    refusal JSON shapes.
@@ -166,9 +180,10 @@ is byte-identical.
    compatible and replacement responses can carry a typed result. Do not add a
    second spawner.
 2. Add Node tests for valid and invalid contexts, absent-context no-op,
-   one-entry request generation, successful map advancement, stale replay,
-   malformed engine output, start failure, timeout, and an unexpected local
-   error. Each refusal has a successful sibling.
+   one-entry request generation, successful map advancement, unavailable and
+   stale revisions, malformed engine output, start failure, timeout, and an
+   unexpected local error. A transport failure poisons the context and the
+   next call starts no process. Each refusal has a successful sibling.
 3. Define the Pi edit JSON schema locally as data so the package gains no
    runtime schema dependency. Require exactly one `{oldText,newText}` entry.
 4. Implement `createMutator(exchange, context)` as the test/extension seam and
@@ -198,7 +213,7 @@ call sends it.
 
 - real console-protocol mutation evidence;
 - shipped TypeScript adapter → real spawner → real Python evidence;
-- exact success plus four named refusal siblings;
+- exact success plus five named refusal siblings;
 - temporary package installation with all extensions loaded and no user
   settings mutation.
 
@@ -208,8 +223,9 @@ call sends it.
    computing the dynamic SHA independently.
 2. Run the shipped TypeScript adapter against the real Python engine in a
    temporary repository; prove one replacement changes exact bytes.
-3. Repeat with stale revision, undeclared path, missing anchor, and ambiguous
-   anchor. Snapshot bytes and assert no mutation.
+3. Repeat with unavailable revision, stale revision, undeclared path, missing
+   anchor, ambiguous anchor, and an internal symlink alias. Snapshot bytes and
+   assert no determinate refusal mutates the target.
 4. Install the package into a temporary `PI_CODING_AGENT_DIR`; assert the
    settings list `engine.ts`, `orchestrator.ts`, and `mutator.ts`, and that a
    session without context does not replace `edit`.
@@ -217,8 +233,8 @@ call sends it.
    catches accidental process use in the default tier.
 
 **Evidence:** the one fixture crosses the full TypeScript/Python boundary and
-returns the new SHA; all four refused fixtures return the exact detailed code
-and unchanged file.
+returns the new SHA; all five policy-refusal fixtures return the exact detailed
+code and unchanged file.
 
 **Commit:** `test: prove the E4 replacement path`
 
@@ -266,7 +282,7 @@ Run from a clean checkout of the completed phase:
 uv run pytest
 uv run pytest -m integration
 uv run pytest -m "" --cov
-node --test --experimental-strip-types tests/test_loop_breaker.mjs tests/test_mutator.mjs
+node --test --experimental-strip-types tests/test_loop_breaker.mjs tests/test_transport.mjs tests/test_mutator.mjs
 node --experimental-strip-types tools/replay_guards.mjs
 uv run ruff check .
 uv run pyrefly check

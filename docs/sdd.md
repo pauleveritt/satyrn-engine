@@ -118,6 +118,48 @@ two runaway blocks instead of the committed expectation of one. Those failures
 are the non-vacuity evidence for the fresh implementation and its
 registration-local state.
 
+### E3.5 correction verification — 2026-08-21
+
+The accepted E3.5 design received a bounded correction for canonical JSON,
+telemetry lifetime, replay schema strictness, and package-dispatch evidence.
+The corrected tree was measured with the same gates:
+
+```console
+.venv/bin/pytest -q
+# 103 passed, 52 deselected
+
+.venv/bin/pytest -m integration -q
+# 51 passed, 1 platform skip, 103 deselected
+
+.venv/bin/pytest -m "" --cov -q
+# 154 passed, 1 platform skip; 100% Python statements and branches
+
+node --test --experimental-strip-types --experimental-test-coverage \
+  --test-coverage-lines=100 --test-coverage-branches=100 \
+  --test-coverage-functions=100 \
+  --test-coverage-include=packages/engine/engine.ts tests/test_loop_breaker.mjs
+# 16 passed; engine.ts 100% lines, branches, and functions
+
+node --experimental-strip-types tools/replay_guards.mjs
+# 6 fixtures matched
+
+.venv/bin/ruff check .
+.venv/bin/pyrefly check
+uv run --group docs sphinx-build -W -b html docs docs/_build/html
+git diff --check aa918b0 --
+# all passed
+```
+
+Named correction evidence is `a top-level __proto__ key is canonicalized as
+JSON data`, `a nested __proto__ key is canonicalized as JSON data`, and the
+post-eviction telemetry reset in `twenty newer admitted calls evict an older
+key`. `test_fixture_without_required_first_block_is_rejected` fixes the replay
+schema refusal, while the two excerpt fixtures now carry explicit
+`firstBlock` values. Finally,
+`test_pi_installs_and_dispatches_package_extension_in_temporary_settings`
+resolves `engine.ts` from the installed package manifest, loads it, observes
+registration, and dispatches six calls through its real handler.
+
 The disciplines review holds you to:
 
 - **Concept budget** — new jargon is a cost against a 5–10 h/wk

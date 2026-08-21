@@ -68,16 +68,16 @@ function canonicalJson(value: unknown, ancestors: WeakSet<object>): JsonValue | 
 
 		const prototype = Object.getPrototypeOf(value);
 		if (prototype !== Object.prototype && prototype !== null) return undefined;
-		const canonical: Record<string, JsonValue> = {};
+		const canonicalEntries: [string, JsonValue][] = [];
 		for (const key of Object.keys(value).sort()) {
 			const normalized = canonicalJson(
 				(value as Record<string, unknown>)[key],
 				ancestors,
 			);
 			if (normalized === undefined) return undefined;
-			canonical[key] = normalized;
+			canonicalEntries.push([key, normalized]);
 		}
-		return canonical;
+		return Object.fromEntries(canonicalEntries);
 	} finally {
 		ancestors.delete(value);
 	}
@@ -123,7 +123,12 @@ export function createLoopBreaker(): LoopBreaker {
 			}
 
 			admitted.push(key);
-			if (admitted.length > WINDOW) admitted.shift();
+			if (admitted.length > WINDOW) {
+				const evicted = admitted.shift();
+				if (evicted !== undefined && !admitted.includes(evicted)) {
+					blockedByKey.delete(evicted);
+				}
+			}
 			return undefined;
 		},
 	};
