@@ -22,14 +22,16 @@ Implement the accepted design with its 2026-08-21 correction. Artifact checks
 cover every registered worktree plus Git administrative/common roots using
 filesystem identity, and publication is descriptor-relative after pinning the
 parent during preparation; all result and exception paths close each acquired
-descriptor exactly once. Revision enumeration follows no symlink. All engine-owned temporary
-and artifact cleanup failures have typed precedence and retained-path evidence;
+descriptor exactly once. Revision enumeration follows no symlink. All
+engine-owned temporary and artifact cleanup failures have typed precedence and
+retained-path evidence;
 secondary cleanup exceptions preserve the primary exception identity. Inner
 and outer argv use `--model=VALUE` and literal `--` boundaries. Delivery
 cancellation reports completion only after E3 has torn down the attempt group,
 closed, and cleaned or retained its worktree. The default tier injects these
-seams; the marked integration tier proves real filesystem identity, parent
-swap, and delayed-descendant cases with successful siblings.
+seams and proves descriptor-relative parent swaps on the real filesystem; the
+marked integration tier proves cross-worktree and Git-administration identity,
+tracked-symlink, and delayed-descendant cases with successful siblings.
 Stream read errors, diagnostic callback failures, and filesystem-canonical,
 component-boundary contract classification are also typed adapter behavior
 rather than uncaught Node exceptions.
