@@ -20,9 +20,12 @@ administrative/common directory; lexical `resolve()` checks can also be
 bypassed by a case alias, and a validated parent can be replaced with a
 symlink before publication. E5 therefore discovers every registered worktree
 and both Git administrative roots, compares existing ancestors by filesystem
-identity, pins each accepted artifact parent with a directory descriptor, and
-publishes the basename relative to that descriptor without following links.
-No later path resolution chooses the destination.
+identity, opens and pins each accepted artifact parent with a directory
+descriptor during preparation, and publishes the basename relative to that
+descriptor without following links. No later path resolution chooses the
+destination. Concurrent relocation of the already-open directory itself is a
+caller filesystem action outside E5's portable guarantees; replacing its old
+pathname cannot redirect publication.
 
 The same review corrected four related boundaries. Tracked symlinks never enter
 the E4 revision map. Temporary-contract, spool, artifact, and descriptor cleanup
@@ -30,6 +33,11 @@ failures are visible `ATTEMPT_FAILED` results with a retained recovery path;
 cleanup does not silently turn a partial attempt into `OK`, and a secondary
 cleanup exception never replaces a primary catchable exception. Model and
 contract argv use option-safe forms (`--model=VALUE` and a literal `--`).
+Contract containment uses path-component boundaries, so an in-repository name
+such as `..hidden.yaml` is not mistaken for parent traversal. Asynchronous
+stdin, stdout, and stderr failures, plus exceptions from the diagnostic sink,
+are contained as named adapter refusals and complete the same terminate-then-
+close lifecycle as timeouts.
 Finally, the adapter's deadline is a backstop outside E3's attempt timeout: it
 requests termination but reports timeout only after the outer delivery process
 has closed. E3 remains responsible for stopping its attempt process group and
@@ -138,11 +146,14 @@ attempt stdout. Pi diagnostics are forwarded to attempt stderr. An empty diff
 leaves `SATYRN_ATTEMPT_PATCH` absent, matching V3's `NO_PATCH` distinction.
 
 Artifact publication is atomic, exclusive, and no-follow: the validated parent
-is pinned by descriptor, a sibling temporary file is flushed, then linked to
+is opened and pinned by descriptor during preparation, a sibling temporary
+file is flushed, then linked to
 the previously absent basename relative to that same descriptor only after the
 complete bytes exist. A pre-existing artifact path, symlink, non-regular
 parent, identity change, or write failure is an accepted operation failure,
-not permission to overwrite unrelated data.
+not permission to overwrite unrelated data. The descriptor remains owned by
+the attempt until every result or exception path has tried to close it exactly
+once.
 
 ### `/implement CONTRACT`
 
@@ -156,8 +167,9 @@ slice:
    command;
 4. parse the one E3 delivery receipt and report its code, candidate ref, and
    candidate commit;
-5. convert start, timeout, malformed receipt, and transport failures into
-   named adapter refusals without throwing from the Pi handler.
+5. convert start, timeout, malformed receipt, stream, diagnostic-sink, and
+   transport failures into named adapter refusals without throwing from the Pi
+   handler.
 
 When a contract is inside the source repository, the inner attempt receives
 its repository-relative path so it reads the contract from the exact detached
