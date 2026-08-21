@@ -24,7 +24,8 @@ node --test --experimental-strip-types --experimental-test-coverage \
 node --test --experimental-strip-types --experimental-test-coverage \
   --test-coverage-lines=100 --test-coverage-branches=100 \
   --test-coverage-functions=100 \
-  --test-coverage-include=packages/engine/orchestrator.ts tests/test_orchestrator.mjs
+  --test-coverage-include=packages/engine/orchestrator.ts \
+  tests/test_orchestrator.mjs tests/test_transport.mjs
 uv run ruff check .      # lint
 uv run pyrefly check     # type-check
 ```
@@ -40,9 +41,9 @@ statement or branch coverage. See {doc}`architecture`.
 
 The Node test commands independently enforce 100% line, branch, and function
 coverage for the shipped loop breaker, bounded replacement adapter, and E5
-orchestrator. The guard replay imports that same `engine.ts` and runs all six
-retained fixtures in one process; none of the Node behavior suites uses a model
-or network.
+orchestrator, including its termination lifecycle. The guard replay imports
+that same `engine.ts` and runs all six retained fixtures in one process; none
+of the Node behavior suites uses a model or network.
 
 `just docs` runs the same strict Sphinx build CI runs; `just watch-docs`
 serves a live-rebuilding copy at http://127.0.0.1:8000.

@@ -103,7 +103,9 @@ Phases completed, each with its design spec and implementation plan:
   ([_spec_](docs/superpowers/specs/2026-08-20-e4-bounded-replacement-design.md), [_plan_](docs/superpowers/plans/2026-08-20-e4-bounded-replacement.md))
 - _E5_ — one real attempt. `attempt` gives one explicit Pi model `read` plus
   E4's bounded `edit`; `/implement` runs that command inside E3 and reports
-  its candidate or named refusal.
+  its candidate or named refusal. Artifact publication is pinned outside every
+  registered worktree and Git administrative directory, and timeout reporting
+  waits for E3 to tear down the attempt.
   ([_spec_](docs/superpowers/specs/2026-08-20-e5-real-attempt-design.md), [_plan_](docs/superpowers/plans/2026-08-20-e5-real-attempt.md))
 
 The roadmap and the next phase (E6 — Packaged) live in
@@ -132,7 +134,8 @@ node --test --experimental-strip-types --experimental-test-coverage \
 node --test --experimental-strip-types --experimental-test-coverage \
   --test-coverage-lines=100 --test-coverage-branches=100 \
   --test-coverage-functions=100 \
-  --test-coverage-include=packages/engine/orchestrator.ts tests/test_orchestrator.mjs
+  --test-coverage-include=packages/engine/orchestrator.ts \
+  tests/test_orchestrator.mjs tests/test_transport.mjs
 uv run ruff check .    # lint
 uv run pyrefly check   # type-check
 ```

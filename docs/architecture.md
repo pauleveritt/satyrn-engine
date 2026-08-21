@@ -31,8 +31,9 @@ The E5 `/implement CONTRACT` flow is:
 1. The parent adapter resolves `CONTRACT` against `ctx.cwd` and requires an
    explicit `SATYRN_MODEL`.
 2. It starts `satyrn-engine deliver`, whose trusted command is
-   `satyrn-engine attempt --model MODEL CONTRACT` with transcript and patch
-   destinations outside the repository.
+   `satyrn-engine attempt --model=MODEL -- CONTRACT` with transcript and patch
+   destinations outside every registered worktree and Git administrative
+   directory.
 3. Delivery captures the caller's exact `HEAD`, creates a detached linked
    worktree, and runs the command once there.
 4. Attempt freezes the contract and exact writable-file revisions, then starts
@@ -69,7 +70,10 @@ sequentially with no host deadline, and an uncaught adapter error escapes the
 turn. The check/protocol transport therefore keeps its short deadline, while
 E5 gives the nested model attempt fifteen minutes plus a small delivery margin.
 Both paths convert spawn errors, timeouts, crashes, and malformed responses
-into contained results instead of letting them escape.
+into contained results instead of letting them escape. On an E5 deadline the
+adapter first requests cooperative termination; the Python CLI unwinds through
+E3, which reaps the attempt process group and cleans its worktree. The adapter
+does not report the timeout until the outer delivery process has closed.
 
 ## Why the loop breaker stays in TypeScript
 

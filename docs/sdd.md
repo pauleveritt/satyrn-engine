@@ -295,6 +295,64 @@ original base. The exact 50-line, 13,967-byte transcript had SHA-256
 The transcript itself remains an external evidence artifact and is not copied
 into the repository.
 
+### E5 correction verification — 2026-08-21
+
+Review of the first E5 implementation found boundaries that the original
+verification did not exercise: an artifact could name another worktree or Git
+administrative directory, a symlink swap could redirect publication after
+validation, cleanup failures could be hidden, option-like model/contract values
+were ambiguous, and the adapter could report a timeout before the attempt had
+stopped. The dated corrections in the E5 spec and plan record the revised
+decisions. The corrected stack was verified with:
+
+```console
+uv run pytest -q
+# 228 passed, 68 deselected
+
+uv run pytest -m integration -q
+# 67 passed, 1 platform skip, 228 deselected
+
+uv run pytest -m "" --cov --cov-report=term -q
+# 295 passed, 1 platform skip; 1283 statements and 318 branches, 100%
+
+node --test --experimental-strip-types --experimental-test-coverage \
+  --test-coverage-lines=100 --test-coverage-branches=100 \
+  --test-coverage-functions=100 \
+  --test-coverage-include=packages/engine/orchestrator.ts \
+  tests/test_orchestrator.mjs tests/test_transport.mjs
+# 12 passed; orchestrator.ts 100% lines, branches, and functions
+
+node --test --experimental-strip-types --experimental-test-coverage \
+  --test-coverage-lines=100 --test-coverage-branches=100 \
+  --test-coverage-functions=100 \
+  --test-coverage-include=packages/engine/engine.ts tests/test_loop_breaker.mjs
+# 16 passed; engine.ts 100% lines, branches, and functions
+
+node --test --experimental-strip-types --experimental-test-coverage \
+  --test-coverage-lines=100 --test-coverage-branches=100 \
+  --test-coverage-functions=100 \
+  --test-coverage-include=packages/engine/mutator.ts tests/test_mutator.mjs
+# 17 passed; mutator.ts 100% lines, branches, and functions
+
+node --experimental-strip-types tools/replay_guards.mjs
+node --experimental-strip-types tools/replay_orchestrator.mjs
+# 6 guard fixtures and all adapter replay cases matched
+
+uv run ruff check .
+uv run pyrefly check
+uv run --group docs sphinx-build -W -b html docs docs/_build/html
+git diff --check
+# all passed
+```
+
+The new named evidence includes
+`test_attempt_rejects_artifacts_in_any_registered_worktree_and_git_admin`,
+the parent-identity and no-follow publication cases in `test_attempt.py`, and
+`test_dispatcher_timeout_waits_for_delivery_cleanup`. The last test runs the
+real Node → `uv` → E3 → E5 path with a delayed writer and proves that the
+adapter returns only after the writer is gone, the source is clean, and no
+linked worktree remains.
+
 The disciplines review holds you to:
 
 - **Concept budget** — new jargon is a cost against a 5–10 h/wk
