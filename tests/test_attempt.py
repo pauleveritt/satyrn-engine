@@ -857,6 +857,22 @@ def test_tracked_file_read_preserves_unexpected_exception_identity(
     assert failure.__notes__ == ["secondary descriptor cleanup failure: close failed"]
 
 
+def test_tracked_descriptor_io_cleanup_failure_is_named_by_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, contract, _ = _repo(tmp_path)
+    monkeypatch.setattr(
+        attempt_module,
+        "_read_tracked_regular",
+        lambda *args: (_ for _ in ()).throw(OSError("tracked descriptor close failed")),
+    )
+    result, _ = _run_existing(repo, contract, FakeGit(repo))
+    assert result.code is AttemptCode.ATTEMPT_FAILED
+    assert "cannot inspect tracked writable file app.py" in result.message
+    assert "tracked descriptor close failed" in result.message
+
+
 def test_tracked_descriptor_cleanup_preserves_first_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

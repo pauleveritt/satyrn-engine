@@ -443,7 +443,11 @@ def _prepare(
             continue
         if not any(fnmatch(normalized, pattern) for pattern in contract.writable_paths):
             continue
-        if (content := _read_tracked_regular(root, normalized)) is not None:
+        try:
+            content = _read_tracked_regular(root, normalized)
+        except OSError as exc:
+            return _failed(model, f"cannot inspect tracked writable file {normalized}: {exc}")
+        if content is not None:
             revisions[normalized] = file_sha256(content)
     if not revisions:
         return _failed(model, "contract matches no existing tracked writable file")
