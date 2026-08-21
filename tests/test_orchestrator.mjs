@@ -1,6 +1,7 @@
 /** Node tests for the E2 transport and E5 delivery adapter. */
 
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import { test } from "node:test";
 
 import registerExtension, {
@@ -59,10 +60,19 @@ function child(options = {}) {
 		never = false,
 		error = null,
 		writeError = null,
+		asyncWriteError = null,
 		endError = null,
+		ignoreTerm = false,
 	} = options;
 	const listeners = { close: [], error: [] };
-	let killed = false;
+	const killSignals = [];
+	const stdinListeners = { error: [] };
+	let closed = false;
+	const emitClose = () => {
+		if (closed) return;
+		closed = true;
+		for (const callback of listeners.close) callback(exitCode);
+	};
 	const result = {
 		stdin: {
 			write() {
@@ -70,9 +80,17 @@ function child(options = {}) {
 			},
 			end() {
 				if (endError) throw endError;
+				if (asyncWriteError) {
+					queueMicrotask(() => {
+						for (const callback of stdinListeners.error) callback(asyncWriteError);
+					});
+				}
 				queueMicrotask(() => {
-					if (!never) for (const callback of listeners.close) callback(exitCode);
+					if (!never && !asyncWriteError) emitClose();
 				});
+			},
+			on(event, callback) {
+				stdinListeners[event].push(callback);
 			},
 		},
 		stdout: {
@@ -88,11 +106,15 @@ function child(options = {}) {
 		on(event, callback) {
 			listeners[event].push(callback);
 		},
-		kill() {
-			killed = true;
+		kill(signal = "SIGTERM") {
+			killSignals.push(signal);
+			if (signal === "SIGKILL" || !ignoreTerm) queueMicrotask(emitClose);
 		},
 		get killed() {
-			return killed;
+			return killSignals.length > 0;
+		},
+		get killSignals() {
+			return killSignals;
 		},
 		emit(event, value) {
 			for (const callback of listeners[event]) callback(value);
@@ -130,8 +152,13 @@ test("check request and response stay compatible", () => {
 		"bad",
 		"null",
 		"[]",
+		"1",
+		'"text"',
 		"{}",
 		'{"version":2,"ok":true,"code":"OK","message":""}',
+		'{"version":1,"ok":"yes","code":"OK","message":""}',
+		'{"version":1,"ok":true,"code":1,"message":""}',
+		'{"version":1,"ok":true,"code":"OK","message":1}',
 		'{"version":1,"ok":true,"code":"OTHER","message":""}',
 		'{"version":1,"ok":false,"code":"OK","message":""}',
 		'{"version":1,"ok":false,"code":"OTHER","message":""}',
@@ -148,6 +175,8 @@ test("delivery receipt parser closes shape and outcome", () => {
 		"bad",
 		"null",
 		"[]",
+		"1",
+		'"text"',
 		JSON.stringify({ ...valid, version: 2 }),
 		JSON.stringify({ ...valid, outcome: "unknown" }),
 		JSON.stringify({ ...valid, outcome: "discarded" }),
@@ -163,27 +192,37 @@ test("delivery receipt parser closes shape and outcome", () => {
 		JSON.stringify({ ...valid, command_exit: 1.5 }),
 		JSON.stringify({ ...valid, worktree_path: 1 }),
 		JSON.stringify({ ...valid, candidate_ref: null }),
+		JSON.stringify({ ...valid, candidate_commit: null }),
 		JSON.stringify({ ...valid, changed_paths: null }),
+		JSON.stringify({ ...valid, changed_paths: {} }),
+		JSON.stringify({ ...valid, command_exit: "0" }),
 		JSON.stringify({ ...valid, outcome: "candidate-created", code: "FAILED" }),
 	];
 	for (const body of malformed) assert.throws(() => parseDeliveryReceipt(body), AdapterRefusal);
 });
 
 test("delivery invocation keeps inside contract relative and outside absolute", () => {
-	const inside = buildDeliveryInvocation("/repo", "contracts/task.yaml", "m", "/engine", 12);
+	const inside = buildDeliveryInvocation("/repo", "contracts/task.yaml", "-m", "/engine", 12);
 	assert.equal(inside.command, "uv");
 	assert.equal(inside.cwd, "/engine");
-	assert.deepEqual(inside.args.slice(-3), ["--model", "m", "contracts/task.yaml"]);
+	assert.deepEqual(inside.args.slice(-3), ["--model=-m", "--", "contracts/task.yaml"]);
 	assert.ok(inside.args.includes("12"));
 	const outside = buildDeliveryInvocation("/repo", "/outside/task.yaml", "m", "/engine");
 	assert.equal(outside.args.at(-1), "/outside/task.yaml");
 	const root = buildDeliveryInvocation("/repo", "/repo", "m", "/engine");
 	assert.equal(root.args.at(-1), "/repo");
+	const relativeEngine = buildDeliveryInvocation("/repo", "-task.yaml", "m", "engine");
+	assert.equal(relativeEngine.cwd, resolve("engine"));
+	assert.deepEqual(relativeEngine.args.slice(-3), ["--model=m", "--", "-task.yaml"]);
 });
 
 test("one-shot exchange handles success and transport refusals", async () => {
 	const settledChild = child({ stdout: CHECK_OK });
 	assert.equal((await exchange(spawnerFor(settledChild), "{}", "/engine", 100)).code, "OK");
+	const childWithoutStdinEvents = child({ stdout: CHECK_OK });
+	delete childWithoutStdinEvents.stdin.on;
+	assert.equal((await exchange(spawnerFor(childWithoutStdinEvents), "{}", "/engine", 100)).code, "OK");
+	settledChild.emit("close", 0);
 	settledChild.emit("error", new Error("late"));
 	await refusal(exchange(spawnerFor(child({ stdout: "bad" })), "{}", "/engine", 100), "ENGINE_MALFORMED_RESPONSE");
 	await refusal(exchange(spawnerFor(child({ exitCode: 1 })), "{}", "/engine", 100), "ENGINE_CRASHED");
@@ -193,6 +232,19 @@ test("one-shot exchange handles success and transport refusals", async () => {
 	const timedChild = child({ never: true });
 	await refusal(exchange(spawnerFor(timedChild), "{}", "/engine", 1), "ENGINE_TIMEOUT");
 	assert.equal(timedChild.killed, true);
+	const asyncWriteChild = child({ never: true, asyncWriteError: new Error("pipe") });
+	await refusal(exchange(spawnerFor(asyncWriteChild), "{}", "/engine", 100), "ENGINE_START_FAILED");
+	const signalFailureChild = child({ never: true });
+	signalFailureChild.kill = (signal) => {
+		if (signal === "SIGKILL") queueMicrotask(() => signalFailureChild.emit("close", null));
+		throw new Error(`cannot send ${signal}`);
+	};
+	await refusal(exchange(spawnerFor(signalFailureChild), "{}", "/engine", 1), "ENGINE_TIMEOUT");
+	const synchronousCloseChild = child({ never: true });
+	synchronousCloseChild.kill = () => synchronousCloseChild.emit("close", null);
+	const synchronousClose = exchange(spawnerFor(synchronousCloseChild), "{}", "/engine", 100);
+	synchronousCloseChild.emit("error", new Error("async"));
+	await refusal(synchronousClose, "ENGINE_START_FAILED");
 });
 
 test("delivery drains diagnostics and accepts refusal receipts", async () => {
@@ -204,6 +256,10 @@ test("delivery drains diagnostics and accepts refusal receipts", async () => {
 		"OK",
 	);
 	settledChild.emit("error", new Error("late"));
+	settledChild.emit("close", 0);
+	const childWithoutStdinEvents = child({ stdout: DELIVERY_OK });
+	delete childWithoutStdinEvents.stdin.on;
+	assert.equal((await runDelivery(spawnerFor(childWithoutStdinEvents), invocation, 100)).code, "OK");
 	assert.deepEqual(diagnostics, ["events"]);
 	assert.equal((await runDelivery(spawnerFor(child({ stdout: DELIVERY_REFUSAL, exitCode: 8 })), invocation, 100)).code, "REPO_DIRTY");
 	const originalWrite = process.stderr.write;
@@ -221,13 +277,28 @@ test("delivery converts every transport failure", async () => {
 	const invocation = buildDeliveryInvocation("/repo", "task.yaml", "m", "/engine");
 	await refusal(runDelivery(() => { throw new Error("spawn"); }, invocation, 100), "ENGINE_START_FAILED");
 	await refusal(runDelivery(spawnerFor(child({ error: new Error("async") })), invocation, 100), "ENGINE_START_FAILED");
+	await refusal(runDelivery(spawnerFor(child({ never: true, asyncWriteError: new Error("pipe") })), invocation, 100), "ENGINE_START_FAILED");
 	await refusal(runDelivery(spawnerFor(child({ endError: new Error("end") })), invocation, 100), "ENGINE_START_FAILED");
 	await refusal(runDelivery(spawnerFor(child({ stdout: "bad" })), invocation, 100), "ENGINE_MALFORMED_RESPONSE");
 	await refusal(runDelivery(spawnerFor(child({ stdout: "bad", exitCode: 1 })), invocation, 100), "ENGINE_CRASHED");
 	await refusal(runDelivery(spawnerFor(child({ stdout: "x".repeat(MAX_RECEIPT_BYTES + 1) })), invocation, 100), "ENGINE_MALFORMED_RESPONSE");
-	const timedChild = child({ never: true });
-	await refusal(runDelivery(spawnerFor(timedChild), invocation, 1), "ENGINE_TIMEOUT");
-	assert.equal(timedChild.killed, true);
+	const timedChild = child({ never: true, ignoreTerm: true });
+	await refusal(runDelivery(spawnerFor(timedChild), invocation, 1, () => {}, 5), "ENGINE_TIMEOUT");
+	assert.deepEqual(timedChild.killSignals, ["SIGTERM", "SIGKILL"]);
+	const signalFailureChild = child({ never: true });
+	signalFailureChild.kill = (signal) => {
+		if (signal === "SIGKILL") queueMicrotask(() => signalFailureChild.emit("close", null));
+		throw new Error(`cannot send ${signal}`);
+	};
+	await refusal(
+		runDelivery(spawnerFor(signalFailureChild), invocation, 1, () => {}, 5),
+		"ENGINE_TIMEOUT",
+	);
+	const synchronousCloseChild = child({ never: true });
+	synchronousCloseChild.kill = () => synchronousCloseChild.emit("close", null);
+	const synchronousClose = runDelivery(spawnerFor(synchronousCloseChild), invocation, 100);
+	synchronousCloseChild.emit("error", new Error("async"));
+	await refusal(synchronousClose, "ENGINE_START_FAILED");
 });
 
 test("implement handler reports configuration, success, refusal, and crash", async () => {
@@ -272,8 +343,40 @@ test("implement handler reports configuration, success, refusal, and crash", asy
 	assert.match(notifications[3].message, /refs\/satyrn\/candidates/);
 	assert.match(notifications[4].message, /REPO_DIRTY/);
 	assert.match(notifications[5].message, /ENGINE_MALFORMED_RESPONSE/);
-	assert.match(notifications[6].message, /ADAPTER_ERROR.*unexpected transport error/);
-	assert.match(notifications[7].message, /ADAPTER_ERROR.*non-error transport failure/);
+	assert.match(notifications[6].message, /ENGINE_START_FAILED.*unexpected transport error/);
+	assert.match(notifications[7].message, /ENGINE_START_FAILED.*non-error transport failure/);
+});
+
+test("implement contains unexpected notification failures", async () => {
+	const savedRepo = process.env.SATYRN_ENGINE_REPO;
+	const savedModel = process.env.SATYRN_MODEL;
+	process.env.SATYRN_ENGINE_REPO = "/engine";
+	process.env.SATYRN_MODEL = "m";
+	try {
+		for (const thrown of [new Error("ui failed"), "ui failed without Error"]) {
+			const notifications = [];
+			let first = true;
+			const ctx = {
+				cwd: "/repo",
+				ui: {
+					notify(message, level) {
+						if (first) {
+							first = false;
+							throw thrown;
+						}
+						notifications.push({ message, level });
+					},
+				},
+			};
+			await createAdapter(spawnerFor(child({ stdout: DELIVERY_OK })), 100).implement("task.yaml", ctx);
+			assert.match(notifications[0].message, /ADAPTER_ERROR.*ui failed/);
+		}
+	} finally {
+		if (savedRepo === undefined) delete process.env.SATYRN_ENGINE_REPO;
+		else process.env.SATYRN_ENGINE_REPO = savedRepo;
+		if (savedModel === undefined) delete process.env.SATYRN_MODEL;
+		else process.env.SATYRN_MODEL = savedModel;
+	}
 });
 
 test("default extension registers the E5 command", () => {

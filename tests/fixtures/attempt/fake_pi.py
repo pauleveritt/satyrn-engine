@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -17,6 +18,11 @@ def main() -> int:
         return 17
     if mode == "nochange":
         print(json.dumps({"type": "session_shutdown", "reason": "fixture no change"}), flush=True)
+        return 0
+    if mode == "delay":
+        time.sleep(0.5)
+        Path(os.environ["SATYRN_FAKE_PI_MARKER"]).write_text("late", encoding="utf-8")
+        time.sleep(30)
         return 0
 
     context_text = os.environ["SATYRN_MUTATION_CONTEXT"]
@@ -59,4 +65,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

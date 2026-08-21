@@ -1,10 +1,12 @@
 """E5 integration: real Git/process plus shipped TypeScript/Python mutation."""
 
 import io
+import json
 import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -183,8 +185,8 @@ def test_e3_delivery_wraps_same_attempt_and_keeps_source_clean(
             str(ROOT),
             "satyrn-engine",
             "attempt",
-            "--model",
-            "fixture/model",
+            "--model=fixture/model",
+            "--",
             "contract.yaml",
         ),
         timeout=30,
@@ -197,3 +199,53 @@ def test_e3_delivery_wraps_same_attempt_and_keeps_source_clean(
     assert target.read_text(encoding="utf-8") == "def value():\n    return 1\n"
     assert _git(repo, "rev-parse", "HEAD").stdout == before_head
     assert _git(repo, "status", "--porcelain").stdout == b""
+
+
+def test_dispatcher_timeout_waits_for_delivery_cleanup(tmp_path: Path) -> None:
+    repo, contract, _, environment = _fixture(tmp_path)
+    marker = tmp_path / "late-write"
+    environment.update(
+        {
+            "SATYRN_FAKE_PI_MODE": "delay",
+            "SATYRN_FAKE_PI_MARKER": str(marker),
+        }
+    )
+    runner = tmp_path / "run-delivery.mjs"
+    runner.write_text(
+        f"""
+import {{ spawn }} from "node:child_process";
+import {{ AdapterRefusal, buildDeliveryInvocation, runDelivery }} from {json.dumps((ROOT / "packages" / "engine" / "orchestrator.ts").as_uri())};
+
+const invocation = buildDeliveryInvocation(
+  {json.dumps(str(repo))},
+  {json.dumps(str(contract))},
+  "fixture/model",
+  {json.dumps(str(ROOT))},
+  30,
+);
+try {{
+  await runDelivery(spawn, invocation, 100, () => {{}}, 8_000);
+  throw new Error("delivery unexpectedly completed");
+}} catch (error) {{
+  if (!(error instanceof AdapterRefusal) || error.code !== "ENGINE_TIMEOUT") throw error;
+}}
+""",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        ["node", "--experimental-strip-types", str(runner)],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    time.sleep(0.75)
+    assert not marker.exists()
+    assert _git(repo, "status", "--porcelain").stdout == b""
+    worktrees = _git(repo, "worktree", "list", "--porcelain").stdout
+    assert worktrees.count(b"worktree ") == 1

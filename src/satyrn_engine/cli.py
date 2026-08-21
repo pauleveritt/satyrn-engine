@@ -3,15 +3,40 @@
 import argparse
 import math
 import os
+import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
+from types import FrameType
 
 from .attempt import MODEL_ENV, AttemptCode, attempt
 from .check import check
 from .delivery import DEFAULT_TIMEOUT, deliver
 from .exits import ExitCode
 from .protocol import run_protocol
+
+
+class _DeliveryTerminationRequested(BaseException):
+    """Cooperatively unwind E3 so its isolated command group is reaped."""
+
+
+def _request_delivery_termination(
+    signum: int,
+    frame: FrameType | None,
+) -> None:
+    del signum, frame
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    raise _DeliveryTerminationRequested
+
+
+@contextmanager
+def _delivery_termination_guard() -> Iterator[None]:
+    previous = signal.signal(signal.SIGTERM, _request_delivery_termination)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -103,12 +128,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"satyrn-engine: {result.code}: {result.message}", file=sys.stderr)
         return int(result.exit_code)
     if args.command == "deliver":
-        receipt = deliver(
-            Path(args.repo),
-            Path(args.contract),
-            args.attempt_command,
-            args.timeout,
-        )
+        try:
+            with _delivery_termination_guard():
+                receipt = deliver(
+                    Path(args.repo),
+                    Path(args.contract),
+                    args.attempt_command,
+                    args.timeout,
+                )
+        except _DeliveryTerminationRequested:
+            return 128 + signal.SIGTERM
         rendered = receipt.render()
         if not _write_receipt(rendered):
             return 1
