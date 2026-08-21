@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { relative, resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -71,8 +71,14 @@ export interface SpawnedChild {
 		end(): void;
 		on?(event: "error", cb: (err: Error) => void): void;
 	};
-	stdout: { on(event: "data", cb: (chunk: string) => void): void };
-	stderr: { on(event: "data", cb: (chunk: string) => void): void };
+	stdout: {
+		on(event: "data", cb: (chunk: string) => void): void;
+		on(event: "error", cb: (err: Error) => void): void;
+	};
+	stderr: {
+		on(event: "data", cb: (chunk: string) => void): void;
+		on(event: "error", cb: (err: Error) => void): void;
+	};
 	on(event: "close", cb: (code: number | null) => void): void;
 	on(event: "error", cb: (err: Error) => void): void;
 	kill(signal?: "SIGTERM" | "SIGKILL"): boolean | void;
@@ -320,7 +326,9 @@ export function buildDeliveryInvocation(
 	const resolvedContract = resolve(sourceRepo, contract);
 	const relativeContract = relative(sourceRepo, resolvedContract);
 	const innerContract =
-		relativeContract !== "" && !relativeContract.startsWith("..")
+		relativeContract !== "" &&
+		relativeContract !== ".." &&
+		!relativeContract.startsWith(`..${sep}`)
 			? relativeContract
 			: resolvedContract;
 	return {
@@ -433,6 +441,19 @@ export async function exchange(
 			child.stdout.on("data", (chunk) => {
 				stdout += chunk;
 			});
+			child.stdout.on("error", (err) => {
+				requestTermination(
+					new AdapterRefusal("ENGINE_START_FAILED", `could not read the engine response: ${err.message}`),
+				);
+			});
+			child.stderr.on("data", () => {
+				// Drain diagnostics so an unexpected engine failure cannot fill the pipe.
+			});
+			child.stderr.on("error", (err) => {
+				requestTermination(
+					new AdapterRefusal("ENGINE_START_FAILED", `could not read engine diagnostics: ${err.message}`),
+				);
+			});
 			child.stdin.on?.("error", (err) => {
 				requestTermination(
 					new AdapterRefusal("ENGINE_START_FAILED", `could not write the request: ${err.message}`),
@@ -531,7 +552,25 @@ export async function runDelivery(
 				}
 				stdout += chunk;
 			});
-			child.stderr.on("data", diagnostic);
+			child.stdout.on("error", (err) => {
+				requestTermination(
+					new AdapterRefusal("ENGINE_START_FAILED", `could not read the delivery receipt: ${err.message}`),
+				);
+			});
+			child.stderr.on("data", (chunk) => {
+				try {
+					diagnostic(chunk);
+				} catch (err) {
+					requestTermination(
+						new AdapterRefusal("ADAPTER_ERROR", `could not forward delivery diagnostics: ${String(err)}`),
+					);
+				}
+			});
+			child.stderr.on("error", (err) => {
+				requestTermination(
+					new AdapterRefusal("ENGINE_START_FAILED", `could not read delivery diagnostics: ${err.message}`),
+				);
+			});
 			child.stdin.on?.("error", (err) => {
 				requestTermination(
 					new AdapterRefusal("ENGINE_START_FAILED", `could not close delivery stdin: ${err.message}`),

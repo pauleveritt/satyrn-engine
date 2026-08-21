@@ -62,6 +62,8 @@ function child(options = {}) {
 		writeError = null,
 		asyncWriteError = null,
 		endError = null,
+		stdoutError = null,
+		stderrError = null,
 		ignoreTerm = false,
 	} = options;
 	const listeners = { close: [], error: [] };
@@ -95,12 +97,14 @@ function child(options = {}) {
 		},
 		stdout: {
 			on(event, callback) {
-				if (event === "data" && stdout) queueMicrotask(() => callback(stdout));
+				if (event === "data" && stdout && !stdoutError) queueMicrotask(() => callback(stdout));
+				if (event === "error" && stdoutError) queueMicrotask(() => callback(stdoutError));
 			},
 		},
 		stderr: {
 			on(event, callback) {
-				if (event === "data" && stderr) queueMicrotask(() => callback(stderr));
+				if (event === "data" && stderr && !stderrError) queueMicrotask(() => callback(stderr));
+				if (event === "error" && stderrError) queueMicrotask(() => callback(stderrError));
 			},
 		},
 		on(event, callback) {
@@ -209,6 +213,10 @@ test("delivery invocation keeps inside contract relative and outside absolute", 
 	assert.ok(inside.args.includes("12"));
 	const outside = buildDeliveryInvocation("/repo", "/outside/task.yaml", "m", "/engine");
 	assert.equal(outside.args.at(-1), "/outside/task.yaml");
+	const hidden = buildDeliveryInvocation("/repo", "..hidden.yaml", "m", "/engine");
+	assert.equal(hidden.args.at(-1), "..hidden.yaml");
+	const parent = buildDeliveryInvocation("/repo", "../task.yaml", "m", "/engine");
+	assert.equal(parent.args.at(-1), "/task.yaml");
 	const root = buildDeliveryInvocation("/repo", "/repo", "m", "/engine");
 	assert.equal(root.args.at(-1), "/repo");
 	const relativeEngine = buildDeliveryInvocation("/repo", "-task.yaml", "m", "engine");
@@ -217,7 +225,7 @@ test("delivery invocation keeps inside contract relative and outside absolute", 
 });
 
 test("one-shot exchange handles success and transport refusals", async () => {
-	const settledChild = child({ stdout: CHECK_OK });
+	const settledChild = child({ stdout: CHECK_OK, stderr: "ignored diagnostic" });
 	assert.equal((await exchange(spawnerFor(settledChild), "{}", "/engine", 100)).code, "OK");
 	const childWithoutStdinEvents = child({ stdout: CHECK_OK });
 	delete childWithoutStdinEvents.stdin.on;
@@ -234,6 +242,13 @@ test("one-shot exchange handles success and transport refusals", async () => {
 	assert.equal(timedChild.killed, true);
 	const asyncWriteChild = child({ never: true, asyncWriteError: new Error("pipe") });
 	await refusal(exchange(spawnerFor(asyncWriteChild), "{}", "/engine", 100), "ENGINE_START_FAILED");
+	for (const streamFailure of [
+		child({ never: true, stdoutError: new Error("stdout") }),
+		child({ never: true, stderrError: new Error("stderr") }),
+	]) {
+		await refusal(exchange(spawnerFor(streamFailure), "{}", "/engine", 100), "ENGINE_START_FAILED");
+		assert.deepEqual(streamFailure.killSignals, ["SIGTERM"]);
+	}
 	const signalFailureChild = child({ never: true });
 	signalFailureChild.kill = (signal) => {
 		if (signal === "SIGKILL") queueMicrotask(() => signalFailureChild.emit("close", null));
@@ -279,12 +294,32 @@ test("delivery converts every transport failure", async () => {
 	await refusal(runDelivery(spawnerFor(child({ error: new Error("async") })), invocation, 100), "ENGINE_START_FAILED");
 	await refusal(runDelivery(spawnerFor(child({ never: true, asyncWriteError: new Error("pipe") })), invocation, 100), "ENGINE_START_FAILED");
 	await refusal(runDelivery(spawnerFor(child({ endError: new Error("end") })), invocation, 100), "ENGINE_START_FAILED");
+	await refusal(
+		runDelivery(spawnerFor(child({ never: true, stdoutError: new Error("stdout") })), invocation, 100),
+		"ENGINE_START_FAILED",
+	);
+	await refusal(
+		runDelivery(spawnerFor(child({ never: true, stderrError: new Error("stderr") })), invocation, 100),
+		"ENGINE_START_FAILED",
+	);
+	const diagnosticFailure = child({ never: true, stderr: "diagnostic" });
+	await refusal(
+		runDelivery(spawnerFor(diagnosticFailure), invocation, 100, () => { throw new Error("sink"); }),
+		"ADAPTER_ERROR",
+	);
+	assert.deepEqual(diagnosticFailure.killSignals, ["SIGTERM"]);
 	await refusal(runDelivery(spawnerFor(child({ stdout: "bad" })), invocation, 100), "ENGINE_MALFORMED_RESPONSE");
 	await refusal(runDelivery(spawnerFor(child({ stdout: "bad", exitCode: 1 })), invocation, 100), "ENGINE_CRASHED");
 	await refusal(runDelivery(spawnerFor(child({ stdout: "x".repeat(MAX_RECEIPT_BYTES + 1) })), invocation, 100), "ENGINE_MALFORMED_RESPONSE");
 	const timedChild = child({ never: true, ignoreTerm: true });
 	await refusal(runDelivery(spawnerFor(timedChild), invocation, 1, () => {}, 5), "ENGINE_TIMEOUT");
 	assert.deepEqual(timedChild.killSignals, ["SIGTERM", "SIGKILL"]);
+	const ignoredStreamFailure = child({ never: true, ignoreTerm: true, stdoutError: new Error("stream") });
+	await refusal(
+		runDelivery(spawnerFor(ignoredStreamFailure), invocation, 100, () => {}, 5),
+		"ENGINE_START_FAILED",
+	);
+	assert.deepEqual(ignoredStreamFailure.killSignals, ["SIGTERM", "SIGKILL"]);
 	const signalFailureChild = child({ never: true });
 	signalFailureChild.kill = (signal) => {
 		if (signal === "SIGKILL") queueMicrotask(() => signalFailureChild.emit("close", null));

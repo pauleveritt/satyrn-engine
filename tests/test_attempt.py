@@ -1,6 +1,7 @@
 """Default-tier tests for E5's pure boundaries and injected attempt seams."""
 
 import io
+import json
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -142,6 +143,14 @@ def _run(
         stderr=stderr,
     )
     return result, stdout.getvalue(), stderr.getvalue(), selected_git, selected_pi
+
+
+def _artifact_destination(path: Path) -> attempt_module._ArtifactDestination:
+    descriptor = os.open(
+        path.parent,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+    )
+    return attempt_module._ArtifactDestination(path, attempt_module._identity(os.fstat(descriptor)), descriptor)
 
 
 def test_prompt_and_pi_command_are_small_and_hermetic(tmp_path: Path) -> None:
@@ -371,6 +380,7 @@ def _run_existing(
     git: FakeGit,
     *,
     environment: dict[str, str] | None = None,
+    pi: FakePi | None = None,
 ) -> tuple[AttemptResult, bytes]:
     output = io.BytesIO()
     result = attempt_module.attempt(
@@ -379,7 +389,7 @@ def _run_existing(
         "model",
         environment={attempt_module.ENGINE_REPO_ENV: str(Path(__file__).parents[1])} | (environment or {}),
         git_runner=git,
-        pi_runner=FakePi(),
+        pi_runner=pi if pi is not None else FakePi(),
         stdout=output,
         stderr=io.BytesIO(),
     )
@@ -460,6 +470,92 @@ def test_artifact_names_are_compared_case_insensitively_in_the_same_parent(tmp_p
     assert "must be different" in result.message
 
 
+def test_artifact_parent_identity_is_rechecked_after_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "artifacts"
+    parent.mkdir()
+    descriptor: int | None = None
+    original_open = attempt_module.os.open
+    original_fstat = attempt_module.os.fstat
+
+    def capture_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal descriptor
+        opened = original_open(path, flags, mode, dir_fd=dir_fd)
+        if Path(os.fsdecode(path)) == parent:
+            descriptor = opened
+        return opened
+
+    def changed_fstat(selected: int) -> os.stat_result:
+        actual = original_fstat(selected)
+        if selected != descriptor:
+            return actual
+        values = list(actual)
+        values[1] += 1
+        return os.stat_result(values)
+
+    monkeypatch.setattr(attempt_module.os, "open", capture_open)
+    monkeypatch.setattr(attempt_module.os, "fstat", changed_fstat)
+    result = attempt_module._artifact_destinations(
+        (),
+        {attempt_module.TRANSCRIPT_ENV: str(parent / "transcript")},
+    )
+    assert isinstance(result, str)
+    assert "parent changed during preparation" in result
+
+
+def test_partial_artifact_descriptor_acquisition_closes_the_first(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_parent = tmp_path / "patches"
+    transcript_parent = tmp_path / "transcripts"
+    patch_parent.mkdir()
+    transcript_parent.mkdir()
+    opened: list[int] = []
+    closed: list[int] = []
+    original_open = attempt_module.os.open
+    original_close = attempt_module.os.close
+
+    def fail_second_parent(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if Path(os.fsdecode(path)) == transcript_parent:
+            raise OSError("second parent unavailable")
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if Path(os.fsdecode(path)) == patch_parent:
+            opened.append(descriptor)
+        return descriptor
+
+    def record_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        original_close(descriptor)
+
+    monkeypatch.setattr(attempt_module.os, "open", fail_second_parent)
+    monkeypatch.setattr(attempt_module.os, "close", record_close)
+    result = attempt_module._artifact_destinations(
+        (),
+        {
+            attempt_module.PATCH_ENV: str(patch_parent / "patch"),
+            attempt_module.TRANSCRIPT_ENV: str(transcript_parent / "transcript"),
+        },
+    )
+    assert isinstance(result, str)
+    assert "second parent unavailable" in result
+    assert opened and closed.count(opened[0]) == 1
+
+
 def test_existing_artifact_is_not_overwritten(tmp_path: Path) -> None:
     repo, contract, _ = _repo(tmp_path)
     destination = tmp_path / "existing"
@@ -515,10 +611,84 @@ def test_symlinked_artifact_ancestor_cannot_alias_repository(tmp_path: Path) -> 
 
 def test_temporary_parent_failure_is_named(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo, contract, _ = _repo(tmp_path)
+    artifacts: list[attempt_module.AttemptArtifacts] = []
+    original_destinations = attempt_module._artifact_destinations
+
+    def capture_destinations(*args: object, **kwargs: object) -> attempt_module.AttemptArtifacts | str:
+        prepared = original_destinations(*args, **kwargs)  # type: ignore[arg-type]
+        if isinstance(prepared, attempt_module.AttemptArtifacts):
+            artifacts.append(prepared)
+        return prepared
+
+    monkeypatch.setattr(attempt_module, "_artifact_destinations", capture_destinations)
     monkeypatch.setattr(attempt_module.tempfile, "mkdtemp", lambda **kwargs: (_ for _ in ()).throw(OSError("full")))
-    result, _ = _run_existing(repo, contract, FakeGit(repo))
+    result, _ = _run_existing(
+        repo,
+        contract,
+        FakeGit(repo),
+        environment={attempt_module.TRANSCRIPT_ENV: str(tmp_path / "transcript")},
+    )
     assert result.code is AttemptCode.ATTEMPT_FAILED
     assert "temporary directory" in result.message
+    assert artifacts[0].transcript is not None
+    assert artifacts[0].transcript.parent_descriptor is None
+
+
+def test_artifact_descriptor_close_failure_supersedes_pending_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, contract, _ = _repo(tmp_path)
+    descriptor: int | None = None
+    original_destinations = attempt_module._artifact_destinations
+    original_close = attempt_module.os.close
+
+    def capture_destinations(*args: object, **kwargs: object) -> attempt_module.AttemptArtifacts | str:
+        nonlocal descriptor
+        prepared = original_destinations(*args, **kwargs)  # type: ignore[arg-type]
+        if isinstance(prepared, attempt_module.AttemptArtifacts) and prepared.transcript is not None:
+            descriptor = prepared.transcript.parent_descriptor
+        return prepared
+
+    def close_then_fail(selected: int) -> None:
+        original_close(selected)
+        if selected == descriptor:
+            raise OSError("artifact descriptor close failed")
+
+    monkeypatch.setattr(attempt_module, "_artifact_destinations", capture_destinations)
+    monkeypatch.setattr(attempt_module.os, "close", close_then_fail)
+    result, _ = _run_existing(
+        repo,
+        contract,
+        FakeGit(repo),
+        environment={attempt_module.TRANSCRIPT_ENV: str(tmp_path / "transcript")},
+    )
+    assert result.code is AttemptCode.ATTEMPT_FAILED
+    assert "artifact descriptor close failed" in result.message
+
+
+def test_artifact_created_during_parent_open_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, contract, _ = _repo(tmp_path)
+    destination = tmp_path / "raced"
+    destination.write_bytes(b"caller")
+    original_lexists = attempt_module.os.path.lexists
+    monkeypatch.setattr(
+        attempt_module.os.path,
+        "lexists",
+        lambda path: False if Path(path) == destination else original_lexists(path),
+    )
+    result, _ = _run_existing(
+        repo,
+        contract,
+        FakeGit(repo),
+        environment={attempt_module.TRANSCRIPT_ENV: str(destination)},
+    )
+    assert result.code is AttemptCode.ATTEMPT_FAILED
+    assert "already exists" in result.message
+    assert destination.read_bytes() == b"caller"
 
 
 def test_frozen_contract_failure_is_named(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -564,13 +734,111 @@ def test_head_failure_and_unsafe_or_unreadable_paths_are_refused(tmp_path: Path)
     assert result.code is AttemptCode.OK
 
 
-def test_non_file_tracked_path_is_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    repo, contract, _ = _repo(tmp_path)
-    original = Path.is_file
-    monkeypatch.setattr(Path, "is_file", lambda path: False if path.name == "app.py" else original(path))
+def test_non_file_tracked_path_is_skipped(tmp_path: Path) -> None:
+    repo, contract, target = _repo(tmp_path)
+    target.unlink()
+    target.mkdir()
     result, _ = _run_existing(repo, contract, FakeGit(repo))
     assert result.code is AttemptCode.ATTEMPT_FAILED
     assert "no existing tracked" in result.message
+
+
+@pytest.mark.parametrize("symlink_kind", ["leaf", "ancestor"])
+def test_tracked_symlinks_are_excluded_while_regular_sibling_remains_writable(
+    tmp_path: Path,
+    symlink_kind: str,
+) -> None:
+    repo, contract, target = _repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "app.py").write_text("outside = True\n", encoding="utf-8")
+    if symlink_kind == "leaf":
+        target.unlink()
+        target.symlink_to(outside / "app.py")
+        unsafe_path = b"app.py"
+    else:
+        linked = repo / "linked"
+        linked.symlink_to(outside, target_is_directory=True)
+        unsafe_path = b"linked/app.py"
+
+    contract.write_text("id: x\ntask: y\nwritable_paths:\n  - '*.py'\n", encoding="utf-8")
+    only_symlink = FakeGit(repo)
+    only_symlink.overrides["ls-files"] = GitResult(0, unsafe_path + b"\0", b"")
+    refused, _ = _run_existing(repo, contract, only_symlink)
+    assert refused.code is AttemptCode.ATTEMPT_FAILED
+    assert "no existing tracked" in refused.message
+
+    if symlink_kind == "ancestor":
+        sibling = repo / "regular" / "sibling.py"
+        sibling.parent.mkdir()
+        sibling_path = b"regular/sibling.py"
+    else:
+        sibling = repo / "sibling.py"
+        sibling_path = b"sibling.py"
+    sibling.write_text("sibling = True\n", encoding="utf-8")
+    with_sibling = FakeGit(repo)
+    with_sibling.overrides["ls-files"] = GitResult(
+        0,
+        unsafe_path + b"\0" + sibling_path + b"\0",
+        b"",
+    )
+    pi = FakePi()
+    accepted, _ = _run_existing(repo, contract, with_sibling, pi=pi)
+    assert accepted.code is AttemptCode.OK
+    assert pi.environment is not None
+    context = json.loads(pi.environment[attempt_module.MUTATION_CONTEXT_ENV])
+    assert context["revisions"] == {
+        os.fsdecode(sibling_path): attempt_module.file_sha256(sibling.read_bytes())
+    }
+
+
+def test_tracked_file_read_preserves_unexpected_exception_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, contract, _ = _repo(tmp_path)
+    failure = KeyboardInterrupt("stop")
+    original_close = attempt_module.os.close
+    close_failed = False
+
+    def fail_one_close(descriptor: int) -> None:
+        nonlocal close_failed
+        original_close(descriptor)
+        if not close_failed:
+            close_failed = True
+            raise OSError("close failed")
+
+    monkeypatch.setattr(attempt_module.os, "read", lambda *args: (_ for _ in ()).throw(failure))
+    monkeypatch.setattr(attempt_module.os, "close", fail_one_close)
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        _run_existing(repo, contract, FakeGit(repo))
+
+    assert raised.value is failure
+    assert failure.__notes__ == ["secondary descriptor cleanup failure: close failed"]
+
+
+def test_tracked_descriptor_cleanup_preserves_first_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _, _ = _repo(tmp_path)
+    original_close = attempt_module.os.close
+    first = OSError("first close")
+    second = OSError("second close")
+    failures = iter((first, second))
+
+    def fail_close(descriptor: int) -> None:
+        original_close(descriptor)
+        raise next(failures)
+
+    monkeypatch.setattr(attempt_module.os, "close", fail_close)
+
+    with pytest.raises(OSError) as raised:
+        attempt_module._read_tracked_regular(repo, "app.py")
+
+    assert raised.value is first
+    assert first.__notes__ == ["secondary descriptor cleanup failure: second close"]
 
 
 def test_engine_package_must_exist(tmp_path: Path) -> None:
@@ -647,7 +915,7 @@ def test_unresolvable_relative_engine_repo_is_named(
     assert "cannot resolve engine repository" in result.message
 
 
-def test_artifact_parent_swap_is_refused_by_identity_recheck(tmp_path: Path) -> None:
+def test_artifact_parent_is_pinned_before_path_is_redirected(tmp_path: Path) -> None:
     repo, contract, _ = _repo(tmp_path)
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
@@ -657,7 +925,7 @@ def test_artifact_parent_swap_is_refused_by_identity_recheck(tmp_path: Path) -> 
         def run(self, *args: object, **kwargs: object) -> int:
             result = super().run(*args, **kwargs)  # type: ignore[arg-type]
             artifacts.rename(moved)
-            artifacts.mkdir()
+            artifacts.symlink_to(repo, target_is_directory=True)
             return result
 
     output = io.BytesIO()
@@ -674,10 +942,10 @@ def test_artifact_parent_swap_is_refused_by_identity_recheck(tmp_path: Path) -> 
         stdout=output,
         stderr=io.BytesIO(),
     )
-    assert result.code is AttemptCode.ATTEMPT_FAILED
-    assert "parent changed" in result.message
+    assert result.code is AttemptCode.OK
     assert not (artifacts / "transcript").exists()
-    assert not (moved / "transcript").exists()
+    assert (moved / "transcript").read_bytes() == output.getvalue()
+    assert not (repo / "transcript").exists()
 
 
 def test_destination_created_after_preparation_is_never_overwritten(tmp_path: Path) -> None:
@@ -963,9 +1231,12 @@ def test_successful_artifact_cleanup_failure_is_named_and_retained(
         real_unlink(path, dir_fd=dir_fd)
 
     monkeypatch.setattr(attempt_module.os, "unlink", fail_artifact_unlink)
-    target = attempt_module._ArtifactDestination(destination, attempt_module._identity(parent.stat()))
-    with pytest.raises(OSError) as excinfo:
-        attempt_module._publish_bytes(b"complete", target)
+    target = _artifact_destination(destination)
+    try:
+        with pytest.raises(OSError) as excinfo:
+            attempt_module._publish_bytes(b"complete", target)
+    finally:
+        attempt_module._close_destinations((target,))
     assert destination.read_bytes() == b"complete"
     assert "unlink failed" in str(excinfo.value)
     assert "retained path" in str(excinfo.value)
@@ -977,6 +1248,7 @@ def test_artifact_parent_close_failure_becomes_named_failure(
 ) -> None:
     parent = tmp_path / "artifacts"
     parent.mkdir()
+    target = _artifact_destination(parent / "first")
     real_close = attempt_module.os.close
 
     def close_then_fail(descriptor: int) -> None:
@@ -984,10 +1256,11 @@ def test_artifact_parent_close_failure_becomes_named_failure(
         raise OSError("parent close failed")
 
     monkeypatch.setattr(attempt_module.os, "close", close_then_fail)
-    target = attempt_module._ArtifactDestination(parent / "first", attempt_module._identity(parent.stat()))
-    with pytest.raises(OSError, match="retained path") as excinfo:
+    with pytest.raises(OSError, match="parent close failed") as excinfo:
         attempt_module._publish_bytes(b"complete", target)
+        attempt_module._close_destinations((target,))
     assert "parent close failed" in str(excinfo.value)
+    assert any("descriptor ownership released" in note for note in excinfo.value.__notes__)
     assert target.path.read_bytes() == b"complete"
 
 
@@ -997,20 +1270,21 @@ def test_artifact_parent_close_failure_is_a_note_on_existing_exception(
 ) -> None:
     parent = tmp_path / "artifacts"
     parent.mkdir()
-    target = attempt_module._ArtifactDestination(parent / "target", attempt_module._identity(parent.stat()))
-    primary = OSError("link failed")
-    monkeypatch.setattr(attempt_module.os, "link", lambda *args, **kwargs: (_ for _ in ()).throw(primary))
+    first = _artifact_destination(parent / "first")
+    second = _artifact_destination(parent / "second")
     real_close = attempt_module.os.close
+    failures = iter((OSError("second close failed"), OSError("first close failed")))
 
     def close_then_fail(descriptor: int) -> None:
         real_close(descriptor)
-        raise OSError("parent close failed")
+        raise next(failures)
 
     monkeypatch.setattr(attempt_module.os, "close", close_then_fail)
     with pytest.raises(OSError) as excinfo:
-        attempt_module._publish_bytes(b"complete", target)
-    assert excinfo.value is primary
-    assert any("parent close failed" in note for note in primary.__notes__)
+        attempt_module._close_destinations((first, second))
+    assert str(excinfo.value) == "second close failed"
+    assert any("secondary cleanup failure" in note and "first close failed" in note for note in excinfo.value.__notes__)
+    assert first.parent_descriptor is second.parent_descriptor is None
 
 
 def test_unexpected_artifact_cleanup_failure_preserves_its_identity(
@@ -1019,7 +1293,7 @@ def test_unexpected_artifact_cleanup_failure_preserves_its_identity(
 ) -> None:
     parent = tmp_path / "artifacts"
     parent.mkdir()
-    target = attempt_module._ArtifactDestination(parent / "target", attempt_module._identity(parent.stat()))
+    target = _artifact_destination(parent / "target")
     primary = KeyboardInterrupt("close interrupted")
     real_close = attempt_module.os.close
 
@@ -1029,10 +1303,86 @@ def test_unexpected_artifact_cleanup_failure_preserves_its_identity(
 
     monkeypatch.setattr(attempt_module.os, "close", close_then_interrupt)
     with pytest.raises(KeyboardInterrupt) as excinfo:
-        attempt_module._publish_bytes(b"complete", target)
+        attempt_module._close_destinations((target,))
     assert excinfo.value is primary
-    assert target.path.read_bytes() == b"complete"
-    assert any("retained path:" in note for note in primary.__notes__)
+    assert target.parent_descriptor is None
+    assert any("descriptor ownership released" in note for note in primary.__notes__)
+
+
+@pytest.mark.parametrize(
+    ("preparation_error", "cleanup_error", "returned"),
+    [
+        (OSError("open failed"), OSError("close failed"), True),
+        (OSError("open failed"), MemoryError("close failed"), False),
+        (MemoryError("open failed"), OSError("close failed"), False),
+    ],
+)
+def test_artifact_preparation_preserves_cleanup_precedence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    preparation_error: BaseException,
+    cleanup_error: BaseException,
+    returned: bool,
+) -> None:
+    parent = tmp_path / "artifacts"
+    parent.mkdir()
+    monkeypatch.setattr(
+        attempt_module.os,
+        "open",
+        lambda *args, **kwargs: (_ for _ in ()).throw(preparation_error),
+    )
+    monkeypatch.setattr(
+        attempt_module,
+        "_close_destinations",
+        lambda *args: (_ for _ in ()).throw(cleanup_error),
+    )
+    if returned:
+        result = attempt_module._artifact_destinations(
+            (),
+            {attempt_module.TRANSCRIPT_ENV: str(parent / "transcript")},
+        )
+        assert isinstance(result, str)
+        assert "open failed" in result and "close failed" in result
+    else:
+        expected = cleanup_error if isinstance(preparation_error, OSError) else preparation_error
+        with pytest.raises(type(expected)) as excinfo:
+            attempt_module._artifact_destinations(
+                (),
+                {attempt_module.TRANSCRIPT_ENV: str(parent / "transcript")},
+            )
+        assert excinfo.value is expected
+        assert any("failed" in note for note in expected.__notes__)
+
+
+def test_artifact_descriptor_ownership_and_cleanup_precedence_are_single_use(tmp_path: Path) -> None:
+    parent = tmp_path / "artifacts"
+    parent.mkdir()
+    target = _artifact_destination(parent / "target")
+    attempt_module._close_destinations((target,))
+    attempt_module._close_destinations((target,))
+    with pytest.raises(RuntimeError, match="already closed"):
+        target.descriptor()
+
+    primary = MemoryError("first cleanup")
+    pending, selected = attempt_module._merge_attempt_cleanup(
+        "model",
+        AttemptResult(AttemptCode.OK, model="model"),
+        None,
+        primary,
+        OSError("second cleanup"),
+        "second detail",
+    )
+    assert pending is not None and pending.code is AttemptCode.OK
+    assert selected is primary
+    assert any("second detail" in note for note in primary.__notes__)
+
+
+def test_non_io_cleanup_failure_keeps_exact_identity() -> None:
+    primary = KeyboardInterrupt("cleanup interrupted")
+    with pytest.raises(KeyboardInterrupt) as excinfo:
+        attempt_module._raise_cleanup_failure(primary, "cleanup detail")
+    assert excinfo.value is primary
+    assert primary.__notes__ == ["cleanup detail"]
 
 
 def test_artifact_fdopen_failure_preserves_close_failure_note(

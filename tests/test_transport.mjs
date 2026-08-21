@@ -9,8 +9,8 @@ import {
 
 const RESPONSE = JSON.stringify({ version: 1, ok: true, code: "OK", message: "" });
 
-function child({ stdout = RESPONSE, stdinFailure, ignoreTerm = false, never = false } = {}) {
-	const listeners = { close: [], error: [], stdinError: [] };
+function child({ stdout = RESPONSE, stdinFailure, stdoutFailure, ignoreTerm = false, never = false } = {}) {
+	const listeners = { close: [], error: [], stdinError: [], stdoutError: [] };
 	const signals = [];
 	let closed = false;
 	const close = (code) => {
@@ -37,8 +37,20 @@ function child({ stdout = RESPONSE, stdinFailure, ignoreTerm = false, never = fa
 		},
 		stdout: {
 			on(event, callback) {
+				if (event === "error") {
+					listeners.stdoutError.push(callback);
+					if (stdoutFailure !== undefined) queueMicrotask(() => callback(stdoutFailure));
+					return;
+				}
 				assert.equal(event, "data");
-				if (stdinFailure === undefined && !never) queueMicrotask(() => callback(stdout));
+				if (stdinFailure === undefined && stdoutFailure === undefined && !never) {
+					queueMicrotask(() => callback(stdout));
+				}
+			},
+		},
+		stderr: {
+			on(event, _callback) {
+				assert.ok(event === "data" || event === "error");
 			},
 		},
 		on(event, callback) {
@@ -69,6 +81,12 @@ test("exchange still accepts one complete response", async () => {
 
 test("asynchronous stdin failure is contained and reaped", async () => {
 	const process = child({ stdinFailure: new Error("EPIPE") });
+	await refusal(exchange(() => process, "request", "/engine", 100), "ENGINE_START_FAILED");
+	assert.deepEqual(process.signals, ["SIGTERM"]);
+});
+
+test("asynchronous stdout failure is contained and reaped", async () => {
+	const process = child({ stdoutFailure: new Error("read failed"), never: true });
 	await refusal(exchange(() => process, "request", "/engine", 100), "ENGINE_START_FAILED");
 	assert.deepEqual(process.signals, ["SIGTERM"]);
 });

@@ -40,6 +40,11 @@ class _GitRoutingVariable(StrEnum):
     WORK_TREE = "GIT_WORK_TREE"
 
 
+class _ArtifactKind(StrEnum):
+    PATCH = "patch"
+    TRANSCRIPT = "transcript"
+
+
 class AttemptCode(StrEnum):
     """Closed outcomes from one E5 attempt."""
 
@@ -103,12 +108,25 @@ class _FileIdentity:
     inode: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _ArtifactDestination:
     """An absent artifact path pinned to its already-validated parent."""
 
     path: Path
     parent_identity: _FileIdentity
+    parent_descriptor: int | None
+
+    def descriptor(self) -> int:
+        """Return the owned parent descriptor while it remains open."""
+        if self.parent_descriptor is None:
+            raise RuntimeError(f"artifact parent is already closed: {self.path.parent}")
+        return self.parent_descriptor
+
+    def take_descriptor(self) -> int | None:
+        """Transfer descriptor ownership exactly once for cleanup."""
+        descriptor = self.parent_descriptor
+        self.parent_descriptor = None
+        return descriptor
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,54 +300,70 @@ def attempt(
         return prepared
     root, base_commit, revisions, artifacts, engine_repo = prepared
 
-    try:
-        temporary_parent = Path(tempfile.mkdtemp(prefix=".satyrn-attempt-", dir=root.parent))
-    except OSError as exc:
-        return _failed(model, f"cannot create attempt temporary directory: {exc}")
+    temporary_parent: Path | None = None
     pending: AttemptResult | None = None
     active_exception: BaseException | None = None
     try:
-        frozen_contract = temporary_parent / "contract.yaml"
         try:
-            _freeze_contract(contract_candidate, frozen_contract)
-            frozen_value = load_contract(frozen_contract)
-        except (ContractError, OSError) as exc:
-            pending = _failed(model, f"cannot freeze contract: {exc}")
+            temporary_parent = Path(tempfile.mkdtemp(prefix=".satyrn-attempt-", dir=root.parent))
+        except OSError as exc:
+            pending = _failed(model, f"cannot create attempt temporary directory: {exc}")
         else:
-            if frozen_value != checked.contract:
-                pending = _failed(model, "contract changed while the attempt was being prepared")
+            frozen_contract = temporary_parent / "contract.yaml"
+            try:
+                _freeze_contract(contract_candidate, frozen_contract)
+                frozen_value = load_contract(frozen_contract)
+            except (ContractError, OSError) as exc:
+                pending = _failed(model, f"cannot freeze contract: {exc}")
             else:
-                context = AttemptContext(
-                    repo=root,
-                    contract=checked.contract,
-                    frozen_contract=frozen_contract,
-                    base_commit=base_commit,
-                    revisions=revisions,
-                    model=model,
-                    engine_repo=engine_repo,
-                )
-                pending = _run(context, artifacts, env, git, pi, output, errors, temporary_parent)
+                if frozen_value != checked.contract:
+                    pending = _failed(model, "contract changed while the attempt was being prepared")
+                else:
+                    context = AttemptContext(
+                        repo=root,
+                        contract=checked.contract,
+                        frozen_contract=frozen_contract,
+                        base_commit=base_commit,
+                        revisions=revisions,
+                        model=model,
+                        engine_repo=engine_repo,
+                    )
+                    pending = _run(context, artifacts, env, git, pi, output, errors, temporary_parent)
     except BaseException as exc:
         active_exception = exc
         raise
     finally:
+        cleanup_exception: BaseException | None = None
+        if temporary_parent is not None:
+            try:
+                shutil.rmtree(temporary_parent)
+            except BaseException as cleanup_error:
+                detail = (
+                    f"cannot remove attempt temporary directory: {cleanup_error}; "
+                    f"retained path: {temporary_parent}"
+                )
+                pending, cleanup_exception = _merge_attempt_cleanup(
+                    model,
+                    pending,
+                    active_exception,
+                    cleanup_exception,
+                    cleanup_error,
+                    detail,
+                )
         try:
-            shutil.rmtree(temporary_parent)
+            _close_artifacts(artifacts)
         except BaseException as cleanup_error:
-            detail = (
-                f"cannot remove attempt temporary directory: {cleanup_error}; "
-                f"retained path: {temporary_parent}"
+            detail = f"cannot close artifact parent directory: {_exception_detail(cleanup_error)}"
+            pending, cleanup_exception = _merge_attempt_cleanup(
+                model,
+                pending,
+                active_exception,
+                cleanup_exception,
+                cleanup_error,
+                detail,
             )
-            if active_exception is not None:
-                active_exception.add_note(f"secondary cleanup failure: {detail}")
-            elif pending is not None:
-                if isinstance(cleanup_error, OSError):
-                    pending = _failed(model, detail, command_exit=pending.command_exit)
-                else:
-                    cleanup_error.add_note(detail)
-                    raise
-            else:  # pragma: no cover - pending/result invariant
-                raise
+        if active_exception is None and cleanup_exception is not None:
+            raise cleanup_exception
     if pending is None:  # pragma: no cover - pending/result invariant
         raise AssertionError("attempt produced no result")
     return pending
@@ -409,12 +443,7 @@ def _prepare(
             continue
         if not any(fnmatch(normalized, pattern) for pattern in contract.writable_paths):
             continue
-        target = root.joinpath(*normalized.split("/"))
-        try:
-            content = target.read_bytes()
-        except OSError:
-            continue
-        if target.is_file():
+        if (content := _read_tracked_regular(root, normalized)) is not None:
             revisions[normalized] = file_sha256(content)
     if not revisions:
         return _failed(model, "contract matches no existing tracked writable file")
@@ -422,10 +451,6 @@ def _prepare(
     forbidden_roots = _forbidden_artifact_roots(root, worktrees.stdout, git_dir.stdout, common_dir.stdout)
     if isinstance(forbidden_roots, str):
         return _failed(model, forbidden_roots)
-    artifacts = _artifact_destinations(forbidden_roots, environment)
-    if isinstance(artifacts, str):
-        return _failed(model, artifacts)
-
     engine_repo_text = environment.get(ENGINE_REPO_ENV)
     try:
         if engine_repo_text:
@@ -441,7 +466,60 @@ def _prepare(
     if not all((package / name).is_file() for name in ("engine.ts", "mutator.ts")):
         return _failed(model, f"engine package is unavailable under {engine_repo}")
 
+    artifacts = _artifact_destinations(forbidden_roots, environment)
+    if isinstance(artifacts, str):
+        return _failed(model, artifacts)
+
     return root, head.stdout.strip().decode("ascii"), revisions, artifacts, engine_repo
+
+
+def _read_tracked_regular(root: Path, path: str) -> bytes | None:
+    """Read one regular tracked file without following any path symlink."""
+    descriptors: list[int] = []
+    active_exception: BaseException | None = None
+    try:
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent_descriptor = os.open(root, directory_flags)
+        descriptors.append(parent_descriptor)
+        components = path.split("/")
+        for component in components[:-1]:
+            parent_descriptor = os.open(
+                component,
+                directory_flags,
+                dir_fd=parent_descriptor,
+            )
+            descriptors.append(parent_descriptor)
+        target_descriptor = os.open(
+            components[-1],
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=parent_descriptor,
+        )
+        descriptors.append(target_descriptor)
+        if not stat.S_ISREG(os.fstat(target_descriptor).st_mode):
+            return None
+        content = bytearray()
+        while chunk := os.read(target_descriptor, 64 * 1024):
+            content.extend(chunk)
+        return bytes(content)
+    except OSError:
+        return None
+    except BaseException as exc:
+        active_exception = exc
+        raise
+    finally:
+        cleanup_exception: BaseException | None = None
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except BaseException as exc:
+                if active_exception is not None:
+                    active_exception.add_note(f"secondary descriptor cleanup failure: {exc}")
+                elif cleanup_exception is None:
+                    cleanup_exception = exc
+                else:
+                    cleanup_exception.add_note(f"secondary descriptor cleanup failure: {exc}")
+        if active_exception is None and cleanup_exception is not None:
+            raise cleanup_exception
 
 
 def _run(
@@ -610,8 +688,11 @@ def _artifact_destinations(
 ) -> AttemptArtifacts | str:
     patch = _artifact_path(environment.get(PATCH_ENV))
     transcript = _artifact_path(environment.get(TRANSCRIPT_ENV))
-    destinations: dict[str, _ArtifactDestination | None] = {"patch": None, "transcript": None}
-    for label, candidate in (("patch", patch), ("transcript", transcript)):
+    candidates: dict[_ArtifactKind, tuple[Path, _FileIdentity] | None] = {
+        _ArtifactKind.PATCH: None,
+        _ArtifactKind.TRANSCRIPT: None,
+    }
+    for label, candidate in ((_ArtifactKind.PATCH, patch), (_ArtifactKind.TRANSCRIPT, transcript)):
         if candidate is None:
             continue
         parent = candidate.parent
@@ -629,18 +710,62 @@ def _artifact_destinations(
                 f"{label} artifact must be outside the repository, every registered worktree, "
                 f"and Git administrative directory: {candidate}"
             )
-        destinations[label] = _ArtifactDestination(candidate, parent_identity)
+        candidates[label] = candidate, parent_identity
 
-    patch_destination = destinations["patch"]
-    transcript_destination = destinations["transcript"]
+    patch_candidate = candidates[_ArtifactKind.PATCH]
+    transcript_candidate = candidates[_ArtifactKind.TRANSCRIPT]
     if (
-        patch_destination is not None
-        and transcript_destination is not None
-        and patch_destination.parent_identity == transcript_destination.parent_identity
-        and patch_destination.path.name.casefold() == transcript_destination.path.name.casefold()
+        patch_candidate is not None
+        and transcript_candidate is not None
+        and patch_candidate[1] == transcript_candidate[1]
+        and patch_candidate[0].name.casefold() == transcript_candidate[0].name.casefold()
     ):
         return "patch and transcript artifact paths must be different"
-    return AttemptArtifacts(patch=patch_destination, transcript=transcript_destination)
+
+    destinations: dict[_ArtifactKind, _ArtifactDestination | None] = {
+        _ArtifactKind.PATCH: None,
+        _ArtifactKind.TRANSCRIPT: None,
+    }
+    opened: list[_ArtifactDestination] = []
+    try:
+        for label, candidate in candidates.items():
+            if candidate is None:
+                continue
+            path, expected_identity = candidate
+            descriptor = os.open(
+                path.parent,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            )
+            destination = _ArtifactDestination(path, expected_identity, descriptor)
+            opened.append(destination)
+            if _identity(os.fstat(descriptor)) != expected_identity:
+                raise OSError(f"{label} artifact parent changed during preparation: {path.parent}")
+            try:
+                os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise FileExistsError(f"{label} artifact already exists: {path}")
+            destinations[label] = destination
+    except (OSError, ValueError) as exc:
+        try:
+            _close_destinations(opened)
+        except BaseException as cleanup_error:
+            if isinstance(cleanup_error, OSError):
+                return f"cannot prepare artifact destination: {exc}; {_exception_detail(cleanup_error)}"
+            cleanup_error.add_note(f"artifact preparation also failed: {exc}")
+            raise
+        return f"cannot prepare artifact destination: {exc}"
+    except BaseException as exc:
+        try:
+            _close_destinations(opened)
+        except BaseException as cleanup_error:
+            exc.add_note(f"secondary cleanup failure: {_exception_detail(cleanup_error)}")
+        raise
+    return AttemptArtifacts(
+        patch=destinations[_ArtifactKind.PATCH],
+        transcript=destinations[_ArtifactKind.TRANSCRIPT],
+    )
 
 
 def _artifact_path(value: str | None) -> Path | None:
@@ -664,6 +789,54 @@ def _inside_protected_root(
     return any(identity in identities for _, identity in forbidden_roots)
 
 
+def _close_artifacts(artifacts: AttemptArtifacts) -> None:
+    _close_destinations(
+        tuple(destination for destination in (artifacts.transcript, artifacts.patch) if destination is not None)
+    )
+
+
+def _close_destinations(destinations: Sequence[_ArtifactDestination]) -> None:
+    primary: BaseException | None = None
+    for destination in reversed(destinations):
+        if (descriptor := destination.take_descriptor()) is None:
+            continue
+        try:
+            os.close(descriptor)
+        except BaseException as cleanup_error:
+            detail = (
+                f"cannot close artifact parent directory {destination.path.parent}: {cleanup_error}; "
+                "descriptor ownership released without retry"
+            )
+            if primary is None:
+                primary = cleanup_error
+                primary.add_note(detail)
+            else:
+                primary.add_note(f"secondary cleanup failure: {detail}")
+    if primary is not None:
+        raise primary
+
+
+def _merge_attempt_cleanup(
+    model: str,
+    pending: AttemptResult | None,
+    active_exception: BaseException | None,
+    cleanup_exception: BaseException | None,
+    error: BaseException,
+    detail: str,
+) -> tuple[AttemptResult | None, BaseException | None]:
+    """Apply cleanup precedence without hiding a primary exception."""
+    if active_exception is not None:
+        active_exception.add_note(f"secondary cleanup failure: {detail}")
+    elif cleanup_exception is not None:
+        cleanup_exception.add_note(f"secondary cleanup failure: {detail}")
+    elif isinstance(error, OSError) and pending is not None:
+        pending = _failed(model, detail, command_exit=pending.command_exit)
+    else:
+        error.add_note(detail)
+        cleanup_exception = error
+    return pending, cleanup_exception
+
+
 def _publish_file(source: Path, destination: _ArtifactDestination) -> None:
     def write(output: BinaryIO) -> None:
         with source.open("rb") as input_file:
@@ -680,56 +853,36 @@ def _publish_bytes(content: bytes, destination: _ArtifactDestination) -> None:
 
 
 def _publish(destination: _ArtifactDestination, write: _ArtifactWriter) -> None:
-    parent_descriptor = os.open(
-        destination.path.parent,
-        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-    )
-    parent_exception: BaseException | None = None
+    parent_descriptor = destination.descriptor()
+    actual_identity = _identity(os.fstat(parent_descriptor))
+    if actual_identity != destination.parent_identity:  # pragma: no cover - open-FD invariant
+        raise OSError(f"artifact parent descriptor changed before publication: {destination.path.parent}")
+    temporary_name, temporary_descriptor = _create_artifact_temporary(parent_descriptor)
+    publication_exception: BaseException | None = None
     try:
-        actual_identity = _identity(os.fstat(parent_descriptor))
-        if actual_identity != destination.parent_identity:
-            raise OSError(f"artifact parent changed before publication: {destination.path.parent}")
-        temporary_name, temporary_descriptor = _create_artifact_temporary(parent_descriptor)
-        publication_exception: BaseException | None = None
         try:
-            try:
-                _write_artifact_temporary(temporary_descriptor, write)
-            except BaseException as exc:
-                publication_exception = exc
-                raise
-            os.link(
-                temporary_name,
-                destination.path.name,
-                src_dir_fd=parent_descriptor,
-                dst_dir_fd=parent_descriptor,
-                follow_symlinks=False,
-            )
+            _write_artifact_temporary(temporary_descriptor, write)
         except BaseException as exc:
             publication_exception = exc
             raise
-        finally:
-            try:
-                os.unlink(temporary_name, dir_fd=parent_descriptor)
-            except BaseException as cleanup_error:
-                retained = destination.path.parent / temporary_name
-                detail = f"cannot remove artifact temporary: {cleanup_error}; retained path: {retained}"
-                if publication_exception is not None:
-                    publication_exception.add_note(f"secondary cleanup failure: {detail}")
-                else:
-                    _raise_cleanup_failure(cleanup_error, detail)
+        os.link(
+            temporary_name,
+            destination.path.name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
     except BaseException as exc:
-        parent_exception = exc
+        publication_exception = exc
         raise
     finally:
         try:
-            os.close(parent_descriptor)
+            os.unlink(temporary_name, dir_fd=parent_descriptor)
         except BaseException as cleanup_error:
-            detail = (
-                f"cannot close artifact parent directory: {cleanup_error}; "
-                f"retained path: {destination.path}"
-            )
-            if parent_exception is not None:
-                parent_exception.add_note(f"secondary cleanup failure: {detail}")
+            retained = destination.path.parent / temporary_name
+            detail = f"cannot remove artifact temporary: {cleanup_error}; retained path: {retained}"
+            if publication_exception is not None:
+                publication_exception.add_note(f"secondary cleanup failure: {detail}")
             else:
                 _raise_cleanup_failure(cleanup_error, detail)
 
