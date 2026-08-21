@@ -9,5 +9,5 @@
     { "toolName": "bash", "input": { "command": "ls -R" } },
     { "toolName": "bash", "input": { "command": "ls -R" } }
   ],
-  "expected": { "blocked": 1, "entries": 1 }
+  "expected": { "blocked": 1, "entries": 1, "firstBlock": 6 }
 }

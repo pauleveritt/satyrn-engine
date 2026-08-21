@@ -9,5 +9,5 @@
     { "toolName": "bash", "input": { "command": "python -m pytest" } },
     { "toolName": "read", "input": { "path": "templates/home.html" } }
   ],
-  "expected": { "blocked": 0, "entries": 0 }
+  "expected": { "blocked": 0, "entries": 0, "firstBlock": null }
 }

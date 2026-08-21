@@ -71,6 +71,38 @@ test("object key order is ignored recursively", () => {
 	);
 });
 
+test("a top-level __proto__ key is canonicalized as JSON data", () => {
+	const breaker = createLoopBreaker();
+	const target = repeated(
+		"write",
+		JSON.parse('{"__proto__":{"sentinel":"target"},"path":"result.json"}'),
+	);
+	const sibling = repeated(
+		"write",
+		JSON.parse('{"__proto__":{"sentinel":"sibling"},"path":"result.json"}'),
+	);
+	admit(breaker, target, THRESHOLD);
+
+	assert.equal(breaker.inspect(sibling), undefined);
+	assert.equal(breaker.inspect(target)?.block, true);
+});
+
+test("a nested __proto__ key is canonicalized as JSON data", () => {
+	const breaker = createLoopBreaker();
+	const target = repeated(
+		"write",
+		JSON.parse('{"value":{"__proto__":{"sentinel":"target"}}}'),
+	);
+	const sibling = repeated(
+		"write",
+		JSON.parse('{"value":{"__proto__":{"sentinel":"sibling"}}}'),
+	);
+	admit(breaker, target, THRESHOLD);
+
+	assert.equal(breaker.inspect(sibling), undefined);
+	assert.equal(breaker.inspect(target)?.block, true);
+});
+
 test("array order and tool name remain significant", () => {
 	const breaker = createLoopBreaker();
 	admit(breaker, repeated("write", { values: [1, 2] }), THRESHOLD);
@@ -83,11 +115,15 @@ test("twenty newer admitted calls evict an older key", () => {
 	const breaker = createLoopBreaker();
 	const target = repeated("read", { path: "old.py" });
 	admit(breaker, target, THRESHOLD);
+	assert.equal(breaker.inspect(target)?.entry.data.blockedSoFar, 1);
+	assert.equal(breaker.inspect(target)?.entry.data.blockedSoFar, 2);
 	for (let index = 0; index < WINDOW; index += 1) {
 		assert.equal(breaker.inspect(repeated("read", { path: `new-${index}.py` })), undefined);
 	}
 
 	assert.equal(breaker.inspect(target), undefined);
+	admit(breaker, target, THRESHOLD - 1);
+	assert.equal(breaker.inspect(target)?.entry.data.blockedSoFar, 1);
 });
 
 test("blocked calls never enter the admitted window", () => {

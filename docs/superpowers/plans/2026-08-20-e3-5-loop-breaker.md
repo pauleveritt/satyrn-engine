@@ -24,6 +24,17 @@ No new product dependency.
 **Spec:**
 `docs/superpowers/specs/2026-08-20-e3-5-loop-breaker-design.md`
 
+> **Correction — 2026-08-21:** Preserve own `__proto__` properties during
+> canonicalization and cover distinct/exact top-level and nested inputs. Delete
+> per-key blocked telemetry when window eviction removes that key's last
+> admitted occurrence. Require `expected.firstBlock` in every retained fixture,
+> with `null | positive integer` semantics and a missing-field refusal test.
+> Extend the temporary Pi installation proof through manifest resolution,
+> shipped extension loading, handler registration, and real handler dispatch.
+> Record the final whitespace gate against the phase base with
+> `git diff --check aa918b0 --`. These are corrections to the accepted E3.5
+> design, not a new framework or phase.
+
 ## Phase-size decision
 
 Keep E3.5 to the loop breaker. If implementation asks for a second mutation
@@ -188,11 +199,10 @@ node --experimental-strip-types tools/replay_guards.mjs
 uv run ruff check .
 uv run pyrefly check
 uv run --group docs sphinx-build -W -b html docs docs/_build/html
-git diff --check
+git diff --check aa918b0 --
 ```
 
 Record the actual test, fixture, and coverage counts from these commands. Do
 not predict them in documentation. A failing real Pi install, a replay mismatch,
 shared registration state, a preserve-symbols export, or an escaping handler
 exception blocks phase completion.
-

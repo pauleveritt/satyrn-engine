@@ -1,0 +1,1 @@
+{"version":1,"operation":"replace","repo":"/workspace","contract":"/workspace/contract.yaml","path":"src/app.py","expected_sha256":"0000000000000000000000000000000000000000000000000000000000000000","old_text":"return 1","new_text":"return 2"}

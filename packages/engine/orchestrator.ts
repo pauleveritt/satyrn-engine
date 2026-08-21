@@ -16,11 +16,37 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export const PROTOCOL_VERSION = 1;
 export const DEFAULT_DEADLINE_MS = 30_000;
+export const TERMINATION_GRACE_MS = 100;
+
+export const ENGINE_REFUSAL_CODES = [
+	"CONTRACT_UNREADABLE",
+	"CONTRACT_INVALID_YAML",
+	"CONTRACT_MISSING_FIELD",
+	"REPO_UNAVAILABLE",
+	"INVALID_REQUEST",
+	"PATH_UNDECLARED",
+	"REVISION_UNAVAILABLE",
+	"REVISION_STALE",
+	"ANCHOR_MISSING",
+	"ANCHOR_AMBIGUOUS",
+	"MUTATION_FAILED",
+] as const;
+
+export type EngineRefusalCode = (typeof ENGINE_REFUSAL_CODES)[number];
+
+export type AdapterRefusalCode =
+	| "ADAPTER_ERROR"
+	| "ENGINE_CRASHED"
+	| "ENGINE_MALFORMED_RESPONSE"
+	| "ENGINE_START_FAILED"
+	| "ENGINE_TIMEOUT"
+	| "INVALID_REQUEST"
+	| "MUTATION_CONTEXT_INVALID";
 
 /** A named adapter refusal: a transport failure the engine never sees. */
 export class AdapterRefusal extends Error {
-	readonly code: string;
-	constructor(code: string, message: string) {
+	readonly code: AdapterRefusalCode;
+	constructor(code: AdapterRefusalCode, message: string) {
 		super(message);
 		this.name = "AdapterRefusal";
 		this.code = code;
@@ -36,11 +62,15 @@ export class AdapterRefusal extends Error {
  * stdio streams are closed.
  */
 export interface SpawnedChild {
-	stdin: { write(data: string): void; end(): void };
+	stdin: {
+		write(data: string): void;
+		end(): void;
+		on?(event: "error", cb: (err: Error) => void): void;
+	};
 	stdout: { on(event: "data", cb: (chunk: string) => void): void };
 	on(event: "close", cb: (code: number | null) => void): void;
 	on(event: "error", cb: (err: Error) => void): void;
-	kill(): void;
+	kill(signal?: "SIGTERM" | "SIGKILL"): boolean | void;
 }
 
 export type Spawner = (
@@ -49,11 +79,29 @@ export type Spawner = (
 	options: { cwd?: string },
 ) => SpawnedChild;
 
-export interface EngineResponse {
-	version: number;
-	ok: boolean;
-	code: string;
-	message: string;
+interface EngineResponseBase {
+	readonly version: 1;
+	readonly message: string;
+	readonly result?: unknown;
+}
+
+export interface EngineSuccessResponse extends EngineResponseBase {
+	readonly ok: true;
+	readonly code: "OK";
+}
+
+export interface EngineRefusalResponse extends EngineResponseBase {
+	readonly ok: false;
+	readonly code: EngineRefusalCode;
+}
+
+export type EngineResponse = EngineSuccessResponse | EngineRefusalResponse;
+
+export function isEngineRefusalCode(value: unknown): value is EngineRefusalCode {
+	return (
+		typeof value === "string" &&
+		(ENGINE_REFUSAL_CODES as readonly string[]).includes(value)
+	);
 }
 
 /** Build the versioned JSON request the engine's `protocol` subcommand reads. */
@@ -74,6 +122,9 @@ export function parseResponse(text: string): EngineResponse {
 	} catch {
 		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "engine response is not valid JSON");
 	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "engine response has an unexpected shape");
+	}
 	const body = parsed as Record<string, unknown>;
 	if (
 		body.version !== PROTOCOL_VERSION ||
@@ -83,7 +134,29 @@ export function parseResponse(text: string): EngineResponse {
 	) {
 		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "engine response has an unexpected shape");
 	}
-	return body as unknown as EngineResponse;
+	const optionalResult = Object.hasOwn(body, "result") ? { result: body.result } : {};
+	if (body.ok) {
+		if (body.code !== "OK") {
+			throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "engine response has inconsistent status fields");
+		}
+		return {
+			version: PROTOCOL_VERSION,
+			ok: true,
+			code: "OK",
+			message: body.message,
+			...optionalResult,
+		};
+	}
+	if (!isEngineRefusalCode(body.code)) {
+		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "engine response has an unknown refusal code");
+	}
+	return {
+		version: PROTOCOL_VERSION,
+		ok: false,
+		code: body.code,
+		message: body.message,
+		...optionalResult,
+	};
 }
 
 /**
@@ -110,47 +183,75 @@ export async function exchange(
 
 		let stdout = "";
 		let settled = false;
-		const timer = setTimeout(() => {
-			child.kill();
-			settled = true;
-			rejectPromise(new AdapterRefusal("ENGINE_TIMEOUT", `no response within ${deadlineMs} ms`));
+		let pendingRefusal: AdapterRefusal | undefined;
+		let terminationTimer: ReturnType<typeof setTimeout> | undefined;
+
+		const requestTermination = (refusal: AdapterRefusal): void => {
+			if (settled || pendingRefusal !== undefined) return;
+			pendingRefusal = refusal;
+			clearTimeout(deadlineTimer);
+			try {
+				child.kill("SIGTERM");
+			} catch {
+				// The close event remains authoritative. A failed TERM is followed by KILL.
+			}
+			if (settled) return;
+			terminationTimer = setTimeout(() => {
+				try {
+					child.kill("SIGKILL");
+				} catch {
+					// Do not claim completion before close even when signaling fails.
+				}
+			}, TERMINATION_GRACE_MS);
+		};
+
+		const deadlineTimer = setTimeout(() => {
+			requestTermination(
+				new AdapterRefusal("ENGINE_TIMEOUT", `no response within ${deadlineMs} ms`),
+			);
 		}, deadlineMs);
 
-		child.stdout.on("data", (chunk) => {
-			stdout += chunk;
-		});
-
-		child.on("error", (err) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			rejectPromise(new AdapterRefusal("ENGINE_START_FAILED", `engine failed to start: ${err.message}`));
-		});
-
-		child.on("close", (code) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			try {
-				resolvePromise(parseResponse(stdout));
-			} catch (refusal) {
-				if (code !== 0) {
-					rejectPromise(
-						new AdapterRefusal("ENGINE_CRASHED", `engine exited ${code} with no valid response`),
-					);
-				} else {
-					rejectPromise(refusal as AdapterRefusal);
-				}
-			}
-		});
-
 		try {
+			child.on("close", (code) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(deadlineTimer);
+				if (terminationTimer !== undefined) clearTimeout(terminationTimer);
+				if (pendingRefusal !== undefined) {
+					rejectPromise(pendingRefusal);
+					return;
+				}
+				try {
+					resolvePromise(parseResponse(stdout));
+				} catch (refusal) {
+					if (code !== 0) {
+						rejectPromise(
+							new AdapterRefusal("ENGINE_CRASHED", `engine exited ${code} with no valid response`),
+						);
+					} else {
+						rejectPromise(refusal as AdapterRefusal);
+					}
+				}
+			});
+			child.on("error", (err) => {
+				requestTermination(
+					new AdapterRefusal("ENGINE_START_FAILED", `engine failed to start: ${err.message}`),
+				);
+			});
+			child.stdout.on("data", (chunk) => {
+				stdout += chunk;
+			});
+			child.stdin.on?.("error", (err) => {
+				requestTermination(
+					new AdapterRefusal("ENGINE_START_FAILED", `could not write the request: ${err.message}`),
+				);
+			});
 			child.stdin.write(request);
 			child.stdin.end();
 		} catch (err) {
-			settled = true;
-			clearTimeout(timer);
-			rejectPromise(new AdapterRefusal("ENGINE_START_FAILED", `could not write the request: ${String(err)}`));
+			requestTermination(
+				new AdapterRefusal("ENGINE_START_FAILED", `could not write the request: ${String(err)}`),
+			);
 		}
 	});
 }
@@ -183,7 +284,13 @@ export function createAdapter(spawner: Spawner, deadlineMs: number = DEFAULT_DEA
 					ctx.ui.notify(`satyrn-engine: ${response.code}: ${response.message}`, "error");
 				}
 			} catch (err) {
-				const refusal = err as AdapterRefusal;
+				const refusal =
+					err instanceof AdapterRefusal
+						? err
+						: new AdapterRefusal(
+								"ADAPTER_ERROR",
+								err instanceof Error ? err.message : String(err),
+							);
 				ctx.ui.notify(`satyrn-engine: ${refusal.code}: ${refusal.message}`, "error");
 			}
 		},

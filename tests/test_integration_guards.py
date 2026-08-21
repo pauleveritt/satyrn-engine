@@ -23,10 +23,13 @@ def _node() -> str:
     pytest.skip("Node is required for the TypeScript integration tier")
 
 
-def _run_node(*arguments: str) -> subprocess.CompletedProcess[str]:
+def _run_node(
+    *arguments: str, environment: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [_node(), "--experimental-strip-types", *arguments],
         cwd=ROOT,
+        env=environment,
         capture_output=True,
         text=True,
         check=False,
@@ -45,7 +48,7 @@ def test_shipped_loop_breaker_behavior_suite_passes() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "pass 14" in completed.stdout
+    assert "pass 16" in completed.stdout
     assert "fail 0" in completed.stdout
     assert "engine.ts | 100.00 |   100.00 |  100.00" in completed.stdout
 
@@ -125,6 +128,18 @@ def test_malformed_fixture_is_not_reported_as_evidence(tmp_path: Path) -> None:
     assert "calls must be an array" in completed.stderr
 
 
+def test_fixture_without_required_first_block_is_rejected(tmp_path: Path) -> None:
+    fixture = tmp_path / "missing-first-block.json"
+    fixture.write_text(
+        '{"name":"broken","calls":[],"expected":{"blocked":0,"entries":0}}'
+    )
+    completed = _run_node(str(REPLAY), str(fixture))
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert "expected.firstBlock is required" in completed.stderr
+
+
 def test_mismatched_fixture_is_not_reported_as_success(tmp_path: Path) -> None:
     fixture = tmp_path / "mismatch.json"
     payload = json.loads((FIXTURES / "loop-breaker-runaway.json").read_text())
@@ -145,27 +160,85 @@ def test_replay_usage_error_is_distinct_from_evidence_failure() -> None:
     assert completed.stderr.startswith("usage:")
 
 
-def test_pi_installs_package_only_in_temporary_settings(tmp_path: Path) -> None:
-    if pi := shutil.which("pi"):
-        agent_dir = tmp_path / "agent"
-        environment = os.environ.copy()
-        environment.update({"PI_CODING_AGENT_DIR": str(agent_dir), "PI_OFFLINE": "1"})
-        completed = subprocess.run(
-            [pi, "install", str(PACKAGE), "--local", "--approve"],
-            cwd=tmp_path,
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    else:
+def test_pi_installs_and_dispatches_package_extension_in_temporary_settings(
+    tmp_path: Path,
+) -> None:
+    pi = shutil.which("pi")
+    if pi is None:
         pytest.skip("Pi is required for the package-install integration test")
+    agent_dir = tmp_path / "agent"
+    environment = os.environ.copy()
+    environment.update({"PI_CODING_AGENT_DIR": str(agent_dir), "PI_OFFLINE": "1"})
+    completed = subprocess.run(
+        [pi, "install", str(PACKAGE), "--local", "--approve"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
     assert completed.returncode == 0, completed.stderr
     settings_path = tmp_path / ".pi" / "settings.json"
     settings = json.loads(settings_path.read_text())
     assert len(settings["packages"]) == 1
-    assert (tmp_path / settings["packages"][0]).resolve() == PACKAGE.resolve()
+    installed_package = (tmp_path / settings["packages"][0]).resolve()
+    assert installed_package == PACKAGE.resolve()
 
-    manifest = json.loads((PACKAGE / "package.json").read_text())
-    assert manifest["pi"]["extensions"] == ["./engine.ts", "./orchestrator.ts"]
+    manifest = json.loads((installed_package / "package.json").read_text())
+    assert manifest["pi"]["extensions"] == [
+        "./engine.ts",
+        "./orchestrator.ts",
+        "./mutator.ts",
+    ]
+
+    extension_environment = environment.copy()
+    extension_environment["SATYRN_EXTENSION_PATH"] = str(
+        installed_package / manifest["pi"]["extensions"][0]
+    )
+    dispatched = _run_node(
+        "--input-type=module",
+        "--eval",
+        """
+import { pathToFileURL } from "node:url";
+
+const extensionPath = process.env.SATYRN_EXTENSION_PATH;
+if (extensionPath === undefined) throw new Error("missing extension path");
+const { default: registerExtension } = await import(pathToFileURL(extensionPath));
+let handler;
+const entries = [];
+registerExtension({
+  on(event, candidate) {
+    if (event === "tool_call") handler = candidate;
+  },
+  appendEntry(kind, data) {
+    entries.push({ kind, data });
+  },
+});
+if (typeof handler !== "function") throw new Error("tool_call handler not registered");
+let decision;
+for (let index = 0; index < 6; index += 1) {
+  decision = await handler({ toolName: "bash", input: { command: "same" } });
+}
+process.stdout.write(JSON.stringify({ decision, entries }));
+""",
+        environment=extension_environment,
+    )
+
+    assert dispatched.returncode == 0, dispatched.stderr
+    assert json.loads(dispatched.stdout) == {
+        "decision": {
+            "block": True,
+            "reason": (
+                "This exact bash call already appeared 5 times in the last 20 admitted "
+                "tool calls. Running it again will not change the result. Use what you "
+                "already know and take a different concrete action."
+            ),
+        },
+        "entries": [
+            {
+                "kind": "loop_broken",
+                "data": {"tool": "bash", "repeats": 5, "blockedSoFar": 1},
+            }
+        ],
+    }
