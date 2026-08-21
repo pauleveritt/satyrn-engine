@@ -41,11 +41,13 @@ export function parseFixture(text, path) {
 		throw new Error(`${path}: expected.entries must be a non-negative integer`);
 	}
 	if (
-		"firstBlock" in value.expected &&
-		value.expected.firstBlock !== null &&
-		(!Number.isInteger(value.expected.firstBlock) || value.expected.firstBlock < 1)
+		!Object.hasOwn(value.expected, "firstBlock") ||
+		(value.expected.firstBlock !== null &&
+			(!Number.isInteger(value.expected.firstBlock) || value.expected.firstBlock < 1))
 	) {
-		throw new Error(`${path}: expected.firstBlock must be null or a positive integer`);
+		throw new Error(
+			`${path}: expected.firstBlock is required and must be null or a positive integer`,
+		);
 	}
 	return value;
 }
@@ -89,10 +91,7 @@ function verify(fixture, observed) {
 			mismatches.push(`${field} ${observed[field]} != ${fixture.expected[field]}`);
 		}
 	}
-	if (
-		"firstBlock" in fixture.expected &&
-		observed.firstBlock !== fixture.expected.firstBlock
-	) {
+	if (observed.firstBlock !== fixture.expected.firstBlock) {
 		mismatches.push(
 			`firstBlock ${observed.firstBlock} != ${fixture.expected.firstBlock}`,
 		);
