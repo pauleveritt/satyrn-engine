@@ -76,8 +76,9 @@ process. Spec and plan:
 replaces Pi's `edit` tool when a parent supplies a versioned mutation context.
 One exact replacement then runs Pi → TypeScript → Python; Python alone enforces
 the contract's `writable_paths`, the captured SHA-256 revision, and unique
-anchor cardinality. Stale, undeclared, missing-anchor, and ambiguous-anchor
-requests are named refusals that leave the file unchanged. The contract-blind
+anchor cardinality. Unavailable/stale revisions, undeclared paths, and
+missing/ambiguous anchors are named refusals that leave the file unchanged;
+symlink targets are never followed. The contract-blind
 preserve-symbols guard removed in E3.5 does not return. Spec and plan:
 `docs/superpowers/specs/2026-08-20-e4-bounded-replacement-design.md`,
 `docs/superpowers/plans/2026-08-20-e4-bounded-replacement.md`.

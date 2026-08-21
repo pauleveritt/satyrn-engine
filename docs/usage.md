@@ -260,12 +260,15 @@ contract, and captured revisions. Without that context, Pi keeps its built-in
 
 With context, exactly one `edits[]` entry is sent over the existing one-shot
 protocol. Python normalizes the workspace-relative path, matches
-`writable_paths`, checks the exact-byte SHA-256 {term}`revision`, and requires
-`oldText` to occur once. A success atomically publishes the replacement and
-returns the next revision. A refusal returns one of `PATH_UNDECLARED`,
-`REVISION_STALE`, `ANCHOR_MISSING`, `ANCHOR_AMBIGUOUS`, or
+`writable_paths`, rejects every symlink component, checks the exact-byte
+SHA-256 {term}`revision`, and requires `oldText` to occur once. A success
+atomically publishes the replacement and returns the next revision. A refusal
+returns one of `PATH_UNDECLARED`, `REVISION_UNAVAILABLE`, `REVISION_STALE`,
+`ANCHOR_MISSING`, `ANCHOR_AMBIGUOUS`, or
 `MUTATION_FAILED`, with protocol exit `9`; the TypeScript tool reports the
-error and does not advance its revision map.
+error and does not advance its revision map. A transport failure has an
+indeterminate write result, so the adapter poisons that mutation context and
+refuses later edits until E5 discards the isolated worktree.
 
 This is an engine building block, not yet a complete `/implement` run. The
 marked `tests/test_integration_mutator.py` fixture and
