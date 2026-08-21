@@ -8,6 +8,7 @@ yields to this marker.
 
 import json
 import subprocess
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -69,3 +70,34 @@ def test_compatibility_fixture_round_trip() -> None:
     proc = run_protocol_process((FIXTURES / "request-check-valid.json").read_text())
     assert proc.returncode == 0
     assert proc.stdout.rstrip("\n") == (FIXTURES / "response-check-ok.json").read_text().rstrip("\n")
+
+
+def test_replace_operation_uses_stable_success_and_refusal_exits(tmp_path: Path) -> None:
+    target = tmp_path / "app.py"
+    before = b"value = 1\n"
+    target.write_bytes(before)
+    contract = tmp_path / "contract.yaml"
+    contract.write_text(
+        "id: protocol-replace\ntask: replace\nwritable_paths:\n  - app.py\n",
+        encoding="utf-8",
+    )
+
+    request = {
+        "version": 1,
+        "operation": "replace",
+        "repo": str(tmp_path),
+        "contract": str(contract),
+        "path": "app.py",
+        "expected_sha256": sha256(before).hexdigest(),
+        "old_text": "value = 1",
+        "new_text": "value = 2",
+    }
+    accepted = run_protocol_process(json.dumps(request))
+    request["old_text"] = "not present"
+    request["expected_sha256"] = sha256(target.read_bytes()).hexdigest()
+    refused = run_protocol_process(json.dumps(request))
+
+    assert accepted.returncode == 0
+    assert json.loads(accepted.stdout)["code"] == "OK"
+    assert refused.returncode == 9
+    assert json.loads(refused.stdout)["code"] == "ANCHOR_MISSING"

@@ -18,10 +18,35 @@ export const PROTOCOL_VERSION = 1;
 export const DEFAULT_DEADLINE_MS = 30_000;
 export const TERMINATION_GRACE_MS = 100;
 
+export const ENGINE_REFUSAL_CODES = [
+	"CONTRACT_UNREADABLE",
+	"CONTRACT_INVALID_YAML",
+	"CONTRACT_MISSING_FIELD",
+	"REPO_UNAVAILABLE",
+	"INVALID_REQUEST",
+	"PATH_UNDECLARED",
+	"REVISION_UNAVAILABLE",
+	"REVISION_STALE",
+	"ANCHOR_MISSING",
+	"ANCHOR_AMBIGUOUS",
+	"MUTATION_FAILED",
+] as const;
+
+export type EngineRefusalCode = (typeof ENGINE_REFUSAL_CODES)[number];
+
+export type AdapterRefusalCode =
+	| "ADAPTER_ERROR"
+	| "ENGINE_CRASHED"
+	| "ENGINE_MALFORMED_RESPONSE"
+	| "ENGINE_START_FAILED"
+	| "ENGINE_TIMEOUT"
+	| "INVALID_REQUEST"
+	| "MUTATION_CONTEXT_INVALID";
+
 /** A named adapter refusal: a transport failure the engine never sees. */
 export class AdapterRefusal extends Error {
-	readonly code: string;
-	constructor(code: string, message: string) {
+	readonly code: AdapterRefusalCode;
+	constructor(code: AdapterRefusalCode, message: string) {
 		super(message);
 		this.name = "AdapterRefusal";
 		this.code = code;
@@ -54,11 +79,29 @@ export type Spawner = (
 	options: { cwd?: string },
 ) => SpawnedChild;
 
-export interface EngineResponse {
-	version: number;
-	ok: boolean;
-	code: string;
-	message: string;
+interface EngineResponseBase {
+	readonly version: 1;
+	readonly message: string;
+	readonly result?: unknown;
+}
+
+export interface EngineSuccessResponse extends EngineResponseBase {
+	readonly ok: true;
+	readonly code: "OK";
+}
+
+export interface EngineRefusalResponse extends EngineResponseBase {
+	readonly ok: false;
+	readonly code: EngineRefusalCode;
+}
+
+export type EngineResponse = EngineSuccessResponse | EngineRefusalResponse;
+
+export function isEngineRefusalCode(value: unknown): value is EngineRefusalCode {
+	return (
+		typeof value === "string" &&
+		(ENGINE_REFUSAL_CODES as readonly string[]).includes(value)
+	);
 }
 
 /** Build the versioned JSON request the engine's `protocol` subcommand reads. */
@@ -79,6 +122,9 @@ export function parseResponse(text: string): EngineResponse {
 	} catch {
 		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "engine response is not valid JSON");
 	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "engine response has an unexpected shape");
+	}
 	const body = parsed as Record<string, unknown>;
 	if (
 		body.version !== PROTOCOL_VERSION ||
@@ -88,7 +134,29 @@ export function parseResponse(text: string): EngineResponse {
 	) {
 		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "engine response has an unexpected shape");
 	}
-	return body as unknown as EngineResponse;
+	const optionalResult = Object.hasOwn(body, "result") ? { result: body.result } : {};
+	if (body.ok) {
+		if (body.code !== "OK") {
+			throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "engine response has inconsistent status fields");
+		}
+		return {
+			version: PROTOCOL_VERSION,
+			ok: true,
+			code: "OK",
+			message: body.message,
+			...optionalResult,
+		};
+	}
+	if (!isEngineRefusalCode(body.code)) {
+		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "engine response has an unknown refusal code");
+	}
+	return {
+		version: PROTOCOL_VERSION,
+		ok: false,
+		code: body.code,
+		message: body.message,
+		...optionalResult,
+	};
 }
 
 /**
@@ -216,7 +284,13 @@ export function createAdapter(spawner: Spawner, deadlineMs: number = DEFAULT_DEA
 					ctx.ui.notify(`satyrn-engine: ${response.code}: ${response.message}`, "error");
 				}
 			} catch (err) {
-				const refusal = err as AdapterRefusal;
+				const refusal =
+					err instanceof AdapterRefusal
+						? err
+						: new AdapterRefusal(
+								"ADAPTER_ERROR",
+								err instanceof Error ? err.message : String(err),
+							);
 				ctx.ui.notify(`satyrn-engine: ${refusal.code}: ${refusal.message}`, "error");
 			}
 		},
