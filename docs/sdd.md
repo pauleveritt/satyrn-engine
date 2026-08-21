@@ -322,7 +322,7 @@ node --test --experimental-strip-types --experimental-test-coverage \
   --test-coverage-functions=100 \
   --test-coverage-include=packages/engine/orchestrator.ts \
   tests/test_orchestrator.mjs tests/test_transport.mjs
-# 14 passed; orchestrator.ts 100% lines, branches, and functions
+# 17 passed; orchestrator.ts 100% lines, branches, and functions
 
 node --test --experimental-strip-types --experimental-test-coverage \
   --test-coverage-lines=100 --test-coverage-branches=100 \
@@ -359,6 +359,12 @@ alias classification plus stream and diagnostic failures in
 real Node → `uv` → E3 → E5 path with a delayed writer and proves that the
 adapter returns only after the writer is gone, the source is clean, and no
 linked worktree remains.
+
+The Node lifecycle evidence additionally fixes the first refusal before spawn,
+holds close-time malformed/oversized/crash codes until the group is gone,
+contains synchronous `close` during TERM, and requires both direct-child close
+and a POSIX `ESRCH` observation. A separate direct-child sibling preserves the
+Windows fallback without widening the one-shot E2/E4 spawner type.
 
 The disciplines review holds you to:
 

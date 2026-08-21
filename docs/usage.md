@@ -249,8 +249,13 @@ nonzero-exit failure returns
 `ATTEMPT_FAILED` with exit `10` after preserving any requested artifacts. The
 `/implement` wrapper additionally gives E3 fifteen minutes to complete the
 attempt. If the adapter's backstop deadline expires, it reports
-`ENGINE_TIMEOUT` only after the outer delivery process closes; E3 first reaps
-the attempt process group and cleans or explicitly retains its worktree.
+`ENGINE_TIMEOUT` on POSIX only after the direct delivery child closes and a
+signal-0 probe reports that the detached outer delivery group is gone. E3
+first reaps its separately-sessioned attempt group and cleans or explicitly
+retains its worktree. The adapter does not force the POSIX outer group with
+`SIGKILL`, because doing so could interrupt that inner cleanup; an unknown or
+still-present outer group leaves the refusal pending. Windows retains the
+direct-child TERM/KILL/close fallback and is outside the E5 platform proof.
 Tracked symlinks never enter the immutable revision map. Adapter stdin,
 stdout, stderr, and diagnostic-forwarding failures are named refusals rather
 than uncaught Node exceptions.
