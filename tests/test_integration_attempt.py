@@ -114,6 +114,34 @@ def test_attempt_uses_shipped_e4_mutator_and_exports_artifacts(tmp_path: Path) -
     assert b"exercise_mutator:" not in stderr
 
 
+def test_attempt_excludes_real_tracked_symlink_before_pi(tmp_path: Path) -> None:
+    repo, contract, target, environment = _fixture(tmp_path)
+    outside = tmp_path / "outside.py"
+    outside.write_text("outside = True\n", encoding="utf-8")
+    target.unlink()
+    target.symlink_to(outside)
+    assert _git(repo, "add", "app.py").returncode == 0
+    committed = _git(
+        repo,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-qm",
+        "track symlink",
+    )
+    assert committed.returncode == 0, committed.stderr
+
+    result, stdout, stderr = _attempt(repo, contract, environment)
+
+    assert result.code is AttemptCode.ATTEMPT_FAILED
+    assert "no existing tracked writable file" in result.message
+    assert stdout == b""
+    assert stderr == b""
+    assert outside.read_text(encoding="utf-8") == "outside = True\n"
+
+
 @pytest.mark.parametrize(
     ("mode", "code", "patch_exists"),
     [
