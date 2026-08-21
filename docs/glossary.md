@@ -77,7 +77,8 @@ revision
   The lowercase SHA-256 hash of a file's exact bytes at the point the engine
   read it. E4 accepts a replacement only when the caller's prior revision still
   equals the current file. A successful replacement returns the next revision;
-  a refusal never advances it.
+  a determinate engine refusal never advances it. A transport failure poisons
+  the context because the publication result is unknown.
 
 receipt
   The one versioned UTF-8 JSON result written by an accepted ``deliver``

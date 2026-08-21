@@ -91,7 +91,7 @@ and SHA-256 revision map. One exact replacement then follows this path:
 Pi edit(path, one oldText/newText)
        │
        ▼
-TypeScript: look up prior revision and translate JSON
+TypeScript: translate JSON with the known revision or explicit null
        │ one replace request
        ▼
 Python: normalize path → match writable_paths → check revision
@@ -100,9 +100,13 @@ Python: normalize path → match writable_paths → check revision
 
 Python owns every permission and mutation decision. Its `fnmatch` behavior is
 the reference contract, it reads the exact file bytes, and it returns the next
-{term}`revision`. TypeScript neither reads a file nor hashes one; it retains the
-revision returned by Python only after a typed success. A refusal leaves both
-the file and that in-memory map unchanged.
+{term}`revision`. TypeScript neither reads a file nor hashes one; even a path
+missing from its map reaches Python, which checks contract authorization before
+returning `REVISION_UNAVAILABLE`. Python opens every target component without
+following symlinks. A determinate engine refusal leaves both the file and the
+in-memory map unchanged. A transport failure is different: publication may
+already have happened, so TypeScript poisons that mutation context and permits
+no later edit; E5 discards its isolated worktree.
 
 The replacement is intentionally one anchor in one existing UTF-8 file. File
 creation, whole-file writes, multiple edits, fuzzy matching, symbol analysis,
@@ -120,7 +124,7 @@ through verbatim. Delivery preserves contract and repository-path refusal
 codes `3`–`6`. Its delivery-specific handled results that publish no candidate
 use exit `8`, and the receipt carries the specific cause. CLI usage remains
 `2`; an uncaught bug remains `1`. E4 replacement refusals use exit `9`; their
-JSON `code` distinguishes `PATH_UNDECLARED`, `REVISION_STALE`,
+JSON `code` distinguishes `PATH_UNDECLARED`, `REVISION_UNAVAILABLE`, `REVISION_STALE`,
 `ANCHOR_MISSING`, `ANCHOR_AMBIGUOUS`, and `MUTATION_FAILED`.
 
 The design record — arguments considered and rejected — is the E2 spec
