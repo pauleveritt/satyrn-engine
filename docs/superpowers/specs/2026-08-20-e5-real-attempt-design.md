@@ -33,8 +33,10 @@ failures are visible `ATTEMPT_FAILED` results with a retained recovery path;
 cleanup does not silently turn a partial attempt into `OK`, and a secondary
 cleanup exception never replaces a primary catchable exception. Model and
 contract argv use option-safe forms (`--model=VALUE` and a literal `--`).
-Contract containment uses path-component boundaries, so an in-repository name
-such as `..hidden.yaml` is not mistaken for parent traversal. Asynchronous
+Contract containment uses filesystem-canonical existing paths and
+path-component boundaries, so symlink or case aliases still identify an
+in-repository contract while a name such as `..hidden.yaml` is not mistaken
+for parent traversal. Asynchronous
 stdin, stdout, and stderr failures, plus exceptions from the diagnostic sink,
 are contained as named adapter refusals and complete the same terminate-then-
 close lifecycle as timeouts.
