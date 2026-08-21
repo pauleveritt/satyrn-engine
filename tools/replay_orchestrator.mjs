@@ -52,15 +52,22 @@ function ok(name, condition, detail = "") {
 function mockChild({ stdoutText = "", stderrText = "", exitCode = 0, emitError = null, neverExits = false }) {
 	const listeners = { close: [], error: [] };
 	let killed = false;
+	let closed = false;
+	const close = (code) => {
+		if (closed) return;
+		closed = true;
+		for (const cb of listeners.close) cb(code);
+	};
 	const child = {
 		stdin: {
 			write() {},
 			end() {
 				queueMicrotask(() => {
 					if (neverExits) return;
-					for (const cb of listeners.close) cb(exitCode);
+					close(exitCode);
 				});
 			},
+			on() {},
 		},
 		stdout: {
 			on(event, cb) {
@@ -77,6 +84,7 @@ function mockChild({ stdoutText = "", stderrText = "", exitCode = 0, emitError =
 		},
 		kill() {
 			killed = true;
+			queueMicrotask(() => close(null));
 		},
 		get killed() {
 			return killed;
@@ -167,7 +175,7 @@ ok(
 	"buildDeliveryInvocation nests E5 inside E3",
 	invocation.args.includes("deliver") &&
 		invocation.args.includes("attempt") &&
-		invocation.args.includes("fixture/model") &&
+		invocation.args.includes("--model=fixture/model") &&
 		invocation.args.includes("contracts/task.yaml"),
 );
 const diagnostics = [];
