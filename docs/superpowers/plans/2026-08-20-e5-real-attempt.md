@@ -36,6 +36,16 @@ Stream read errors, diagnostic callback failures, and filesystem-canonical,
 component-boundary contract classification are also typed adapter behavior
 rather than uncaught Node exceptions.
 
+The cancellation proof also owns a POSIX outer delivery process group. A
+deadline before `spawn` waits for the spawn event; afterward the first refusal
+sends group `SIGTERM` and settles only after direct-child `close` and a group
+probe reporting `ESRCH`. The adapter does not SIGKILL that outer group because
+E3's separately-sessioned attempt and worktree cleanup remain E3's ownership;
+an arbitrary outer grace period cannot prove those inner resources are safe.
+Windows keeps the previous direct-child fallback and is not part of the E5
+platform proof. Keep the one-shot `Spawner` stable and add the PID/spawn-event/
+detached options only to `DeliverySpawner`.
+
 ## Task 1: Freeze the public command and typed result
 
 Files:
@@ -134,8 +144,14 @@ Steps:
 
 1. Keep the one-shot E2/E4 exchange helper used by `mutator.ts`.
 2. Add typed E3 receipt parsing and a delivery-spawn seam with stdout, stderr,
-   close, error, deadline, and synchronous termination observation. A timeout
-   result is not returned before the delivery child closes.
+   spawn, close, error, deadline, and synchronous termination observation. On
+   POSIX start the outer delivery in a detached process group, hold a refusal
+   that precedes `spawn` unless a spawn error proves no child exists, then send
+   group `SIGTERM`. A timeout or transport
+   refusal is not returned before both the delivery child closes and signal-0
+   observes `ESRCH`. Keep present/unknown group states pending, and do not use
+   outer `SIGKILL` as a substitute for E3's inner teardown. Retain the existing
+   direct-child TERM/KILL/close fallback on Windows.
 3. Resolve an in-repository contract to a worktree-relative inner argument;
    retain an external contract as absolute.
 4. Build the exact outer E3 command and inner E5 command with
@@ -146,7 +162,9 @@ Steps:
 6. Contain missing model/repo, start failure, timeout, malformed/extra output,
    nonzero without receipt, asynchronous stdin/stdout/stderr errors,
    diagnostic-sink failures, and handler exceptions. Prove timeout teardown
-   has completed before returning.
+   has completed before returning, including deadline-before-spawn and
+   synchronous close during signaling. Preserve each close-time refusal code
+   while waiting for the POSIX group to disappear.
 7. Replay the real package through an isolated fake engine, then exercise real
    E3 delivery around the fake Pi attempt.
 
