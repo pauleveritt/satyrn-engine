@@ -213,7 +213,7 @@ call sends it.
 
 - real console-protocol mutation evidence;
 - shipped TypeScript adapter → real spawner → real Python evidence;
-- exact success plus four named refusal siblings;
+- exact success plus five named refusal siblings;
 - temporary package installation with all extensions loaded and no user
   settings mutation.
 
@@ -233,8 +233,8 @@ call sends it.
    catches accidental process use in the default tier.
 
 **Evidence:** the one fixture crosses the full TypeScript/Python boundary and
-returns the new SHA; all four refused fixtures return the exact detailed code
-and unchanged file.
+returns the new SHA; all five policy-refusal fixtures return the exact detailed
+code and unchanged file.
 
 **Commit:** `test: prove the E4 replacement path`
 

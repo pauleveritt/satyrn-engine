@@ -201,7 +201,7 @@ refusals share product process exit 9, `MUTATION_REFUSED`:
 
 An expected local operational failure after request acceptance, such as an
 unreadable target or failed atomic replacement, returns `MUTATION_FAILED`,
-`result: null`, and exit 9. It is not one of the four done-when policy
+`result: null`, and exit 9. It is not one of the five done-when policy
 refusals, but it must not become a traceback or a malformed protocol response.
 
 `check` responses keep their existing four-field shape. Protocol parsers must
@@ -303,8 +303,9 @@ slice.
 - contract field absent, valid patterns, and malformed pattern list;
 - successful literal replacement and exact next revision;
 - each of the five named policy refusals with a sibling successful replacement;
-- unsafe path, internal/escaping symlinks, missing/non-regular/non-UTF-8 target, atomic-write
-  failures, mode preservation, literal `$` replacement, and temporary cleanup;
+- unsafe path, internal/escaping symlinks, missing/non-regular/non-UTF-8
+  target, atomic-write failures, mode preservation, literal `$` replacement,
+  and temporary cleanup;
 - protocol parsing/rendering for `check` and `replace`, including every request
   field and response shape;
 - stable exit mappings and 100% statement/branch coverage.
