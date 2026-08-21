@@ -295,40 +295,41 @@ def attempt(
     output = stdout if stdout is not None else sys.stdout.buffer
     errors = stderr if stderr is not None else sys.stderr.buffer
 
-    prepared = _prepare(root_candidate, checked.contract, model, env, git)
-    if isinstance(prepared, AttemptResult):
-        return prepared
-    root, base_commit, revisions, artifacts, engine_repo = prepared
-
+    artifact_owner: list[_ArtifactDestination] = []
     temporary_parent: Path | None = None
     pending: AttemptResult | None = None
     active_exception: BaseException | None = None
     try:
-        try:
-            temporary_parent = Path(tempfile.mkdtemp(prefix=".satyrn-attempt-", dir=root.parent))
-        except OSError as exc:
-            pending = _failed(model, f"cannot create attempt temporary directory: {exc}")
+        prepared = _prepare(root_candidate, checked.contract, model, env, git, artifact_owner)
+        if isinstance(prepared, AttemptResult):
+            pending = prepared
         else:
-            frozen_contract = temporary_parent / "contract.yaml"
+            root, base_commit, revisions, artifacts, engine_repo = prepared
             try:
-                _freeze_contract(contract_candidate, frozen_contract)
-                frozen_value = load_contract(frozen_contract)
-            except (ContractError, OSError) as exc:
-                pending = _failed(model, f"cannot freeze contract: {exc}")
+                temporary_parent = Path(tempfile.mkdtemp(prefix=".satyrn-attempt-", dir=root.parent))
+            except OSError as exc:
+                pending = _failed(model, f"cannot create attempt temporary directory: {exc}")
             else:
-                if frozen_value != checked.contract:
-                    pending = _failed(model, "contract changed while the attempt was being prepared")
+                frozen_contract = temporary_parent / "contract.yaml"
+                try:
+                    _freeze_contract(contract_candidate, frozen_contract)
+                    frozen_value = load_contract(frozen_contract)
+                except (ContractError, OSError) as exc:
+                    pending = _failed(model, f"cannot freeze contract: {exc}")
                 else:
-                    context = AttemptContext(
-                        repo=root,
-                        contract=checked.contract,
-                        frozen_contract=frozen_contract,
-                        base_commit=base_commit,
-                        revisions=revisions,
-                        model=model,
-                        engine_repo=engine_repo,
-                    )
-                    pending = _run(context, artifacts, env, git, pi, output, errors, temporary_parent)
+                    if frozen_value != checked.contract:
+                        pending = _failed(model, "contract changed while the attempt was being prepared")
+                    else:
+                        context = AttemptContext(
+                            repo=root,
+                            contract=checked.contract,
+                            frozen_contract=frozen_contract,
+                            base_commit=base_commit,
+                            revisions=revisions,
+                            model=model,
+                            engine_repo=engine_repo,
+                        )
+                        pending = _run(context, artifacts, env, git, pi, output, errors, temporary_parent)
     except BaseException as exc:
         active_exception = exc
         raise
@@ -351,7 +352,7 @@ def attempt(
                     detail,
                 )
         try:
-            _close_artifacts(artifacts)
+            _close_destinations(artifact_owner)
         except BaseException as cleanup_error:
             detail = f"cannot close artifact parent directory: {_exception_detail(cleanup_error)}"
             pending, cleanup_exception = _merge_attempt_cleanup(
@@ -375,6 +376,7 @@ def _prepare(
     model: str,
     environment: Mapping[str, str],
     git: GitRunner,
+    artifact_owner: list[_ArtifactDestination],
 ) -> tuple[Path, str, dict[str, str], AttemptArtifacts, Path] | AttemptResult:
     try:
         root_result = git.run(repo, ("rev-parse", "--show-toplevel"), environment)
@@ -470,7 +472,7 @@ def _prepare(
     if not all((package / name).is_file() for name in ("engine.ts", "mutator.ts")):
         return _failed(model, f"engine package is unavailable under {engine_repo}")
 
-    artifacts = _artifact_destinations(forbidden_roots, environment)
+    artifacts = _artifact_destinations(forbidden_roots, environment, artifact_owner)
     if isinstance(artifacts, str):
         return _failed(model, artifacts)
 
@@ -483,22 +485,21 @@ def _read_tracked_regular(root: Path, path: str) -> bytes | None:
     active_exception: BaseException | None = None
     try:
         directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        parent_descriptor = os.open(root, directory_flags)
-        descriptors.append(parent_descriptor)
+        parent_descriptor = _open_owned_descriptor(descriptors, root, directory_flags)
         components = path.split("/")
         for component in components[:-1]:
-            parent_descriptor = os.open(
+            parent_descriptor = _open_owned_descriptor(
+                descriptors,
                 component,
                 directory_flags,
                 dir_fd=parent_descriptor,
             )
-            descriptors.append(parent_descriptor)
-        target_descriptor = os.open(
+        target_descriptor = _open_owned_descriptor(
+            descriptors,
             components[-1],
             os.O_RDONLY | os.O_NOFOLLOW,
             dir_fd=parent_descriptor,
         )
-        descriptors.append(target_descriptor)
         if not stat.S_ISREG(os.fstat(target_descriptor).st_mode):
             return None
         content = bytearray()
@@ -524,6 +525,29 @@ def _read_tracked_regular(root: Path, path: str) -> bytes | None:
                     cleanup_exception.add_note(f"secondary descriptor cleanup failure: {exc}")
         if active_exception is None and cleanup_exception is not None:
             raise cleanup_exception
+
+
+def _open_owned_descriptor(
+    descriptors: list[int],
+    path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+    flags: int,
+    mode: int = 0o777,
+    *,
+    dir_fd: int | None = None,
+) -> int:
+    """Open and transfer one descriptor without an unguarded handoff."""
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags, mode, dir_fd=dir_fd)
+        descriptors.append(descriptor)
+    except BaseException as error:
+        if descriptor is not None and descriptor not in descriptors:
+            try:
+                os.close(descriptor)
+            except BaseException as cleanup_error:
+                error.add_note(f"secondary descriptor cleanup failure: {cleanup_error}")
+        raise
+    return descriptor
 
 
 def _run(
@@ -689,6 +713,7 @@ def _absolute_git_path(repo: Path, value: bytes) -> Path:
 def _artifact_destinations(
     forbidden_roots: Sequence[tuple[Path, _FileIdentity]],
     environment: Mapping[str, str],
+    owner: list[_ArtifactDestination] | None = None,
 ) -> AttemptArtifacts | str:
     patch = _artifact_path(environment.get(PATCH_ENV))
     transcript = _artifact_path(environment.get(TRANSCRIPT_ENV))
@@ -730,18 +755,14 @@ def _artifact_destinations(
         _ArtifactKind.PATCH: None,
         _ArtifactKind.TRANSCRIPT: None,
     }
-    opened: list[_ArtifactDestination] = []
+    opened = owner if owner is not None else []
     try:
         for label, candidate in candidates.items():
             if candidate is None:
                 continue
             path, expected_identity = candidate
-            descriptor = os.open(
-                path.parent,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
-            )
-            destination = _ArtifactDestination(path, expected_identity, descriptor)
-            opened.append(destination)
+            destination = _open_artifact_destination(path, expected_identity, opened)
+            descriptor = destination.descriptor()
             if _identity(os.fstat(descriptor)) != expected_identity:
                 raise OSError(f"{label} artifact parent changed during preparation: {path.parent}")
             try:
@@ -772,6 +793,34 @@ def _artifact_destinations(
     )
 
 
+def _open_artifact_destination(
+    path: Path,
+    expected_identity: _FileIdentity,
+    opened: list[_ArtifactDestination],
+) -> _ArtifactDestination:
+    """Open and transfer one artifact parent without an ownership gap."""
+    descriptor: int | None = None
+    destination: _ArtifactDestination | None = None
+    try:
+        descriptor = os.open(
+            path.parent,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+        )
+        destination = _ArtifactDestination(path, expected_identity, descriptor)
+        opened.append(destination)
+    except BaseException as error:
+        transferred = destination is not None and any(owned is destination for owned in opened)
+        if descriptor is not None and not transferred:
+            try:
+                os.close(descriptor)
+            except BaseException as cleanup_error:
+                error.add_note(f"secondary descriptor cleanup failure: {cleanup_error}")
+        raise
+    if destination is None:  # pragma: no cover - successful construction invariant
+        raise AssertionError("artifact destination was not constructed")
+    return destination
+
+
 def _artifact_path(value: str | None) -> Path | None:
     return None if value is None else Path(os.path.abspath(value))
 
@@ -791,12 +840,6 @@ def _inside_protected_root(
     except (OSError, RuntimeError, ValueError):
         return True
     return any(identity in identities for _, identity in forbidden_roots)
-
-
-def _close_artifacts(artifacts: AttemptArtifacts) -> None:
-    _close_destinations(
-        tuple(destination for destination in (artifacts.transcript, artifacts.patch) if destination is not None)
-    )
 
 
 def _close_destinations(destinations: Sequence[_ArtifactDestination]) -> None:
