@@ -82,6 +82,27 @@ def test_refuses_undeclared_path_without_changing_file(tmp_path: Path) -> None:
     assert target.read_bytes() == before
 
 
+def test_direct_mutation_seam_refuses_path_traversal(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = tmp_path / "outside.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    before = target.read_bytes()
+
+    receipt = replace_once(
+        repo,
+        _contract("*"),
+        "../outside.py",
+        file_sha256(before),
+        "1",
+        "2",
+    )
+
+    assert receipt.code is MutationCode.MUTATION_FAILED
+    assert "invalid mutation path" in receipt.message
+    assert target.read_bytes() == before
+
+
 def test_refuses_stale_revision_without_changing_file(tmp_path: Path) -> None:
     target = tmp_path / "app.py"
     target.write_text("value = 1\n", encoding="utf-8")

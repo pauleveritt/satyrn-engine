@@ -118,6 +118,27 @@ test("a refusal does not advance the revision", async () => {
 	assert.equal(requests[1].expected_sha256, FIRST_REVISION);
 });
 
+test("a result-less invalid request is determinate and does not poison", async () => {
+	let exchanges = 0;
+	const mutator = createMutator(context(), async () => {
+		exchanges += 1;
+		return {
+			version: 1,
+			ok: false,
+			code: "INVALID_REQUEST",
+			message: "invalid replacement path",
+		};
+	});
+
+	const first = await mutator.execute("first", input());
+	const second = await mutator.execute("second", input());
+
+	assert.equal(first.details.code, "INVALID_REQUEST");
+	assert.equal(first.details.result, null);
+	assert.equal(second.details.code, "INVALID_REQUEST");
+	assert.equal(exchanges, 2);
+});
+
 test("missing revision reaches the engine as an explicit null", async () => {
 	const requests = [];
 	const missingContext = { ...context(), revisions: {} };
@@ -230,6 +251,21 @@ test("a mismatched successful path is a contained malformed response", async () 
 
 	assert.equal(response.details.code, "ENGINE_MALFORMED_RESPONSE");
 	assert.equal(response.details.ok, false);
+	assert.equal(poisoned.details.code, "MUTATION_CONTEXT_POISONED");
+	assert.equal(exchanges, 1);
+});
+
+test("a result-less policy refusal is malformed and poisons", async () => {
+	let exchanges = 0;
+	const mutator = createMutator(context(), async () => {
+		exchanges += 1;
+		return { version: 1, ok: false, code: "ANCHOR_MISSING", message: "missing" };
+	});
+
+	const response = await mutator.execute("first", input());
+	const poisoned = await mutator.execute("second", input());
+
+	assert.equal(response.details.code, "ENGINE_MALFORMED_RESPONSE");
 	assert.equal(poisoned.details.code, "MUTATION_CONTEXT_POISONED");
 	assert.equal(exchanges, 1);
 });
