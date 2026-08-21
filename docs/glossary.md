@@ -13,12 +13,13 @@ adapter
   contract, mutation, or Git policy.
 
 attempt
-  One E5 run of an explicitly selected Pi model in a clean disposable Git
-  worktree. The model receives only ``read`` and E4's bounded ``edit``. The
-  transcript and patch are evidence artifacts published through pinned
-  directories outside every registered worktree and Git administrative
-  directory, not a grading verdict; E3 decides whether the resulting tree
-  becomes a candidate.
+  One E5 run of an explicitly selected Pi model. Standalone invocation expects
+  the caller to supply a clean disposable Git worktree; it does not create
+  isolation itself. ``/implement`` supplies that worktree through E3 delivery.
+  The model receives only ``read`` and E4's bounded ``edit``. The transcript
+  and patch are evidence artifacts published through pinned directories
+  outside every registered worktree and Git administrative directory, not a
+  grading verdict; E3 decides whether the resulting tree becomes a candidate.
 
 check
   The engine's first operation: parse and validate a contract, lint the
