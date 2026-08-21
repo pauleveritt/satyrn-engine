@@ -16,6 +16,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export const PROTOCOL_VERSION = 1;
 export const DEFAULT_DEADLINE_MS = 30_000;
+export const TERMINATION_GRACE_MS = 100;
 
 /** A named adapter refusal: a transport failure the engine never sees. */
 export class AdapterRefusal extends Error {
@@ -36,11 +37,15 @@ export class AdapterRefusal extends Error {
  * stdio streams are closed.
  */
 export interface SpawnedChild {
-	stdin: { write(data: string): void; end(): void };
+	stdin: {
+		write(data: string): void;
+		end(): void;
+		on?(event: "error", cb: (err: Error) => void): void;
+	};
 	stdout: { on(event: "data", cb: (chunk: string) => void): void };
 	on(event: "close", cb: (code: number | null) => void): void;
 	on(event: "error", cb: (err: Error) => void): void;
-	kill(): void;
+	kill(signal?: "SIGTERM" | "SIGKILL"): boolean | void;
 }
 
 export type Spawner = (
@@ -110,47 +115,75 @@ export async function exchange(
 
 		let stdout = "";
 		let settled = false;
-		const timer = setTimeout(() => {
-			child.kill();
-			settled = true;
-			rejectPromise(new AdapterRefusal("ENGINE_TIMEOUT", `no response within ${deadlineMs} ms`));
+		let pendingRefusal: AdapterRefusal | undefined;
+		let terminationTimer: ReturnType<typeof setTimeout> | undefined;
+
+		const requestTermination = (refusal: AdapterRefusal): void => {
+			if (settled || pendingRefusal !== undefined) return;
+			pendingRefusal = refusal;
+			clearTimeout(deadlineTimer);
+			try {
+				child.kill("SIGTERM");
+			} catch {
+				// The close event remains authoritative. A failed TERM is followed by KILL.
+			}
+			if (settled) return;
+			terminationTimer = setTimeout(() => {
+				try {
+					child.kill("SIGKILL");
+				} catch {
+					// Do not claim completion before close even when signaling fails.
+				}
+			}, TERMINATION_GRACE_MS);
+		};
+
+		const deadlineTimer = setTimeout(() => {
+			requestTermination(
+				new AdapterRefusal("ENGINE_TIMEOUT", `no response within ${deadlineMs} ms`),
+			);
 		}, deadlineMs);
 
-		child.stdout.on("data", (chunk) => {
-			stdout += chunk;
-		});
-
-		child.on("error", (err) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			rejectPromise(new AdapterRefusal("ENGINE_START_FAILED", `engine failed to start: ${err.message}`));
-		});
-
-		child.on("close", (code) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			try {
-				resolvePromise(parseResponse(stdout));
-			} catch (refusal) {
-				if (code !== 0) {
-					rejectPromise(
-						new AdapterRefusal("ENGINE_CRASHED", `engine exited ${code} with no valid response`),
-					);
-				} else {
-					rejectPromise(refusal as AdapterRefusal);
-				}
-			}
-		});
-
 		try {
+			child.on("close", (code) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(deadlineTimer);
+				if (terminationTimer !== undefined) clearTimeout(terminationTimer);
+				if (pendingRefusal !== undefined) {
+					rejectPromise(pendingRefusal);
+					return;
+				}
+				try {
+					resolvePromise(parseResponse(stdout));
+				} catch (refusal) {
+					if (code !== 0) {
+						rejectPromise(
+							new AdapterRefusal("ENGINE_CRASHED", `engine exited ${code} with no valid response`),
+						);
+					} else {
+						rejectPromise(refusal as AdapterRefusal);
+					}
+				}
+			});
+			child.on("error", (err) => {
+				requestTermination(
+					new AdapterRefusal("ENGINE_START_FAILED", `engine failed to start: ${err.message}`),
+				);
+			});
+			child.stdout.on("data", (chunk) => {
+				stdout += chunk;
+			});
+			child.stdin.on?.("error", (err) => {
+				requestTermination(
+					new AdapterRefusal("ENGINE_START_FAILED", `could not write the request: ${err.message}`),
+				);
+			});
 			child.stdin.write(request);
 			child.stdin.end();
 		} catch (err) {
-			settled = true;
-			clearTimeout(timer);
-			rejectPromise(new AdapterRefusal("ENGINE_START_FAILED", `could not write the request: ${String(err)}`));
+			requestTermination(
+				new AdapterRefusal("ENGINE_START_FAILED", `could not write the request: ${String(err)}`),
+			);
 		}
 	});
 }

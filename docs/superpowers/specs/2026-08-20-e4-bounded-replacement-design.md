@@ -4,6 +4,36 @@
 **Phase:** E4 (current)
 **Status:** accepted — implementation follows in the companion plan
 
+## Correction, 2026-08-21
+
+The accepted text below made four boundary mistakes that implementation must
+not preserve:
+
+1. A path missing from the TypeScript revision map was described as a local
+   refusal. That lets TypeScript decide writable-path policy. The wire field is
+   instead required and nullable: TypeScript always sends the request with its
+   known SHA-256 or `null`; Python first checks `writable_paths`, then returns
+   `REVISION_UNAVAILABLE` when an authorized path has no captured revision.
+2. Rejecting only symlink escapes is insufficient. A declared in-repository
+   symlink can alias an undeclared file. Every target path component, including
+   the leaf, must therefore be opened and checked without following symlinks;
+   E4 never mutates through a symlink.
+3. A mutation transport failure can occur after Python published a replacement
+   but before TypeScript received the response. Such a result is indeterminate,
+   not proof that the file is unchanged. The mutation context becomes poisoned
+   after a timeout, crash, malformed response, or other transport failure and
+   accepts no later edit. E5 discards the isolated worktree containing that
+   context.
+4. The existing one-shot exchange did not yet earn its lifecycle claim. It
+   rejected immediately after sending `SIGTERM` and had no asynchronous stdin
+   error boundary. The adapter now contains stdin failures and reports timeout
+   only after the direct child closes, escalating to `SIGKILL` after a short
+   grace period.
+
+These are corrections to the accepted design, not new phase scope. The
+normative request, refusal, path, adapter, and test rules below are read with
+this section taking precedence where they conflict.
+
 ## Goal
 
 Route one exact-text replacement through Pi → TypeScript → Python. The Python
@@ -132,16 +162,18 @@ request is:
   "repo": "/absolute/disposable/worktree",
   "contract": "/absolute/path/to/contract.yaml",
   "path": "src/app.py",
-  "expected_sha256": "<64 lowercase hex characters>",
+  "expected_sha256": "<64 lowercase hex characters or null>",
   "old_text": "return 1",
   "new_text": "return 2"
 }
 ```
 
-All fields are required. `old_text` must be non-empty; `new_text` may be empty.
-Malformed JSON, wrong field types, an invalid SHA shape, an unsafe relative
-path, or an unsupported operation is `INVALID_REQUEST` and exit 7. Those are
-transport/input-shape failures, not mutation-policy refusals.
+All fields are required. `expected_sha256` is either 64 lowercase hexadecimal
+characters or `null`; omitting it is invalid. `old_text` must be non-empty;
+`new_text` may be empty. Malformed JSON, wrong field types, an invalid non-null
+SHA shape, an unsafe relative path, or an unsupported operation is
+`INVALID_REQUEST` and exit 7. Those are transport/input-shape failures, not
+mutation-policy refusals.
 
 A successful response extends the existing base response with one result:
 
@@ -156,12 +188,13 @@ A successful response extends the existing base response with one result:
 ```
 
 A policy refusal has `ok: false`, one detailed code, a human-readable message,
-and `result: null`. The detailed code is authoritative; all four policy
+and `result: null`. The detailed code is authoritative; all five policy
 refusals share product process exit 9, `MUTATION_REFUSED`:
 
 | response code | condition |
 |---|---|
 | `PATH_UNDECLARED` | normalized path matches no contract pattern |
+| `REVISION_UNAVAILABLE` | declared path has no captured revision in the mutation context |
 | `REVISION_STALE` | current file SHA-256 differs from `expected_sha256` |
 | `ANCHOR_MISSING` | `old_text` occurs zero times |
 | `ANCHOR_AMBIGUOUS` | `old_text` occurs more than once |
@@ -181,16 +214,19 @@ result rather than adding nullable mutation fields to every response.
 
 The request path must use `/`, be relative, contain no NUL, empty segment,
 `.` segment, or `..` segment, and name a regular file inside the canonical
-repository root. Absolute paths and symlink escapes are malformed requests.
-The declared-path match happens against the normalized relative path. The
-filesystem containment check happens before reading or writing.
+repository root. Absolute paths are malformed requests. After shape
+acceptance, Python checks every filesystem component without following
+symlinks; any symlink or containment failure is `MUTATION_FAILED`. The
+declared-path match happens against the normalized relative path before the
+filesystem target is opened.
 
 E4 does not create a missing file. A declared but missing/non-regular target is
 `MUTATION_FAILED`.
 
 ### Revision
 
-SHA-256 is computed from the file's exact bytes. The request revision must be
+SHA-256 is computed from the file's exact bytes. After the path is declared,
+a null request revision is `REVISION_UNAVAILABLE`. A non-null revision must be
 64 lowercase hexadecimal characters. The engine reads the file once, computes
 the actual revision, and refuses `REVISION_STALE` before anchor inspection if
 it differs. The response carries the hash of the exact bytes written.
@@ -241,7 +277,7 @@ Python uses concrete closed types:
 - `Contract` gains `writable_paths: tuple[str, ...]`;
 - `CheckRequest` and `ReplaceRequest` are frozen dataclasses in a
   discriminated `ProtocolRequest` union;
-- `MutationCode` is a `StrEnum` for the five detailed mutation outcomes;
+- `MutationCode` is a `StrEnum` for the seven detailed mutation outcomes;
 - `MutationResult` and `MutationReceipt` are frozen dataclasses;
 - response payloads use `TypedDict` shapes at the JSON boundary.
 
@@ -266,8 +302,8 @@ slice.
 
 - contract field absent, valid patterns, and malformed pattern list;
 - successful literal replacement and exact next revision;
-- each of the four named refusals with a sibling successful replacement;
-- unsafe path/symlink escape, missing/non-regular/non-UTF-8 target, atomic-write
+- each of the five named policy refusals with a sibling successful replacement;
+- unsafe path, internal/escaping symlinks, missing/non-regular/non-UTF-8 target, atomic-write
   failures, mode preservation, literal `$` replacement, and temporary cleanup;
 - protocol parsing/rendering for `check` and `replace`, including every request
   field and response shape;
@@ -277,7 +313,7 @@ slice.
 
 - valid/malformed context and one-edit argument shape;
 - exact replacement request generation;
-- revision map advances only on success;
+- revision map advances only on success and a transport failure poisons it;
 - each engine/transport refusal becomes an error result and no `execute`
   promise rejects;
 - sessions without context do not override Pi's edit tool.
@@ -286,7 +322,8 @@ slice.
 
 - the real console protocol changes one fixture through the Python process;
 - the shipped TypeScript adapter uses the real spawner and Python protocol for
-  the success plus stale, undeclared, missing, and ambiguous siblings;
+  the success plus unavailable, stale, undeclared, missing, ambiguous, and
+  symlink siblings;
 - a temporary `pi install` loads all three package extensions without touching
   user settings.
 
@@ -299,8 +336,9 @@ E4 is complete when:
 
 1. one fixture replacement succeeds through the shipped TypeScript adapter and
    real Python protocol;
-2. stale revision, undeclared path, missing anchor, and ambiguous anchor each
-   return their exact typed refusal and leave the file unchanged;
+2. unavailable revision, stale revision, undeclared path, missing anchor, and
+   ambiguous anchor each return their exact typed refusal and leave the file
+   unchanged;
 3. no adapter path rejects or lets an exception escape Pi;
 4. old contracts still load and `check` unchanged, while a contract with
    `writable_paths` is enforced only by Python;
