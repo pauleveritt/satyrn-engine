@@ -30,9 +30,9 @@ cancellation reports completion only after E3 has torn down the attempt group,
 closed, and cleaned or retained its worktree. The default tier injects these
 seams; the marked integration tier proves real filesystem identity, parent
 swap, and delayed-descendant cases with successful siblings.
-Stream read errors, diagnostic callback failures, and component-boundary
-contract classification are also typed adapter behavior rather than uncaught
-Node exceptions.
+Stream read errors, diagnostic callback failures, and filesystem-canonical,
+component-boundary contract classification are also typed adapter behavior
+rather than uncaught Node exceptions.
 
 ## Task 1: Freeze the public command and typed result
 
