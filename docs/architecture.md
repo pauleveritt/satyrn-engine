@@ -69,8 +69,9 @@ Verified Pi facts (v0.84.2) from `BRIEF.md`: extension handlers are awaited
 sequentially with no host deadline, and an uncaught adapter error escapes the
 turn. The check/protocol transport therefore keeps its short deadline, while
 E5 gives the nested model attempt fifteen minutes plus a small delivery margin.
-Both paths convert spawn errors, timeouts, crashes, and malformed responses
-into contained results instead of letting them escape. On an E5 deadline the
+Both paths convert spawn, stdin/stdout/stderr, diagnostic-forwarding, timeout,
+crash, and malformed-response errors into contained results instead of letting
+them escape. On an E5 deadline the
 adapter first requests cooperative termination; the Python CLI unwinds through
 E3, which reaps the attempt process group and cleans its worktree. The adapter
 does not report the timeout until the outer delivery process has closed.
@@ -134,7 +135,7 @@ inside E3's worktree and consumes the same seam.
 
 Check and protocol engine causes (`2`–`7`): `USAGE`, `CONTRACT_UNREADABLE`,
 `CONTRACT_INVALID_YAML`, `CONTRACT_MISSING_FIELD`, `REPO_UNAVAILABLE`,
-`INVALID_REQUEST`. Adapter causes: `ENGINE_START_FAILED`,
+`INVALID_REQUEST`. Adapter causes: `ADAPTER_ERROR`, `ENGINE_START_FAILED`,
 `ENGINE_TIMEOUT`, `ENGINE_CRASHED`, `ENGINE_MALFORMED_RESPONSE`. The
 adapter's are transport failures the engine never sees; the engine's pass
 through verbatim. Delivery preserves contract and repository-path refusal
