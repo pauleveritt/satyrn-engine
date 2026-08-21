@@ -237,13 +237,19 @@ ambient extensions are disabled. The current worktree remains the model's
 workspace, so direct `attempt` is intended for E3's disposable worktree rather
 than a developer's checkout.
 
-Both artifact paths are optional, must be absent, and must resolve outside the
-repository. The transcript is Pi's exact JSONL output. The patch is written
-only when the tracked tree changed. Neither artifact is a grading verdict;
-they record what happened. A Pi start or nonzero-exit failure returns
+Both artifact paths are optional and must be absent. Their parents must be real
+directories outside every registered worktree and outside Git's worktree and
+common administrative directories. Attempt pins each accepted parent by
+filesystem identity, reopens it without following symlinks, and publishes the
+artifact exclusively through that directory. The transcript is Pi's exact
+JSONL output. The patch is written only when the tracked tree changed. Neither
+artifact is a grading verdict; they record what happened. A Pi start or
+nonzero-exit failure returns
 `ATTEMPT_FAILED` with exit `10` after preserving any requested artifacts. The
 `/implement` wrapper additionally gives E3 fifteen minutes to complete the
-attempt and reports `COMMAND_TIMEOUT` if that deadline expires.
+attempt. If the adapter's backstop deadline expires, it reports
+`ENGINE_TIMEOUT` only after the outer delivery process closes; E3 first reaps
+the attempt process group and cleans or explicitly retains its worktree.
 
 ## The Pi adapter
 

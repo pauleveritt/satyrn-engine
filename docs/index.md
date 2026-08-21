@@ -49,7 +49,9 @@ Phases completed, each with its design spec and implementation plan:
   <superpowers/plans/2026-08-20-e4-bounded-replacement>`)
 - _E5_ — one real attempt. `attempt` starts one explicit Pi model with only
   `read` and E4's bounded `edit`; `/implement` runs it inside E3 delivery and
-  reports the candidate or refusal. ({doc}`spec
+  reports the candidate or refusal. Artifact destinations exclude every
+  registered worktree and Git administrative directory, and adapter timeouts
+  wait for E3 cleanup. ({doc}`spec
   <superpowers/specs/2026-08-20-e5-real-attempt-design>`, {doc}`plan
   <superpowers/plans/2026-08-20-e5-real-attempt>`)
 

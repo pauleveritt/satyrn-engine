@@ -85,6 +85,9 @@ preserve-symbols guard removed in E3.5 does not return. Spec and plan:
 
 **Phase E5 — One real attempt. Complete.** `attempt` runs one explicit Pi
 model with only `read` and E4's bounded `edit`; `/implement` wraps it in E3.
+Artifacts are published only through pinned directories outside every
+registered worktree and Git administrative directory. The adapter reports a
+deadline only after E3 has torn down its child process group and worktree.
 The recorded live run used Pi 0.84.1 and
 `omlx/gemma-4-12B-it-MLX-8bit`, changed only `app.py`, published a candidate,
 and left the caller checkout clean. Spec and plan:
