@@ -16,7 +16,7 @@ condition that reopens it.
 └─────────────────┘   one JSON response (stdout) └───────────────────────────────┘
 ```
 
-The flow, for a `/implement CONTRACT`:
+The first flow, for a `/implement CONTRACT` check:
 
 1. The adapter resolves `CONTRACT` against `ctx.cwd`; the repository is
    `ctx.cwd`. Nothing else is asked of the user.
@@ -35,8 +35,8 @@ The flow, for a `/implement CONTRACT`:
 
 | side | owns |
 |------|------|
-| {term}`engine` | contract semantics and delivery: parsing, path linting, isolated Git execution, candidate publication, receipts; the `check` seam, the {term}`protocol` surface, and stable exit codes |
-| {term}`adapter` | transport — spawning, the deadline, refusal conversion — and the command surface. It never reinterprets an engine refusal |
+| {term}`engine` | contract and mutation semantics plus delivery: parsing, path linting, writable-path matching, revision and anchor checks, isolated Git execution, candidate publication, receipts; the `check` seam, the {term}`protocol` surface, and stable exit codes |
+| {term}`adapter` | transport — spawning, the deadline, refusal conversion — and Pi's command/tool surfaces. It never reinterprets an engine refusal or duplicates path policy |
 
 The split is what keeps the adapter thin: Pi-specific concerns (no host
 deadline, uncaught errors escaping the turn) live in TypeScript; contract
@@ -78,7 +78,40 @@ telemetry therefore have separate exception boundaries: an inspection error
 admits the call without breaking Pi, while a telemetry failure cannot reverse
 an already-made block decision. This mechanism only handles exact repetition.
 Schema-validation loops happen before the hook, and content churn produces
-different keys. Contract-aware mutation enforcement starts in E4.
+different keys. Contract-aware mutation enforcement is the separate E4 path
+below.
+
+## Why bounded replacement crosses into Python
+
+E4 conditionally overrides Pi's `edit` tool only when a parent supplies a
+versioned mutation context. The context fixes a disposable workspace, contract,
+and SHA-256 revision map. One exact replacement then follows this path:
+
+```text
+Pi edit(path, one oldText/newText)
+       │
+       ▼
+TypeScript: translate JSON with the known revision or explicit null
+       │ one replace request
+       ▼
+Python: normalize path → match writable_paths → check revision
+        → require one anchor → atomically replace → return next revision
+```
+
+Python owns every permission and mutation decision. Its `fnmatch` behavior is
+the reference contract, it reads the exact file bytes, and it returns the next
+{term}`revision`. TypeScript neither reads a file nor hashes one; even a path
+missing from its map reaches Python, which checks contract authorization before
+returning `REVISION_UNAVAILABLE`. Python opens every target component without
+following symlinks. A determinate engine refusal leaves both the file and the
+in-memory map unchanged. A transport failure is different: publication may
+already have happened, so TypeScript poisons that mutation context and permits
+no later edit; E5 discards its isolated worktree.
+
+The replacement is intentionally one anchor in one existing UTF-8 file. File
+creation, whole-file writes, multiple edits, fuzzy matching, symbol analysis,
+validation, and model orchestration are not hidden behind an abstraction. E5
+will supply this context inside E3's worktree and consume the same seam.
 
 ## Refusals, split by side
 
@@ -90,7 +123,9 @@ adapter's are transport failures the engine never sees; the engine's pass
 through verbatim. Delivery preserves contract and repository-path refusal
 codes `3`–`6`. Its delivery-specific handled results that publish no candidate
 use exit `8`, and the receipt carries the specific cause. CLI usage remains
-`2`; an uncaught bug remains `1`.
+`2`; an uncaught bug remains `1`. E4 replacement refusals use exit `9`; their
+JSON `code` distinguishes `PATH_UNDECLARED`, `REVISION_UNAVAILABLE`, `REVISION_STALE`,
+`ANCHOR_MISSING`, `ANCHOR_AMBIGUOUS`, and `MUTATION_FAILED`.
 
 The design record — arguments considered and rejected — is the E2 spec
 and plan under `docs/superpowers/`.
@@ -133,8 +168,8 @@ This is not a security sandbox. The command can write absolute paths, mutate
 the repository's shared Git state, or deliberately escape its POSIX process
 group; E3 does not prevent those actions. It isolates ordinary file writes and
 bounds ordinary descendants on timeout, so it accepts only a trusted,
-synchronous command. E4 adds mutation rules; E5 adds validation and a real
-attempt.
+synchronous command. E4 now supplies mutation rules when its tool is used; E5
+connects them to delivery, validation, and a real attempt.
 
 Worktree isolation is established practice in agent tooling. E3's specific use
 is single-attempt safety, rather than parallelism, plus a dedicated non-branch

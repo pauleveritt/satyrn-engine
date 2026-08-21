@@ -29,13 +29,13 @@ surface it serves through a thin TypeScript adapter.
 The engine owns:
 
 - contract parsing and validation;
+- contract-aware writable-path and revision enforcement for one replacement;
 - candidate worktree, commit-or-discard, and receipt behavior;
 - the Pi-side loop breaker for repeated identical tool calls;
 - the Pi package and its thin TypeScript adapter;
 - the internal Pi-adapter protocol and its compatibility fixtures.
 
-The roadmap adds writable-path and revision enforcement in E4 and candidate
-validation in E5.
+The roadmap connects these pieces into one real attempt in E5.
 
 It does **not** own workloads, grading, repeated runs, comparison
 statistics, or contract authoring. Those live in the satyrn-evals
@@ -92,8 +92,12 @@ Phases completed, each with its design spec and implementation plan:
   identical tool call while five matching admitted calls remain in its
   twenty-call window, with registration-local state and `loop_broken`
   telemetry. ([_spec_](docs/superpowers/specs/2026-08-20-e3-5-loop-breaker-design.md), [_plan_](docs/superpowers/plans/2026-08-20-e3-5-loop-breaker.md))
+- _E4_ — one bounded replacement. A conditional Pi `edit` override sends one
+  exact replacement to Python, which enforces the contract's writable path,
+  captured SHA-256 revision, and unique anchor before an atomic write.
+  ([_spec_](docs/superpowers/specs/2026-08-20-e4-bounded-replacement-design.md), [_plan_](docs/superpowers/plans/2026-08-20-e4-bounded-replacement.md))
 
-The roadmap and the next phase (E4 — One bounded replacement) live in
+The roadmap and the next phase (E5 — One real attempt) live in
 [`ROADMAP.md`](ROADMAP.md).
 
 > More: [architecture](docs/architecture.md) — why the engine is one
@@ -112,6 +116,10 @@ node --test --experimental-strip-types --experimental-test-coverage \
   --test-coverage-functions=100 \
   --test-coverage-include=packages/engine/engine.ts tests/test_loop_breaker.mjs
 node --experimental-strip-types tools/replay_guards.mjs
+node --test --experimental-strip-types --experimental-test-coverage \
+  --test-coverage-lines=100 --test-coverage-branches=100 \
+  --test-coverage-functions=100 \
+  --test-coverage-include=packages/engine/mutator.ts tests/test_mutator.mjs
 uv run ruff check .    # lint
 uv run pyrefly check   # type-check
 ```
