@@ -71,10 +71,15 @@ turn. The check/protocol transport therefore keeps its short deadline, while
 E5 gives the nested model attempt fifteen minutes plus a small delivery margin.
 Both paths convert spawn, stdin/stdout/stderr, diagnostic-forwarding, timeout,
 crash, and malformed-response errors into contained results instead of letting
-them escape. On an E5 deadline the
-adapter first requests cooperative termination; the Python CLI unwinds through
-E3, which reaps the attempt process group and cleans its worktree. The adapter
-does not report the timeout until the outer delivery process has closed.
+them escape. On an E5 deadline the adapter starts the fixed E3 delivery in a
+detached POSIX process group, waits for its spawn event, then requests
+cooperative group termination. The Python CLI unwinds through E3, which reaps
+the separately-sessioned attempt group and cleans or retains its worktree. The
+adapter does not report the timeout until the direct delivery child has closed
+and a signal-0 probe observes `ESRCH` for the outer group. It does not SIGKILL
+E3 after an arbitrary grace period because that could interrupt the inner
+cleanup. Windows retains a direct-child fallback and is outside the E5
+platform proof.
 
 ## Why the loop breaker stays in TypeScript
 
