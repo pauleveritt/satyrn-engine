@@ -830,7 +830,8 @@ def _merge_attempt_cleanup(
     elif cleanup_exception is not None:
         cleanup_exception.add_note(f"secondary cleanup failure: {detail}")
     elif isinstance(error, OSError) and pending is not None:
-        pending = _failed(model, detail, command_exit=pending.command_exit)
+        previous = f"; prior result {pending.code}: {pending.message}" if pending.message else ""
+        pending = _failed(model, f"{detail}{previous}", command_exit=pending.command_exit)
     else:
         error.add_note(detail)
         cleanup_exception = error

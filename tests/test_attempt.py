@@ -667,6 +667,45 @@ def test_artifact_descriptor_close_failure_supersedes_pending_result(
     assert "artifact descriptor close failed" in result.message
 
 
+def test_all_cleanup_failures_remain_visible_in_the_final_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, contract, _ = _repo(tmp_path)
+    descriptor: int | None = None
+    original_destinations = attempt_module._artifact_destinations
+    original_close = attempt_module.os.close
+
+    def capture_destinations(*args: object, **kwargs: object) -> attempt_module.AttemptArtifacts | str:
+        nonlocal descriptor
+        prepared = original_destinations(*args, **kwargs)  # type: ignore[arg-type]
+        if isinstance(prepared, attempt_module.AttemptArtifacts) and prepared.transcript is not None:
+            descriptor = prepared.transcript.parent_descriptor
+        return prepared
+
+    def fail_temporary_cleanup(path: Path) -> None:
+        raise OSError(f"temporary cleanup failed; retained path: {path}")
+
+    def close_then_fail(selected: int) -> None:
+        original_close(selected)
+        if selected == descriptor:
+            raise OSError("artifact descriptor close failed")
+
+    monkeypatch.setattr(attempt_module, "_artifact_destinations", capture_destinations)
+    monkeypatch.setattr(attempt_module.shutil, "rmtree", fail_temporary_cleanup)
+    monkeypatch.setattr(attempt_module.os, "close", close_then_fail)
+    result, _ = _run_existing(
+        repo,
+        contract,
+        FakeGit(repo),
+        environment={attempt_module.TRANSCRIPT_ENV: str(tmp_path / "transcript")},
+    )
+    assert result.code is AttemptCode.ATTEMPT_FAILED
+    assert "artifact descriptor close failed" in result.message
+    assert "temporary cleanup failed" in result.message
+    assert "retained path:" in result.message
+
+
 def test_artifact_created_during_parent_open_is_refused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
