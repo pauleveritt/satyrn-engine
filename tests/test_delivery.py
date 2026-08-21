@@ -2,6 +2,8 @@
 
 import io
 import json
+import os
+import signal
 from dataclasses import replace
 from pathlib import Path
 
@@ -304,3 +306,19 @@ def test_deliver_cli_reserves_exit_one_when_receipt_stdout_is_closed(
     monkeypatch.setattr(cli, "deliver", lambda *args: _receipt(DeliveryCode.OK))
 
     assert cli.main(["deliver", "--repo", ".", "contract.yaml", "--", "tool"]) == 1
+
+
+def test_deliver_cli_unwinds_on_sigterm_and_restores_the_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def terminate(*args: object) -> DeliveryReceipt:
+        del args
+        os.kill(os.getpid(), signal.SIGTERM)
+        raise AssertionError("SIGTERM handler did not unwind delivery")
+
+    monkeypatch.setattr(cli, "deliver", terminate)
+
+    assert cli.main(["deliver", "--repo", ".", "contract.yaml", "--", "tool"]) == 128 + signal.SIGTERM
+    assert signal.getsignal(signal.SIGTERM) is previous

@@ -17,7 +17,16 @@ import { dirname, resolve } from "node:path";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const extensionPath = resolve(root, "packages/engine/orchestrator.ts");
-const { createAdapter, buildRequest, parseResponse, exchange, AdapterRefusal } = await import(
+const {
+	createAdapter,
+	buildRequest,
+	parseResponse,
+	parseDeliveryReceipt,
+	buildDeliveryInvocation,
+	runDelivery,
+	exchange,
+	AdapterRefusal,
+} = await import(
 	pathToFileURL(extensionPath)
 );
 
@@ -25,6 +34,7 @@ const { createAdapter, buildRequest, parseResponse, exchange, AdapterRefusal } =
 // cases below start in the "engine is reachable" state. Individual cases
 // delete and restore it to exercise the unset path.
 process.env.SATYRN_ENGINE_REPO = String(root);
+process.env.SATYRN_MODEL = "fixture/model";
 
 const FIXTURES = resolve(root, "tests/fixtures/protocol");
 
@@ -39,22 +49,34 @@ function ok(name, condition, detail = "") {
 }
 
 /** A fake spawner child that behaves per case. */
-function mockChild({ stdoutText = "", exitCode = 0, emitError = null, neverExits = false }) {
+function mockChild({ stdoutText = "", stderrText = "", exitCode = 0, emitError = null, neverExits = false }) {
 	const listeners = { close: [], error: [] };
 	let killed = false;
+	let closed = false;
+	const close = (code) => {
+		if (closed) return;
+		closed = true;
+		for (const cb of listeners.close) cb(code);
+	};
 	const child = {
 		stdin: {
 			write() {},
 			end() {
 				queueMicrotask(() => {
 					if (neverExits) return;
-					for (const cb of listeners.close) cb(exitCode);
+					close(exitCode);
 				});
 			},
+			on() {},
 		},
 		stdout: {
 			on(event, cb) {
 				if (event === "data" && stdoutText) queueMicrotask(() => cb(stdoutText));
+			},
+		},
+		stderr: {
+			on(event, cb) {
+				if (event === "data" && stderrText) queueMicrotask(() => cb(stderrText));
 			},
 		},
 		on(event, cb) {
@@ -62,6 +84,7 @@ function mockChild({ stdoutText = "", exitCode = 0, emitError = null, neverExits
 		},
 		kill() {
 			killed = true;
+			queueMicrotask(() => close(null));
 		},
 		get killed() {
 			return killed;
@@ -139,7 +162,32 @@ ok("spawn throw -> ENGINE_START_FAILED", startFailed instanceof AdapterRefusal &
 const timedOut = await exchange(spawnerFor(mockChild({ neverExits: true })), okRequest, engineRepo, 50).catch((err) => err);
 ok("timeout -> ENGINE_TIMEOUT", timedOut instanceof AdapterRefusal && timedOut.code === "ENGINE_TIMEOUT", timedOut.message);
 
-// --- Case 5: the /implement command surface -----------------------------------
+// --- Case 5: E5 delivery receipt and command ---------------------------------
+const deliveryOk = await readFile(resolve(root, "tests/fixtures/delivery/receipt-ok.json"), "utf8");
+const deliveryRefusal = await readFile(resolve(root, "tests/fixtures/delivery/receipt-repo-dirty.json"), "utf8");
+const parsedDelivery = parseDeliveryReceipt(deliveryOk);
+ok(
+	"parseDeliveryReceipt accepts E3 success",
+	parsedDelivery.code === "OK" && parsedDelivery.candidate_ref !== null,
+);
+const invocation = buildDeliveryInvocation(root, "contracts/task.yaml", "fixture/model", root, 12);
+ok(
+	"buildDeliveryInvocation nests E5 inside E3",
+	invocation.args.includes("deliver") &&
+		invocation.args.includes("attempt") &&
+		invocation.args.includes("--model=fixture/model") &&
+		invocation.args.includes("contracts/task.yaml"),
+);
+const diagnostics = [];
+const delivered = await runDelivery(
+	spawnerFor(mockChild({ stdoutText: deliveryOk, stderrText: "transcript\n" })),
+	invocation,
+	500,
+	(chunk) => diagnostics.push(chunk),
+);
+ok("runDelivery returns receipt and drains diagnostics", delivered.code === "OK" && diagnostics.join("") === "transcript\n");
+
+// --- Case 6: the /implement command surface -----------------------------------
 // Each case clears `notifications` first so the assertion targets the one
 // notify call that case made, not an accumulated index.
 const notifications = [];
@@ -149,21 +197,21 @@ const fakeCtx = {
 };
 
 notifications.length = 0;
-await createAdapter(() => mockChild({ stdoutText: okResponse, exitCode: 0 }), 500).implement(
+await createAdapter(() => mockChild({ stdoutText: deliveryOk, exitCode: 0 }), 500).implement(
 	"tests/fixtures/contracts/valid.yaml",
 	fakeCtx,
 );
 ok(
-	"implement accepts and notifies OK",
-	notifications.length === 1 && notifications[0].message === "satyrn-engine: OK" && notifications[0].level === "info",
+	"implement creates and reports a candidate",
+	notifications.length === 1 && notifications[0].message.includes("refs/satyrn/candidates/greeting/head") && notifications[0].level === "info",
 	JSON.stringify(notifications),
 );
 
 notifications.length = 0;
-await createAdapter(() => mockChild({ stdoutText: refusalText, exitCode: 6 }), 500).implement("anything.yaml", fakeCtx);
+await createAdapter(() => mockChild({ stdoutText: deliveryRefusal, exitCode: 8 }), 500).implement("anything.yaml", fakeCtx);
 ok(
 	"implement surfaces engine refusals verbatim",
-	notifications.length === 1 && notifications[0].message.startsWith("satyrn-engine: REPO_UNAVAILABLE") && notifications[0].level === "error",
+	notifications.length === 1 && notifications[0].message.startsWith("satyrn-engine: REPO_DIRTY") && notifications[0].level === "error",
 	JSON.stringify(notifications),
 );
 
@@ -177,6 +225,16 @@ ok(
 );
 
 process.env.SATYRN_ENGINE_REPO = String(root);
+delete process.env.SATYRN_MODEL;
+notifications.length = 0;
+await createAdapter(() => mockChild({})).implement("x.yaml", fakeCtx);
+ok(
+	"implement refuses when SATYRN_MODEL is unset",
+	notifications.length === 1 && notifications[0].message.includes("SATYRN_MODEL") && notifications[0].level === "error",
+	JSON.stringify(notifications),
+);
+
+process.env.SATYRN_MODEL = "fixture/model";
 notifications.length = 0;
 await createAdapter(() => mockChild({})).implement("   ", fakeCtx);
 ok(

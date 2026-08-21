@@ -24,3 +24,4 @@ class ExitCode(IntEnum):
     INVALID_REQUEST = 7  # the protocol surface received a malformed request
     NO_CANDIDATE = 8  # an accepted delivery operation created no candidate
     MUTATION_REFUSED = 9  # an accepted replacement was safely refused
+    ATTEMPT_FAILED = 10  # an accepted model attempt failed after preparation

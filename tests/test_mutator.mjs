@@ -393,9 +393,11 @@ test("engine exchange factory delegates to the existing one-shot transport", asy
 			},
 			stdout: {
 				on(event, handler) {
-					assert.equal(event, "data");
-					dataHandler = handler;
+					if (event === "data") dataHandler = handler;
 				},
+			},
+			stderr: {
+				on() {},
 			},
 			on(event, handler) {
 				if (event === "close") closeHandler = handler;
