@@ -64,6 +64,10 @@ test("replacement request carries policy data without applying policy", () => {
 		old_text: "return 1",
 		new_text: "return 2",
 	});
+	assert.equal(
+		JSON.parse(buildReplacementRequest(context(), input(), null)).expected_sha256,
+		null,
+	);
 });
 
 test("success advances the revision used by the next request", async () => {
@@ -114,7 +118,29 @@ test("a refusal does not advance the revision", async () => {
 	assert.equal(requests[1].expected_sha256, FIRST_REVISION);
 });
 
-test("missing revision and malformed input refuse before exchange", async () => {
+test("missing revision reaches the engine as an explicit null", async () => {
+	const requests = [];
+	const missingContext = { ...context(), revisions: {} };
+	const mutator = createMutator(missingContext, async (request) => {
+		requests.push(JSON.parse(request));
+		return {
+			version: 1,
+			ok: false,
+			code: "REVISION_UNAVAILABLE",
+			message: "no captured revision is available",
+			result: null,
+		};
+	});
+
+	const first = await mutator.execute("first", input());
+	const second = await mutator.execute("second", input());
+
+	assert.equal(first.details.code, "REVISION_UNAVAILABLE");
+	assert.equal(second.details.code, "REVISION_UNAVAILABLE");
+	assert.deepEqual(requests.map((request) => request.expected_sha256), [null, null]);
+});
+
+test("malformed input refuses before exchange", async () => {
 	let exchanges = 0;
 	const mutator = createMutator(context(), async () => {
 		exchanges += 1;
@@ -122,7 +148,6 @@ test("missing revision and malformed input refuse before exchange", async () => 
 	});
 
 	for (const candidate of [
-		{ ...input(), path: "other.py" },
 		null,
 		{ ...input(), path: "" },
 		{ ...input(), edits: [] },
@@ -136,18 +161,27 @@ test("missing revision and malformed input refuse before exchange", async () => 
 	assert.equal(exchanges, 0);
 });
 
-test("engine and local failures always resolve to error results", async () => {
+test("indeterminate engine outcomes poison the mutation context", async () => {
 	for (const error of [
 		new AdapterRefusal("ENGINE_TIMEOUT", "engine timed out"),
+		new AdapterRefusal("ENGINE_CRASHED", "engine crashed"),
+		new AdapterRefusal("ENGINE_START_FAILED", "engine failed to start"),
+		new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "engine response was malformed"),
 		new Error("unexpected local error"),
 		"non-error failure",
 	]) {
+		let exchanges = 0;
 		const mutator = createMutator(context(), async () => {
+			exchanges += 1;
 			throw error;
 		});
-		const response = await mutator.execute("call", input());
-		assert.equal(response.details.ok, false);
-		assert.equal(response.details.result, null);
+		const first = await mutator.execute("first", input());
+		const second = await mutator.execute("second", input());
+		assert.equal(first.details.ok, false);
+		assert.equal(first.details.result, null);
+		assert.equal(second.details.code, "MUTATION_CONTEXT_POISONED");
+		assert.equal(second.details.result, null);
+		assert.equal(exchanges, 1);
 	}
 });
 
@@ -182,15 +216,22 @@ test("replacement response parser rejects malformed success and refusal", () => 
 });
 
 test("a mismatched successful path is a contained malformed response", async () => {
-	const mutator = createMutator(context(), async () => ({
-		...success(),
-		result: { path: "other.py", sha256: SECOND_REVISION },
-	}));
+	let exchanges = 0;
+	const mutator = createMutator(context(), async () => {
+		exchanges += 1;
+		return {
+			...success(),
+			result: { path: "other.py", sha256: SECOND_REVISION },
+		};
+	});
 
-	const response = await mutator.execute("call", input());
+	const response = await mutator.execute("first", input());
+	const poisoned = await mutator.execute("second", input());
 
 	assert.equal(response.details.code, "ENGINE_MALFORMED_RESPONSE");
 	assert.equal(response.details.ok, false);
+	assert.equal(poisoned.details.code, "MUTATION_CONTEXT_POISONED");
+	assert.equal(exchanges, 1);
 });
 
 function fakePi() {

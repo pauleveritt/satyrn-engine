@@ -63,7 +63,7 @@ export type ReplacementResponse =
 export type MutationToolRefusalCode =
 	| AdapterRefusalCode
 	| EngineRefusalCode
-	| "REVISION_UNAVAILABLE";
+	| "MUTATION_CONTEXT_POISONED";
 
 export interface MutationToolSuccessDetails {
 	readonly satyrn: true;
@@ -187,7 +187,7 @@ function parseEditInput(input: unknown): EditInput {
 export function buildReplacementRequest(
 	context: MutationContext,
 	input: EditInput,
-	expectedSha256: string,
+	expectedSha256: string | null,
 ): string {
 	const [replacement] = input.edits;
 	return JSON.stringify({
@@ -252,20 +252,31 @@ function refusalResult(code: MutationToolRefusalCode, message: string): Mutation
 
 export function createMutator(context: MutationContext, exchangeRequest: ExchangeRequest): Mutator {
 	const revisions = new Map(Object.entries(context.revisions));
+	let poisoned = false;
 	return {
 		async execute(_toolCallId: string, rawInput: unknown): Promise<MutationToolResult> {
+			if (poisoned) {
+				return refusalResult(
+					"MUTATION_CONTEXT_POISONED",
+					"a prior indeterminate engine outcome requires discarding this mutation context",
+				);
+			}
 			try {
 				const input = parseEditInput(rawInput);
-				const expectedSha256 = revisions.get(input.path);
-				if (expectedSha256 === undefined) {
-					return refusalResult("REVISION_UNAVAILABLE", `no captured revision is available for ${input.path}`);
-				}
+				const expectedSha256 = revisions.get(input.path) ?? null;
 				const request = buildReplacementRequest(context, input, expectedSha256);
-				const response = parseReplacementResponse(await exchangeRequest(request));
+				let response: ReplacementResponse;
+				try {
+					response = parseReplacementResponse(await exchangeRequest(request));
+				} catch (error) {
+					poisoned = true;
+					throw error;
+				}
 				if (!response.ok || response.result === null) {
 					return refusalResult(response.code, response.message);
 				}
 				if (response.result.path !== input.path) {
+					poisoned = true;
 					return refusalResult("ENGINE_MALFORMED_RESPONSE", "engine returned a different replacement path");
 				}
 				revisions.set(response.result.path, response.result.sha256);

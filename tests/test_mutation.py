@@ -10,6 +10,7 @@ from satyrn_engine.contract import Contract
 from satyrn_engine.mutation import (
     MutationCode,
     MutationReceipt,
+    MutationResult,
     file_sha256,
     normalize_relative_path,
     replace_once,
@@ -92,6 +93,21 @@ def test_refuses_stale_revision_without_changing_file(tmp_path: Path) -> None:
     assert target.read_bytes() == before
 
 
+def test_refuses_unavailable_revision_after_path_and_target_checks(tmp_path: Path) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    before = target.read_bytes()
+
+    unavailable = replace_once(tmp_path, _contract("app.py"), "app.py", None, "1", "2")
+    undeclared = replace_once(tmp_path, _contract("src/*.py"), "app.py", None, "1", "2")
+    missing = replace_once(tmp_path, _contract("missing.py"), "missing.py", None, "1", "2")
+
+    assert unavailable.code is MutationCode.REVISION_UNAVAILABLE
+    assert undeclared.code is MutationCode.PATH_UNDECLARED
+    assert missing.code is MutationCode.MUTATION_FAILED
+    assert target.read_bytes() == before
+
+
 def test_refuses_missing_anchor_without_changing_file(tmp_path: Path) -> None:
     target = tmp_path / "app.py"
     target.write_text("value = 1\n", encoding="utf-8")
@@ -148,6 +164,46 @@ def test_refuses_symlink_escape_without_changing_external_file(tmp_path: Path) -
     assert external.read_bytes() == before
 
 
+def test_refuses_internal_symlink_leaf_without_changing_target(tmp_path: Path) -> None:
+    target = tmp_path / "target.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    (tmp_path / "alias.py").symlink_to(target.name)
+    before = target.read_bytes()
+
+    receipt = replace_once(
+        tmp_path,
+        _contract("alias.py"),
+        "alias.py",
+        file_sha256(before),
+        "1",
+        "2",
+    )
+
+    assert receipt.code is MutationCode.MUTATION_FAILED
+    assert target.read_bytes() == before
+
+
+def test_refuses_internal_symlink_component_without_changing_target(tmp_path: Path) -> None:
+    real_directory = tmp_path / "real"
+    real_directory.mkdir()
+    target = real_directory / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    (tmp_path / "alias").symlink_to(real_directory.name)
+    before = target.read_bytes()
+
+    receipt = replace_once(
+        tmp_path,
+        _contract("alias/*.py"),
+        "alias/app.py",
+        file_sha256(before),
+        "1",
+        "2",
+    )
+
+    assert receipt.code is MutationCode.MUTATION_FAILED
+    assert target.read_bytes() == before
+
+
 @pytest.mark.parametrize("kind", ["missing", "directory", "non_utf8"])
 def test_refuses_unusable_target(tmp_path: Path, kind: str) -> None:
     target = tmp_path / "app.py"
@@ -161,7 +217,7 @@ def test_refuses_unusable_target(tmp_path: Path, kind: str) -> None:
         case _:  # pragma: no cover - closed parameter set
             raise AssertionError(kind)
 
-    receipt = replace_once(tmp_path, _contract("app.py"), "app.py", "0" * 64, "1", "2")
+    receipt = replace_once(tmp_path, _contract("app.py"), "app.py", None, "1", "2")
 
     assert receipt.code is MutationCode.MUTATION_FAILED
 
@@ -196,7 +252,11 @@ def test_atomic_replace_failure_is_named_and_removes_temporary(
     target.write_text("value = 1\n", encoding="utf-8")
     before = target.read_bytes()
 
-    def fail_replace(_source: os.PathLike[str] | str, _target: os.PathLike[str] | str) -> None:
+    def fail_replace(
+        _source: os.PathLike[str] | str,
+        _target: os.PathLike[str] | str,
+        **_kwargs: object,
+    ) -> None:
         raise OSError("publication denied")
 
     monkeypatch.setattr(os, "replace", fail_replace)
@@ -205,3 +265,55 @@ def test_atomic_replace_failure_is_named_and_removes_temporary(
     assert receipt.code is MutationCode.MUTATION_FAILED
     assert target.read_bytes() == before
     assert list(tmp_path.glob(".app.py.satyrn-*.tmp")) == []
+
+
+@pytest.mark.parametrize("field", ["old", "new"])
+def test_direct_api_refuses_non_utf8_replacement_text(tmp_path: Path, field: str) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    before = target.read_bytes()
+    old_text = "\ud800" if field == "old" else "1"
+    new_text = "\ud800" if field == "new" else "2"
+
+    receipt = _replace(tmp_path, "app.py", old_text, new_text)
+
+    assert receipt.code is MutationCode.MUTATION_FAILED
+    assert target.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("path", "revision", "error"),
+    [
+        (1, "0" * 64, TypeError),
+        ("../app.py", "0" * 64, ValueError),
+        ("app.py", 1, TypeError),
+        ("app.py", "0" * 63, ValueError),
+        ("app.py", "G" * 64, ValueError),
+    ],
+)
+def test_mutation_result_closes_path_and_revision_invariants(
+    path: object,
+    revision: object,
+    error: type[Exception],
+) -> None:
+    with pytest.raises(error):
+        MutationResult(path=path, sha256=revision)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("code", "message", "result", "error"),
+    [
+        (MutationCode.OK, "", None, ValueError),
+        (MutationCode.ANCHOR_MISSING, "missing", MutationResult("app.py", "0" * 64), ValueError),
+        ("OK", "", MutationResult("app.py", "0" * 64), TypeError),
+        (MutationCode.ANCHOR_MISSING, 1, None, TypeError),
+    ],
+)
+def test_mutation_receipt_closes_success_and_refusal_invariants(
+    code: object,
+    message: object,
+    result: MutationResult | None,
+    error: type[Exception],
+) -> None:
+    with pytest.raises(error):
+        MutationReceipt(code=code, message=message, result=result)  # type: ignore[arg-type]
