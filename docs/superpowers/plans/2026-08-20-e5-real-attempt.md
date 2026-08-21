@@ -21,7 +21,8 @@ validation, grading, retry, batching, or performance claim.
 Implement the accepted design with its 2026-08-21 correction. Artifact checks
 cover every registered worktree plus Git administrative/common roots using
 filesystem identity, and publication is descriptor-relative after pinning the
-parent. Revision enumeration follows no symlink. All engine-owned temporary
+parent during preparation; all result and exception paths close each acquired
+descriptor exactly once. Revision enumeration follows no symlink. All engine-owned temporary
 and artifact cleanup failures have typed precedence and retained-path evidence;
 secondary cleanup exceptions preserve the primary exception identity. Inner
 and outer argv use `--model=VALUE` and literal `--` boundaries. Delivery
@@ -29,6 +30,9 @@ cancellation reports completion only after E3 has torn down the attempt group,
 closed, and cleaned or retained its worktree. The default tier injects these
 seams; the marked integration tier proves real filesystem identity, parent
 swap, and delayed-descendant cases with successful siblings.
+Stream read errors, diagnostic callback failures, and component-boundary
+contract classification are also typed adapter behavior rather than uncaught
+Node exceptions.
 
 ## Task 1: Freeze the public command and typed result
 
@@ -107,8 +111,9 @@ Steps:
 7. Cover start failure, nonzero, empty output, no diff, binary-like diff,
    artifacts in any registered worktree or Git administrative root,
    case-alias containment, pre-existing/symlink paths, parent replacement,
-   write/cleanup failures, and primary/secondary exception precedence with
-   success siblings.
+   path redirection after descriptor acquisition, partial descriptor
+   acquisition, write/cleanup failures, exactly-once close, and
+   primary/secondary exception precedence with success siblings.
 
 Commit after default and integration evidence passes.
 
@@ -137,8 +142,9 @@ Steps:
 5. Replace the check-only `/implement` handler with delivery. Notify success
    with candidate ref/commit and refusal with exact receipt or adapter code.
 6. Contain missing model/repo, start failure, timeout, malformed/extra output,
-   nonzero without receipt, asynchronous closed-stream errors, and handler
-   exceptions. Prove timeout teardown has completed before returning.
+   nonzero without receipt, asynchronous stdin/stdout/stderr errors,
+   diagnostic-sink failures, and handler exceptions. Prove timeout teardown
+   has completed before returning.
 7. Replay the real package through an isolated fake engine, then exercise real
    E3 delivery around the fake Pi attempt.
 
