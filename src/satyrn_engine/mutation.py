@@ -101,6 +101,10 @@ def replace_once(
     new_text: str,
 ) -> MutationReceipt:
     """Replace one exact unique anchor or return a typed refusal."""
+    try:
+        path = normalize_relative_path(path)
+    except ValueError as exc:
+        return MutationReceipt(MutationCode.MUTATION_FAILED, f"invalid mutation path: {exc}")
     if not any(fnmatch(path, pattern) for pattern in contract.writable_paths):
         return MutationReceipt(
             MutationCode.PATH_UNDECLARED,

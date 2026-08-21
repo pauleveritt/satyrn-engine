@@ -143,6 +143,7 @@ def test_shipped_adapter_replaces_one_anchor_through_real_engine(tmp_path: Path)
         ("REVISION_STALE", {"revision": "0" * 64}),
         ("REVISION_UNAVAILABLE", {"include_revision": False}),
         ("PATH_UNDECLARED", {"path": "app.py"}),
+        ("INVALID_REQUEST", {"path": "./src/app.py"}),
         ("ANCHOR_MISSING", {"old_text": "return 3"}),
         ("ANCHOR_AMBIGUOUS", {"content": "return 1\nreturn 1\n"}),
     ],

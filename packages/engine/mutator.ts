@@ -224,7 +224,11 @@ export function parseReplacementResponse(response: EngineResponse): ReplacementR
 			},
 		};
 	}
-	if (!isEngineRefusalCode(response.code) || response.result !== null) {
+	if (
+		!isEngineRefusalCode(response.code) ||
+		(response.result !== null &&
+			!(response.code === "INVALID_REQUEST" && response.result === undefined))
+	) {
 		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "refused replacement response must have a null result");
 	}
 	return {
