@@ -15,6 +15,7 @@ import registerExtension, {
 	exchange,
 	parseDeliveryReceipt,
 	parseResponse,
+	processControlForPlatform,
 	runDelivery,
 } from "../packages/engine/orchestrator.ts";
 
@@ -67,8 +68,10 @@ function child(options = {}) {
 		stdoutError = null,
 		stderrError = null,
 		ignoreTerm = false,
+		pid = undefined,
+		autoSpawn = true,
 	} = options;
-	const listeners = { close: [], error: [] };
+	const listeners = { spawn: [], close: [], error: [] };
 	const killSignals = [];
 	const stdinListeners = { error: [] };
 	let closed = false;
@@ -78,6 +81,7 @@ function child(options = {}) {
 		for (const callback of listeners.close) callback(exitCode);
 	};
 	const result = {
+		pid,
 		stdin: {
 			write() {
 				if (writeError) throw writeError;
@@ -126,12 +130,23 @@ function child(options = {}) {
 			for (const callback of listeners[event]) callback(value);
 		},
 	};
+	if (autoSpawn && !error) queueMicrotask(() => { for (const callback of listeners.spawn) callback(); });
 	if (error) queueMicrotask(() => { for (const callback of listeners.error) callback(error); });
 	return result;
 }
 
 function spawnerFor(value) {
 	return () => value;
+}
+
+const DIRECT_CONTROL = { kind: "direct-child" };
+
+function runDirectDelivery(spawner, invocation, deadlineMs, diagnostic, terminationGraceMs) {
+	return runDelivery(spawner, invocation, deadlineMs, diagnostic, terminationGraceMs, DIRECT_CONTROL);
+}
+
+function createDirectAdapter(spawner, deadlineMs) {
+	return createAdapter(spawner, deadlineMs, DIRECT_CONTROL);
 }
 
 async function refusal(promise, code) {
@@ -288,21 +303,21 @@ test("delivery drains diagnostics and accepts refusal receipts", async () => {
 	const diagnostics = [];
 	const settledChild = child({ stdout: DELIVERY_OK, stderr: "events" });
 	assert.equal(
-		(await runDelivery(spawnerFor(settledChild), invocation, 100, (chunk) => diagnostics.push(chunk))).code,
+		(await runDirectDelivery(spawnerFor(settledChild), invocation, 100, (chunk) => diagnostics.push(chunk))).code,
 		"OK",
 	);
 	settledChild.emit("error", new Error("late"));
 	settledChild.emit("close", 0);
 	const childWithoutStdinEvents = child({ stdout: DELIVERY_OK });
 	delete childWithoutStdinEvents.stdin.on;
-	assert.equal((await runDelivery(spawnerFor(childWithoutStdinEvents), invocation, 100)).code, "OK");
+	assert.equal((await runDirectDelivery(spawnerFor(childWithoutStdinEvents), invocation, 100)).code, "OK");
 	assert.deepEqual(diagnostics, ["events"]);
-	assert.equal((await runDelivery(spawnerFor(child({ stdout: DELIVERY_REFUSAL, exitCode: 8 })), invocation, 100)).code, "REPO_DIRTY");
+	assert.equal((await runDirectDelivery(spawnerFor(child({ stdout: DELIVERY_REFUSAL, exitCode: 8 })), invocation, 100)).code, "REPO_DIRTY");
 	const originalWrite = process.stderr.write;
 	let defaultDiagnostic = "";
 	process.stderr.write = (chunk) => { defaultDiagnostic += chunk; return true; };
 	try {
-		await runDelivery(spawnerFor(child({ stdout: DELIVERY_OK, stderr: "default" })), invocation, 100);
+		await runDirectDelivery(spawnerFor(child({ stdout: DELIVERY_OK, stderr: "default" })), invocation, 100);
 	} finally {
 		process.stderr.write = originalWrite;
 	}
@@ -311,33 +326,33 @@ test("delivery drains diagnostics and accepts refusal receipts", async () => {
 
 test("delivery converts every transport failure", async () => {
 	const invocation = buildDeliveryInvocation("/repo", "task.yaml", "m", "/engine");
-	await refusal(runDelivery(() => { throw new Error("spawn"); }, invocation, 100), "ENGINE_START_FAILED");
-	await refusal(runDelivery(spawnerFor(child({ error: new Error("async") })), invocation, 100), "ENGINE_START_FAILED");
-	await refusal(runDelivery(spawnerFor(child({ never: true, asyncWriteError: new Error("pipe") })), invocation, 100), "ENGINE_START_FAILED");
-	await refusal(runDelivery(spawnerFor(child({ endError: new Error("end") })), invocation, 100), "ENGINE_START_FAILED");
+	await refusal(runDirectDelivery(() => { throw new Error("spawn"); }, invocation, 100), "ENGINE_START_FAILED");
+	await refusal(runDirectDelivery(spawnerFor(child({ error: new Error("async") })), invocation, 100), "ENGINE_START_FAILED");
+	await refusal(runDirectDelivery(spawnerFor(child({ never: true, asyncWriteError: new Error("pipe") })), invocation, 100), "ENGINE_START_FAILED");
+	await refusal(runDirectDelivery(spawnerFor(child({ endError: new Error("end") })), invocation, 100), "ENGINE_START_FAILED");
 	await refusal(
-		runDelivery(spawnerFor(child({ never: true, stdoutError: new Error("stdout") })), invocation, 100),
+		runDirectDelivery(spawnerFor(child({ never: true, stdoutError: new Error("stdout") })), invocation, 100),
 		"ENGINE_START_FAILED",
 	);
 	await refusal(
-		runDelivery(spawnerFor(child({ never: true, stderrError: new Error("stderr") })), invocation, 100),
+		runDirectDelivery(spawnerFor(child({ never: true, stderrError: new Error("stderr") })), invocation, 100),
 		"ENGINE_START_FAILED",
 	);
 	const diagnosticFailure = child({ never: true, stderr: "diagnostic" });
 	await refusal(
-		runDelivery(spawnerFor(diagnosticFailure), invocation, 100, () => { throw new Error("sink"); }),
+		runDirectDelivery(spawnerFor(diagnosticFailure), invocation, 100, () => { throw new Error("sink"); }),
 		"ADAPTER_ERROR",
 	);
 	assert.deepEqual(diagnosticFailure.killSignals, ["SIGTERM"]);
-	await refusal(runDelivery(spawnerFor(child({ stdout: "bad" })), invocation, 100), "ENGINE_MALFORMED_RESPONSE");
-	await refusal(runDelivery(spawnerFor(child({ stdout: "bad", exitCode: 1 })), invocation, 100), "ENGINE_CRASHED");
-	await refusal(runDelivery(spawnerFor(child({ stdout: "x".repeat(MAX_RECEIPT_BYTES + 1) })), invocation, 100), "ENGINE_MALFORMED_RESPONSE");
+	await refusal(runDirectDelivery(spawnerFor(child({ stdout: "bad" })), invocation, 100), "ENGINE_MALFORMED_RESPONSE");
+	await refusal(runDirectDelivery(spawnerFor(child({ stdout: "bad", exitCode: 1 })), invocation, 100), "ENGINE_CRASHED");
+	await refusal(runDirectDelivery(spawnerFor(child({ stdout: "x".repeat(MAX_RECEIPT_BYTES + 1) })), invocation, 100), "ENGINE_MALFORMED_RESPONSE");
 	const timedChild = child({ never: true, ignoreTerm: true });
-	await refusal(runDelivery(spawnerFor(timedChild), invocation, 1, () => {}, 5), "ENGINE_TIMEOUT");
+	await refusal(runDirectDelivery(spawnerFor(timedChild), invocation, 1, () => {}, 5), "ENGINE_TIMEOUT");
 	assert.deepEqual(timedChild.killSignals, ["SIGTERM", "SIGKILL"]);
 	const ignoredStreamFailure = child({ never: true, ignoreTerm: true, stdoutError: new Error("stream") });
 	await refusal(
-		runDelivery(spawnerFor(ignoredStreamFailure), invocation, 100, () => {}, 5),
+		runDirectDelivery(spawnerFor(ignoredStreamFailure), invocation, 100, () => {}, 5),
 		"ENGINE_START_FAILED",
 	);
 	assert.deepEqual(ignoredStreamFailure.killSignals, ["SIGTERM", "SIGKILL"]);
@@ -347,14 +362,137 @@ test("delivery converts every transport failure", async () => {
 		throw new Error(`cannot send ${signal}`);
 	};
 	await refusal(
-		runDelivery(spawnerFor(signalFailureChild), invocation, 1, () => {}, 5),
+		runDirectDelivery(spawnerFor(signalFailureChild), invocation, 1, () => {}, 5),
 		"ENGINE_TIMEOUT",
 	);
 	const synchronousCloseChild = child({ never: true });
 	synchronousCloseChild.kill = () => synchronousCloseChild.emit("close", null);
-	const synchronousClose = runDelivery(spawnerFor(synchronousCloseChild), invocation, 100);
+	const synchronousClose = runDirectDelivery(spawnerFor(synchronousCloseChild), invocation, 100);
 	synchronousCloseChild.emit("error", new Error("async"));
 	await refusal(synchronousClose, "ENGINE_START_FAILED");
+});
+
+test("delivery preserves close-time refusal codes until its POSIX group is gone", async () => {
+	const invocation = buildDeliveryInvocation("/repo", "task.yaml", "m", "/engine");
+	for (const [options, expected] of [
+		[{ stdout: "bad", pid: 4101 }, "ENGINE_MALFORMED_RESPONSE"],
+		[{ stdout: "bad", exitCode: 1, pid: 4102 }, "ENGINE_CRASHED"],
+		[{ stdout: "x".repeat(MAX_RECEIPT_BYTES + 1), pid: 4103 }, "ENGINE_MALFORMED_RESPONSE"],
+	]) {
+		const signals = [];
+		const control = { kind: "posix-group", signal(_pgid, signal) {
+			signals.push(signal);
+			return signal === 0 ? { kind: "gone" } : { kind: "present" };
+		} };
+		await refusal(runDelivery(spawnerFor(child(options)), invocation, 100, () => {}, 5, control), expected);
+		assert.deepEqual(signals, ["SIGTERM", 0]);
+	}
+});
+
+test("delivery waits for spawn, child close, and process-group disappearance", async () => {
+	const invocation = buildDeliveryInvocation("/repo", "task.yaml", "m", "/engine");
+	const managed = child({ never: true, pid: 4242, autoSpawn: false });
+	const groupSignals = [];
+	let probes = 0;
+	let spawnOptions;
+	const control = { kind: "posix-group", signal(pgid, signal) {
+		assert.equal(pgid, 4242);
+		if (signal === 0) {
+			probes += 1;
+			if (probes === 1) return { kind: "unknown", detail: "probe denied" };
+			return probes === 2 ? { kind: "present" } : { kind: "gone" };
+		}
+		groupSignals.push(signal);
+		if (signal === "SIGTERM") managed.emit("close", null);
+		return { kind: "present" };
+	} };
+	let completed = false;
+	const pending = runDelivery(
+		(_command, _args, options) => {
+			spawnOptions = options;
+			return managed;
+		},
+		invocation,
+		1,
+		() => {},
+		20,
+		control,
+	).finally(() => { completed = true; });
+	await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+	assert.deepEqual(groupSignals, []);
+	assert.equal(completed, false);
+	managed.emit("spawn");
+	await refusal(pending, "ENGINE_TIMEOUT");
+	assert.deepEqual(spawnOptions, { cwd: "/engine", detached: true, windowsHide: true });
+	assert.deepEqual(groupSignals, ["SIGTERM"]);
+	assert.deepEqual(managed.killSignals, []);
+
+	const closesLast = child({ never: true, pid: 4243, autoSpawn: false });
+	let closesLastCompleted = false;
+	const closesLastPending = runDelivery(
+		spawnerFor(closesLast),
+		invocation,
+		1,
+		() => {},
+		20,
+		{ kind: "posix-group", signal: () => ({ kind: "gone" }) },
+	).finally(() => { closesLastCompleted = true; });
+	await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+	closesLast.emit("spawn");
+	await new Promise((resolvePromise) => setTimeout(resolvePromise, 1));
+	assert.equal(closesLastCompleted, false);
+	closesLast.emit("close", null);
+	await refusal(closesLastPending, "ENGINE_TIMEOUT");
+
+	const spawnFailure = child({ never: true, autoSpawn: false });
+	let spawnFailureCompleted = false;
+	const spawnFailurePending = runDelivery(
+		spawnerFor(spawnFailure), invocation, 1, () => {}, 20,
+		{ kind: "posix-group", signal: () => ({ kind: "gone" }) },
+	).finally(() => { spawnFailureCompleted = true; });
+	await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+	spawnFailure.emit("close", null);
+	await new Promise((resolvePromise) => setTimeout(resolvePromise, 1));
+	assert.equal(spawnFailureCompleted, false);
+	spawnFailure.emit("error", new Error("spawn failed"));
+	await refusal(spawnFailurePending, "ENGINE_TIMEOUT");
+
+	const fallback = child({ never: true, pid: 4343, autoSpawn: false });
+	const fallbackSignals = [];
+	fallback.kill = (signal) => {
+		fallbackSignals.push(signal);
+		fallback.emit("close", null);
+	};
+	const fallbackPending = runDelivery(
+		spawnerFor(fallback), invocation, 1, () => {}, 5, { kind: "direct-child" },
+	);
+	await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+	fallback.emit("spawn");
+	await refusal(fallbackPending, "ENGINE_TIMEOUT");
+	await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+	assert.deepEqual(fallbackSignals, ["SIGTERM"]);
+});
+
+test("default POSIX process control distinguishes live, gone, and unknown groups", () => {
+	assert.deepEqual(processControlForPlatform("win32"), { kind: "direct-child" });
+	const control = processControlForPlatform("darwin");
+	assert.equal(control.kind, "posix-group");
+	const originalKill = process.kill;
+	let probes = 0;
+	try {
+		process.kill = (pid, signal) => {
+			assert.equal(pid, -1234);
+			if (signal === "SIGTERM") return true;
+			probes += 1;
+			if (probes === 1) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+			throw Object.assign(new Error("denied"), { code: "EPERM" });
+		};
+		assert.deepEqual(control.signal(1234, "SIGTERM"), { kind: "present" });
+		assert.deepEqual(control.signal(1234, 0), { kind: "gone" });
+		assert.deepEqual(control.signal(1234, 0), { kind: "unknown", detail: "Error: denied" });
+	} finally {
+		process.kill = originalKill;
+	}
 });
 
 test("implement handler reports configuration, success, refusal, and crash", async () => {
@@ -365,28 +503,28 @@ test("implement handler reports configuration, success, refusal, and crash", asy
 	try {
 		delete process.env.SATYRN_ENGINE_REPO;
 		delete process.env.SATYRN_MODEL;
-		await createAdapter(spawnerFor(child())).implement("task.yaml", ctx);
+		await createDirectAdapter(spawnerFor(child())).implement("task.yaml", ctx);
 		process.env.SATYRN_ENGINE_REPO = "/engine";
-		await createAdapter(spawnerFor(child())).implement("task.yaml", ctx);
+		await createDirectAdapter(spawnerFor(child())).implement("task.yaml", ctx);
 		process.env.SATYRN_MODEL = "m";
-		await createAdapter(spawnerFor(child())).implement("  ", ctx);
-		await createAdapter(spawnerFor(child({ stdout: DELIVERY_OK })), 100).implement("task.yaml", ctx);
-		await createAdapter(spawnerFor(child({ stdout: DELIVERY_REFUSAL, exitCode: 8 })), 100).implement("task.yaml", ctx);
-		await createAdapter(spawnerFor(child({ stdout: "bad" })), 100).implement("task.yaml", ctx);
+		await createDirectAdapter(spawnerFor(child())).implement("  ", ctx);
+		await createDirectAdapter(spawnerFor(child({ stdout: DELIVERY_OK })), 100).implement("task.yaml", ctx);
+		await createDirectAdapter(spawnerFor(child({ stdout: DELIVERY_REFUSAL, exitCode: 8 })), 100).implement("task.yaml", ctx);
+		await createDirectAdapter(spawnerFor(child({ stdout: "bad" })), 100).implement("task.yaml", ctx);
 		const unexpectedChild = child();
 		Object.defineProperty(unexpectedChild, "stdout", {
 			get() {
 				throw new Error("unexpected transport error");
 			},
 		});
-		await createAdapter(spawnerFor(unexpectedChild), 1).implement("task.yaml", ctx);
+		await createDirectAdapter(spawnerFor(unexpectedChild), 1).implement("task.yaml", ctx);
 		const nonErrorChild = child();
 		Object.defineProperty(nonErrorChild, "stdout", {
 			get() {
 				throw "non-error transport failure";
 			},
 		});
-		await createAdapter(spawnerFor(nonErrorChild), 1).implement("task.yaml", ctx);
+		await createDirectAdapter(spawnerFor(nonErrorChild), 1).implement("task.yaml", ctx);
 	} finally {
 		if (savedRepo === undefined) delete process.env.SATYRN_ENGINE_REPO;
 		else process.env.SATYRN_ENGINE_REPO = savedRepo;
@@ -424,7 +562,7 @@ test("implement contains unexpected notification failures", async () => {
 					},
 				},
 			};
-			await createAdapter(spawnerFor(child({ stdout: DELIVERY_OK })), 100).implement("task.yaml", ctx);
+			await createDirectAdapter(spawnerFor(child({ stdout: DELIVERY_OK })), 100).implement("task.yaml", ctx);
 			assert.match(notifications[0].message, /ADAPTER_ERROR.*ui failed/);
 		}
 	} finally {

@@ -19,9 +19,44 @@ export const PROTOCOL_VERSION = 1;
 export const DEFAULT_DEADLINE_MS = 30_000;
 export const TERMINATION_GRACE_MS = 100;
 export const DELIVERY_TERMINATION_GRACE_MS = 8_000;
+const DELIVERY_GROUP_POLL_MS = 10;
 export const DEFAULT_ATTEMPT_TIMEOUT_SECONDS = 900;
 export const DEFAULT_DELIVERY_DEADLINE_MS = (DEFAULT_ATTEMPT_TIMEOUT_SECONDS + 10) * 1000;
 export const MAX_RECEIPT_BYTES = 64 * 1024;
+
+type DeliverySignal = "SIGTERM" | 0;
+
+export type GroupObservation =
+	| { readonly kind: "present" }
+	| { readonly kind: "gone" }
+	| { readonly kind: "unknown"; readonly detail: string };
+
+export type ProcessControl =
+	| {
+			readonly kind: "posix-group";
+			signal(pgid: number, signal: DeliverySignal): GroupObservation;
+	  }
+	| { readonly kind: "direct-child" };
+
+const DIRECT_CHILD_CONTROL: ProcessControl = { kind: "direct-child" };
+const POSIX_GROUP_CONTROL: ProcessControl = {
+	kind: "posix-group",
+	signal(pgid, signal) {
+		try {
+			process.kill(-pgid, signal);
+			return { kind: "present" };
+		} catch (error) {
+			return (error as NodeJS.ErrnoException).code === "ESRCH"
+				? { kind: "gone" }
+				: { kind: "unknown", detail: String(error) };
+		}
+	},
+};
+
+export const processControlForPlatform = (platform: NodeJS.Platform): ProcessControl =>
+	platform === "win32" ? DIRECT_CHILD_CONTROL : POSIX_GROUP_CONTROL;
+
+const defaultProcessControl = (): ProcessControl => processControlForPlatform(process.platform);
 
 export const ENGINE_REFUSAL_CODES = [
 	"CONTRACT_UNREADABLE",
@@ -90,6 +125,19 @@ export type Spawner = (
 	args: readonly string[],
 	options: { cwd?: string },
 ) => SpawnedChild;
+
+export interface DeliverySpawnedChild extends SpawnedChild {
+	readonly pid?: number;
+	on(event: "spawn", cb: () => void): void;
+	on(event: "close", cb: (code: number | null) => void): void;
+	on(event: "error", cb: (err: Error) => void): void;
+}
+
+export type DeliverySpawner = (
+	command: string,
+	args: readonly string[],
+	options: { cwd?: string; detached?: boolean; windowsHide?: boolean },
+) => DeliverySpawnedChild;
 
 interface EngineResponseBase {
 	readonly version: 1;
@@ -479,16 +527,21 @@ export async function exchange(
 }
 
 export async function runDelivery(
-	spawner: Spawner,
+	spawner: DeliverySpawner,
 	invocation: DeliveryInvocation,
 	deadlineMs: number,
 	diagnostic: DiagnosticSink = (chunk) => process.stderr.write(chunk),
 	terminationGraceMs: number = DELIVERY_TERMINATION_GRACE_MS,
+	processControl: ProcessControl = defaultProcessControl(),
 ): Promise<DeliveryReceipt> {
 	return new Promise((resolvePromise, rejectPromise) => {
-		let child: SpawnedChild;
+		let child: DeliverySpawnedChild;
 		try {
-			child = spawner(invocation.command, invocation.args, { cwd: invocation.cwd });
+			child = spawner(invocation.command, invocation.args, {
+				cwd: invocation.cwd,
+				detached: processControl.kind === "posix-group",
+				windowsHide: true,
+			});
 		} catch (err) {
 			rejectPromise(new AdapterRefusal("ENGINE_START_FAILED", `could not start delivery: ${String(err)}`));
 			return;
@@ -499,24 +552,90 @@ export async function runDelivery(
 		let settled = false;
 		let pendingRefusal: AdapterRefusal | undefined;
 		let terminationTimer: ReturnType<typeof setTimeout> | undefined;
+		let groupPollTimer: ReturnType<typeof setTimeout> | undefined;
+		let childClosed = false;
+		let spawnObserved = false;
+		let spawnFailed = false;
+		let terminationStarted = false;
+		let processGroup:
+			| {
+					pgid: number;
+					gone: boolean;
+					signaling: boolean;
+					control: Extract<ProcessControl, { kind: "posix-group" }>;
+			  }
+			| undefined;
+
+		const clearLifecycleTimers = (): void => {
+			if (terminationTimer !== undefined) {
+				clearTimeout(terminationTimer);
+				terminationTimer = undefined;
+			}
+		};
+
+		const finishPendingRefusal = (): void => {
+			if (settled || pendingRefusal === undefined || !childClosed) return;
+			if (processControl.kind === "posix-group" && processGroup === undefined && !spawnFailed) return;
+			if (processGroup?.signaling) return;
+			if (processGroup !== undefined && !processGroup.gone) {
+				processGroup.signaling = true;
+				const observation = processGroup.control.signal(processGroup.pgid, 0);
+				processGroup.gone = observation.kind === "gone";
+				processGroup.signaling = false;
+			}
+			if (processGroup !== undefined && !processGroup.gone) {
+				if (groupPollTimer === undefined) {
+					groupPollTimer = setTimeout(() => {
+						groupPollTimer = undefined;
+						finishPendingRefusal();
+					}, DELIVERY_GROUP_POLL_MS);
+				}
+				return;
+			}
+			settled = true;
+			clearTimeout(deadlineTimer);
+			clearLifecycleTimers();
+			rejectPromise(pendingRefusal);
+		};
+
+		const beginTermination = (): void => {
+			if (settled || pendingRefusal === undefined || terminationStarted) return;
+			if (!spawnObserved && !spawnFailed) return;
+			terminationStarted = true;
+			if (
+				processControl.kind === "posix-group"
+				&& child.pid !== undefined
+				&& Number.isSafeInteger(child.pid)
+				&& child.pid > 0
+			) {
+				const group = { pgid: child.pid, gone: false, signaling: true, control: processControl };
+				processGroup = group;
+				const observation = group.control.signal(group.pgid, "SIGTERM");
+				group.gone = observation.kind === "gone";
+				group.signaling = false;
+			} else if (processControl.kind === "direct-child" && !spawnFailed) {
+				try {
+					child.kill("SIGTERM");
+				} catch {
+					// The close event remains authoritative. A failed TERM is followed by KILL.
+				}
+				if (settled) return;
+				terminationTimer = setTimeout(() => {
+					try {
+						child.kill("SIGKILL");
+					} catch {
+						// Never report completion while the direct child may still be running.
+					}
+				}, terminationGraceMs);
+			}
+			finishPendingRefusal();
+		};
 
 		const requestTermination = (refusal: AdapterRefusal): void => {
 			if (settled || pendingRefusal !== undefined) return;
 			pendingRefusal = refusal;
 			clearTimeout(deadlineTimer);
-			try {
-				child.kill("SIGTERM");
-			} catch {
-				// The close event remains authoritative. A failed TERM is followed by KILL.
-			}
-			if (settled) return;
-			terminationTimer = setTimeout(() => {
-				try {
-					child.kill("SIGKILL");
-				} catch {
-					// Never report completion while the child may still be running.
-				}
-			}, terminationGraceMs);
+			beginTermination();
 		};
 
 		const deadlineTimer = setTimeout(() => {
@@ -526,28 +645,39 @@ export async function runDelivery(
 		}, deadlineMs);
 
 		try {
+			child.on("spawn", () => {
+				if (settled) return;
+				spawnObserved = true;
+				beginTermination();
+			});
 			child.on("error", (err) => {
-				requestTermination(
-					new AdapterRefusal("ENGINE_START_FAILED", `delivery failed to start: ${err.message}`),
-				);
+				const refusal = new AdapterRefusal("ENGINE_START_FAILED", `delivery failed to start: ${err.message}`);
+				if (!spawnObserved) {
+					spawnFailed = true;
+					childClosed = true;
+				}
+				requestTermination(refusal);
+				beginTermination();
 			});
 			child.on("close", (code) => {
 				if (settled) return;
-				settled = true;
+				childClosed = true;
 				clearTimeout(deadlineTimer);
-				if (terminationTimer !== undefined) clearTimeout(terminationTimer);
 				if (pendingRefusal !== undefined) {
-					rejectPromise(pendingRefusal);
+					finishPendingRefusal();
 					return;
 				}
 				if (oversized) {
-					rejectPromise(new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "delivery receipt exceeds 65536 bytes"));
+					requestTermination(new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "delivery receipt exceeds 65536 bytes"));
 					return;
 				}
 				try {
-					resolvePromise(parseDeliveryReceipt(stdout));
+					const receipt = parseDeliveryReceipt(stdout);
+					settled = true;
+					clearLifecycleTimers();
+					resolvePromise(receipt);
 				} catch (refusal) {
-					rejectPromise(
+					requestTermination(
 						code !== 0
 							? new AdapterRefusal("ENGINE_CRASHED", `delivery exited ${code} with no valid receipt`)
 							: (refusal as AdapterRefusal),
@@ -594,8 +724,12 @@ export async function runDelivery(
 	});
 }
 
-/** The command surface, with the spawner and deadline injected (test seams). */
-export function createAdapter(spawner: Spawner, deadlineMs: number = DEFAULT_DELIVERY_DEADLINE_MS) {
+/** The command surface, with process dependencies injected as test seams. */
+export function createAdapter(
+	spawner: DeliverySpawner,
+	deadlineMs: number = DEFAULT_DELIVERY_DEADLINE_MS,
+	processControl: ProcessControl = defaultProcessControl(),
+) {
 	return {
 		async implement(
 			args: string,
@@ -618,7 +752,14 @@ export function createAdapter(spawner: Spawner, deadlineMs: number = DEFAULT_DEL
 			}
 			const invocation = buildDeliveryInvocation(ctx.cwd, contractArg, model, engineRepo);
 			try {
-				const receipt = await runDelivery(spawner, invocation, deadlineMs);
+				const receipt = await runDelivery(
+					spawner,
+					invocation,
+					deadlineMs,
+					undefined,
+					DELIVERY_TERMINATION_GRACE_MS,
+					processControl,
+				);
 				if (receipt.code === "OK") {
 					ctx.ui.notify(
 						`satyrn-engine: OK: ${receipt.candidate_ref} ${receipt.candidate_commit}`,
