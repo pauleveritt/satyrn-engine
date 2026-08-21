@@ -17,6 +17,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export const PROTOCOL_VERSION = 1;
 export const DEFAULT_DEADLINE_MS = 30_000;
 export const TERMINATION_GRACE_MS = 100;
+export const DELIVERY_TERMINATION_GRACE_MS = 8_000;
 export const DEFAULT_ATTEMPT_TIMEOUT_SECONDS = 900;
 export const DEFAULT_DELIVERY_DEADLINE_MS = (DEFAULT_ATTEMPT_TIMEOUT_SECONDS + 10) * 1000;
 export const MAX_RECEIPT_BYTES = 64 * 1024;
@@ -315,6 +316,7 @@ export function buildDeliveryInvocation(
 	timeoutSeconds: number = DEFAULT_ATTEMPT_TIMEOUT_SECONDS,
 ): DeliveryInvocation {
 	const sourceRepo = resolve(repo);
+	const resolvedEngineRepo = resolve(engineRepo);
 	const resolvedContract = resolve(sourceRepo, contract);
 	const relativeContract = relative(sourceRepo, resolvedContract);
 	const innerContract =
@@ -323,11 +325,11 @@ export function buildDeliveryInvocation(
 			: resolvedContract;
 	return {
 		command: "uv",
-		cwd: engineRepo,
+		cwd: resolvedEngineRepo,
 		args: [
 			"run",
 			"--project",
-			engineRepo,
+			resolvedEngineRepo,
 			"satyrn-engine",
 			"deliver",
 			"--repo",
@@ -339,11 +341,11 @@ export function buildDeliveryInvocation(
 			"uv",
 			"run",
 			"--project",
-			engineRepo,
+			resolvedEngineRepo,
 			"satyrn-engine",
 			"attempt",
-			"--model",
-			model,
+			`--model=${model}`,
+			"--",
 			innerContract,
 		],
 	};
@@ -451,6 +453,7 @@ export async function runDelivery(
 	invocation: DeliveryInvocation,
 	deadlineMs: number,
 	diagnostic: DiagnosticSink = (chunk) => process.stderr.write(chunk),
+	terminationGraceMs: number = DELIVERY_TERMINATION_GRACE_MS,
 ): Promise<DeliveryReceipt> {
 	return new Promise((resolvePromise, rejectPromise) => {
 		let child: SpawnedChild;
@@ -464,50 +467,81 @@ export async function runDelivery(
 		let stdout = "";
 		let oversized = false;
 		let settled = false;
-		const timer = setTimeout(() => {
-			child.kill();
-			settled = true;
-			rejectPromise(new AdapterRefusal("ENGINE_TIMEOUT", `delivery did not finish within ${deadlineMs} ms`));
+		let pendingRefusal: AdapterRefusal | undefined;
+		let terminationTimer: ReturnType<typeof setTimeout> | undefined;
+
+		const requestTermination = (refusal: AdapterRefusal): void => {
+			if (settled || pendingRefusal !== undefined) return;
+			pendingRefusal = refusal;
+			clearTimeout(deadlineTimer);
+			try {
+				child.kill("SIGTERM");
+			} catch {
+				// The close event remains authoritative. A failed TERM is followed by KILL.
+			}
+			if (settled) return;
+			terminationTimer = setTimeout(() => {
+				try {
+					child.kill("SIGKILL");
+				} catch {
+					// Never report completion while the child may still be running.
+				}
+			}, terminationGraceMs);
+		};
+
+		const deadlineTimer = setTimeout(() => {
+			requestTermination(
+				new AdapterRefusal("ENGINE_TIMEOUT", `delivery did not finish within ${deadlineMs} ms`),
+			);
 		}, deadlineMs);
 
-		child.stdout.on("data", (chunk) => {
-			if (Buffer.byteLength(stdout) + Buffer.byteLength(chunk) > MAX_RECEIPT_BYTES) {
-				oversized = true;
-				return;
-			}
-			stdout += chunk;
-		});
-		child.stderr.on("data", diagnostic);
-		child.on("error", (err) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			rejectPromise(new AdapterRefusal("ENGINE_START_FAILED", `delivery failed to start: ${err.message}`));
-		});
-		child.on("close", (code) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			if (oversized) {
-				rejectPromise(new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "delivery receipt exceeds 65536 bytes"));
-				return;
-			}
-			try {
-				resolvePromise(parseDeliveryReceipt(stdout));
-			} catch (refusal) {
-				rejectPromise(
-					code !== 0
-						? new AdapterRefusal("ENGINE_CRASHED", `delivery exited ${code} with no valid receipt`)
-						: (refusal as AdapterRefusal),
-				);
-			}
-		});
 		try {
+			child.on("error", (err) => {
+				requestTermination(
+					new AdapterRefusal("ENGINE_START_FAILED", `delivery failed to start: ${err.message}`),
+				);
+			});
+			child.on("close", (code) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(deadlineTimer);
+				if (terminationTimer !== undefined) clearTimeout(terminationTimer);
+				if (pendingRefusal !== undefined) {
+					rejectPromise(pendingRefusal);
+					return;
+				}
+				if (oversized) {
+					rejectPromise(new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "delivery receipt exceeds 65536 bytes"));
+					return;
+				}
+				try {
+					resolvePromise(parseDeliveryReceipt(stdout));
+				} catch (refusal) {
+					rejectPromise(
+						code !== 0
+							? new AdapterRefusal("ENGINE_CRASHED", `delivery exited ${code} with no valid receipt`)
+							: (refusal as AdapterRefusal),
+					);
+				}
+			});
+			child.stdout.on("data", (chunk) => {
+				if (Buffer.byteLength(stdout) + Buffer.byteLength(chunk) > MAX_RECEIPT_BYTES) {
+					oversized = true;
+					return;
+				}
+				stdout += chunk;
+			});
+			child.stderr.on("data", diagnostic);
+			child.stdin.on?.("error", (err) => {
+				requestTermination(
+					new AdapterRefusal("ENGINE_START_FAILED", `could not close delivery stdin: ${err.message}`),
+				);
+			});
 			child.stdin.end();
 		} catch (err) {
-			settled = true;
-			clearTimeout(timer);
-			rejectPromise(new AdapterRefusal("ENGINE_START_FAILED", `could not close delivery stdin: ${String(err)}`));
+			requestTermination(
+				new AdapterRefusal("ENGINE_START_FAILED", `could not close delivery stdin: ${String(err)}`),
+			);
 		}
 	});
 }
