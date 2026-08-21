@@ -46,6 +46,24 @@ has closed. E3 remains responsible for stopping its attempt process group and
 cleaning the detached worktree. A real delayed-writer regression must prove
 that adapter cancellation leaves no descendant running.
 
+**Correction, 2026-08-21, after cancellation review:** outer-child `close`
+alone does not prove that the fixed E3 delivery process has finished
+cooperative teardown. On POSIX the adapter starts that delivery in a detached
+process group. A deadline or transport refusal that arrives before the Node
+`spawn` event waits for that event unless a spawn error proves that no child
+exists; after spawn, the first refusal remains authoritative while the adapter
+sends `SIGTERM`. It reports the refusal only
+after both the direct child has closed and a signal-0 probe reports `ESRCH` for
+the outer group. An unknown or still-present group keeps the refusal pending.
+
+The adapter deliberately does not force the POSIX outer group with `SIGKILL`.
+E3 starts the model attempt in a separate session and owns its process-group
+teardown plus worktree cleanup; killing E3 after an arbitrary grace period
+could orphan that inner attempt. Windows retains the existing direct-child
+TERM/KILL/close fallback and remains outside this phase's platform proof. The
+one-shot E2/E4 transport keeps its narrower `Spawner`; these delivery-only
+PID, spawn-event, and detached options live in a distinct `DeliverySpawner`.
+
 These corrections narrow unsafe implementation choices; they do not add an
 artifact service, process supervisor, or new phase.
 
@@ -310,7 +328,7 @@ Python adds:
 
 TypeScript adds discriminated receipt and adapter-result types. Production
 spawning and the test double share one `DeliverySpawner` interface; there is
-no second plugin framework.
+no second plugin framework. The existing one-shot `Spawner` remains unchanged.
 
 ## Test evidence
 
