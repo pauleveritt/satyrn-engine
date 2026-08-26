@@ -277,7 +277,8 @@ Python uses concrete closed types:
 - `Contract` gains `writable_paths: tuple[str, ...]`;
 - `CheckRequest` and `ReplaceRequest` are frozen dataclasses in a
   discriminated `ProtocolRequest` union;
-- `MutationCode` is a `StrEnum` for the seven detailed mutation outcomes;
+- `MutationCode` is a `StrEnum` for seven response codes: `OK`, five policy
+  refusals, and the operational-failure code `MUTATION_FAILED`;
 - `MutationResult` and `MutationReceipt` are frozen dataclasses;
 - response payloads use `TypedDict` shapes at the JSON boundary.
 
