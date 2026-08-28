@@ -13,4 +13,6 @@ def test_exit_codes_are_distinct_and_stable() -> None:
         ("REPO_UNAVAILABLE", 6),
         ("INVALID_REQUEST", 7),
         ("NO_CANDIDATE", 8),
+        ("MUTATION_REFUSED", 9),
+        ("ATTEMPT_FAILED", 10),
     ]

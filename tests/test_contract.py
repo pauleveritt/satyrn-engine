@@ -15,7 +15,16 @@ FIXTURES = Path(__file__).parent / "fixtures" / "contracts"
 
 def test_load_valid_contract() -> None:
     contract = load_contract(FIXTURES / "valid.yaml")
-    assert contract == Contract(id="e1-smoke", task="Replace the greeting text")
+    assert contract == Contract(id="e1-smoke", task="Replace the greeting text", writable_paths=())
+
+
+def test_load_contract_with_writable_paths() -> None:
+    contract = load_contract(FIXTURES / "writable.yaml")
+    assert contract == Contract(
+        id="e4-smoke",
+        task="Replace the greeting text",
+        writable_paths=("src/*.py", "tests/fixtures/app.py"),
+    )
 
 
 def test_load_missing_field_is_refused() -> None:
@@ -60,3 +69,20 @@ def test_load_blank_required_field_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ContractError) as excinfo:
         load_contract(path)
     assert excinfo.value.code is ExitCode.CONTRACT_MISSING_FIELD
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["src/*.py", None, ["src/*.py", ""], ["src/*.py", 1]],
+)
+def test_load_invalid_writable_paths_is_refused(tmp_path: Path, value: object) -> None:
+    path = tmp_path / "invalid-writable.yaml"
+    rendered = "null" if value is None else repr(value)
+    path.write_text(
+        "id: e4-invalid\ntask: test\nwritable_paths: " + rendered + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ContractError) as excinfo:
+        load_contract(path)
+    assert excinfo.value.code is ExitCode.CONTRACT_MISSING_FIELD
+    assert "writable_paths" in excinfo.value.message

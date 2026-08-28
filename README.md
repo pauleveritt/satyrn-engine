@@ -16,10 +16,10 @@ avoids the problems instead of stumbling over them; and the change it
 produces reads the way you would have written it — your conventions, your
 standards, your repo — ready for you to review and own.
 
-Despite the name, it is not an engine in the AI sense: no model, no
-inference, no server. It is ordinary Python that runs anywhere Python
-runs — a library, a CLI, in CI, from other tooling — with Pi as one
-surface it serves through a thin TypeScript adapter.
+Despite the name, it is not a model or inference server. It is ordinary
+Python that runs anywhere Python runs — a library, a CLI, in CI, from other
+tooling — and E5 can start one explicitly selected Pi model through a thin
+TypeScript adapter.
 
 > More: [architecture](docs/architecture.md) ·
 > [glossary](docs/glossary.md)
@@ -29,13 +29,12 @@ surface it serves through a thin TypeScript adapter.
 The engine owns:
 
 - contract parsing and validation;
+- contract-aware writable-path and revision enforcement for one replacement;
 - candidate worktree, commit-or-discard, and receipt behavior;
 - the Pi-side loop breaker for repeated identical tool calls;
 - the Pi package and its thin TypeScript adapter;
+- one real Pi attempt that connects isolation to bounded replacement;
 - the internal Pi-adapter protocol and its compatibility fixtures.
-
-The roadmap adds writable-path and revision enforcement in E4 and candidate
-validation in E5.
 
 It does **not** own workloads, grading, repeated runs, comparison
 statistics, or contract authoring. Those live in the satyrn-evals
@@ -50,12 +49,14 @@ that evidence surfaces — no machinery ahead of its contract.
 ## Usage
 
 From a checkout, `uv sync` installs the engine into the project
-environment. The CLI validates a contract or runs one delivery command in
-an isolated Git worktree. Delivery requires POSIX and Git 2.36 or newer:
+environment. The CLI validates a contract, runs one command in an isolated
+Git worktree, or runs one model inside a worktree that is already disposable.
+Delivery and attempt require POSIX and Git 2.36 or newer:
 
 ```console
 $ uv run satyrn-engine check --repo REPO CONTRACT
 $ uv run satyrn-engine deliver --repo REPO CONTRACT -- COMMAND [ARG ...]
+$ uv run satyrn-engine attempt --model MODEL CONTRACT
 ```
 
 Inside Pi, the adapter exposes the same engine as a command:
@@ -63,6 +64,10 @@ Inside Pi, the adapter exposes the same engine as a command:
 ```console
 /implement CONTRACT
 ```
+
+Set both `SATYRN_ENGINE_REPO` and `SATYRN_MODEL` before using `/implement`.
+It runs `attempt` inside E3 isolation, so the source checkout is never the
+model's workspace.
 
 `check` acceptance is silent (`OK` over the protocol); its refusal is a
 one-line `satyrn-engine: <CAUSE>: <detail>` on stderr. `deliver` writes one
@@ -92,8 +97,18 @@ Phases completed, each with its design spec and implementation plan:
   identical tool call while five matching admitted calls remain in its
   twenty-call window, with registration-local state and `loop_broken`
   telemetry. ([_spec_](docs/superpowers/specs/2026-08-20-e3-5-loop-breaker-design.md), [_plan_](docs/superpowers/plans/2026-08-20-e3-5-loop-breaker.md))
+- _E4_ — one bounded replacement. A conditional Pi `edit` override sends one
+  exact replacement to Python, which enforces the contract's writable path,
+  captured SHA-256 revision, and unique anchor before an atomic write.
+  ([_spec_](docs/superpowers/specs/2026-08-20-e4-bounded-replacement-design.md), [_plan_](docs/superpowers/plans/2026-08-20-e4-bounded-replacement.md))
+- _E5_ — one real attempt. `attempt` gives one explicit Pi model `read` plus
+  E4's bounded `edit`; `/implement` runs that command inside E3 and reports
+  its candidate or named refusal. Artifact publication is pinned outside every
+  registered worktree and Git administrative directory, and timeout reporting
+  waits for E3 to tear down the attempt.
+  ([_spec_](docs/superpowers/specs/2026-08-20-e5-real-attempt-design.md), [_plan_](docs/superpowers/plans/2026-08-20-e5-real-attempt.md))
 
-The roadmap and the next phase (E4 — One bounded replacement) live in
+The roadmap and the next phase (E6 — Packaged) live in
 [`ROADMAP.md`](ROADMAP.md).
 
 > More: [architecture](docs/architecture.md) — why the engine is one
@@ -112,6 +127,15 @@ node --test --experimental-strip-types --experimental-test-coverage \
   --test-coverage-functions=100 \
   --test-coverage-include=packages/engine/engine.ts tests/test_loop_breaker.mjs
 node --experimental-strip-types tools/replay_guards.mjs
+node --test --experimental-strip-types --experimental-test-coverage \
+  --test-coverage-lines=100 --test-coverage-branches=100 \
+  --test-coverage-functions=100 \
+  --test-coverage-include=packages/engine/mutator.ts tests/test_mutator.mjs
+node --test --experimental-strip-types --experimental-test-coverage \
+  --test-coverage-lines=100 --test-coverage-branches=100 \
+  --test-coverage-functions=100 \
+  --test-coverage-include=packages/engine/orchestrator.ts \
+  tests/test_orchestrator.mjs tests/test_transport.mjs
 uv run ruff check .    # lint
 uv run pyrefly check   # type-check
 ```

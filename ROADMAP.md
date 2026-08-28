@@ -72,10 +72,30 @@ process. Spec and plan:
 `docs/superpowers/specs/2026-08-20-e3-5-loop-breaker-design.md`,
 `docs/superpowers/plans/2026-08-20-e3-5-loop-breaker.md`.
 
-**Phase E4 — One bounded replacement. Not started; the current phase.** A
-single file replacement runs Pi → TypeScript → Python with revision checking.
-Mutation policy is contract-aware here; the contract-blind preserve-symbols
-guard removed in E3.5 does not return.
+**Phase E4 — One bounded replacement. Complete.** The package conditionally
+replaces Pi's `edit` tool when a parent supplies a versioned mutation context.
+One exact replacement then runs Pi → TypeScript → Python; Python alone enforces
+the contract's `writable_paths`, the captured SHA-256 revision, and unique
+anchor cardinality. Unavailable/stale revisions, undeclared paths, and
+missing/ambiguous anchors are named refusals that leave the file unchanged;
+symlink targets are never followed. The contract-blind
+preserve-symbols guard removed in E3.5 does not return. Spec and plan:
+`docs/superpowers/specs/2026-08-20-e4-bounded-replacement-design.md`,
+`docs/superpowers/plans/2026-08-20-e4-bounded-replacement.md`.
+
+**Phase E5 — One real attempt. Complete.** `attempt` runs one explicit Pi
+model with only `read` and E4's bounded `edit`; `/implement` wraps it in E3.
+Artifacts are published only through pinned directories outside every
+registered worktree and Git administrative directory. The adapter reports a
+deadline only after E3 has torn down its child process group and worktree.
+The recorded live run used Pi 0.84.1 and
+`omlx/gemma-4-12B-it-MLX-8bit`, changed only `app.py`, published a candidate,
+and left the caller checkout clean. Spec and plan:
+`docs/superpowers/specs/2026-08-20-e5-real-attempt-design.md`,
+`docs/superpowers/plans/2026-08-20-e5-real-attempt.md`.
+
+**Phase E6 — Packaged. Not started; the current phase.** The same
+`/implement` works outside either source checkout on POSIX and Windows.
 
 ## Concept budget
 
@@ -86,7 +106,8 @@ convenient shorthand.*
 
 Defined terms: **contract**, with E1's working terms; **adapter** and
 **protocol** (E2); **candidate**, **receipt**, and **worktree isolation**
-(E3); and **guard** (E3.5), in `docs/glossary.md`.
+(E3); **guard** (E3.5); **revision** (E4); and **attempt** (E5), in
+`docs/glossary.md`.
 
 ## Phases
 
@@ -96,9 +117,9 @@ Defined terms: **contract**, with E1's working terms; **adapter** and
 | E2 | The adapter reaches E1 | `/implement CONTRACT` reaches the same refusal through the TypeScript adapter, on POSIX and Windows — the architecture gate | **done** (POSIX recorded; Windows leg deferred, see Backlog) |
 | E3 | Delivery | `deliver` runs a trivial executable in an isolated worktree, always emits a receipt, and publishes a candidate ref only for a successful changed tree | **done** |
 | E3.5 | The guards, written here | The loop-breaker guard — the one check whose job doesn't already belong to the mutation engine (E4) — is implemented fresh in this repository and proven against replay fixtures, so `pi install` ships a guard that actually exists rather than one asserted in prose | **done** |
-| E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | **current** |
-| E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | not started |
-| E6 | Packaged | The same `/implement` works outside either source checkout, on POSIX and Windows | not started |
+| E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | **done** |
+| E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | **done** |
+| E6 | Packaged | The same `/implement` works outside either source checkout, on POSIX and Windows | **current** |
 
 Done-when criteria are restated in each phase's plan — for E1, the Goal
 of `docs/superpowers/plans/2026-08-16-e1-check.md` — not in this file,
@@ -145,6 +166,17 @@ when the roadmap outgrows the front page.
   refusal. Six retained evidence fixtures replay through the shipped package.
   Spec: `docs/superpowers/specs/2026-08-20-e3-5-loop-breaker-design.md`.
   Plan: `docs/superpowers/plans/2026-08-20-e3-5-loop-breaker.md`.
+- **E4 — One bounded replacement.** One conditional Pi `edit` override sends
+  one exact replacement over the one-shot protocol. Python checks writable
+  path, prior revision, and anchor count before atomically replacing the file.
+  Spec: `docs/superpowers/specs/2026-08-20-e4-bounded-replacement-design.md`.
+  Plan: `docs/superpowers/plans/2026-08-20-e4-bounded-replacement.md`.
+- **E5 — One real attempt.** One explicit Pi model receives the contract task
+  and writable-file list, reads normally, and writes only through E4 inside
+  E3's detached worktree. The transcript is preserved separately from E3's
+  receipt and candidate.
+  Spec: `docs/superpowers/specs/2026-08-20-e5-real-attempt-design.md`.
+  Plan: `docs/superpowers/plans/2026-08-20-e5-real-attempt.md`.
 
 ## Workflow
 
@@ -153,8 +185,11 @@ This repository runs on spec-driven development — see
 spec, an implementation plan, then code. The default test suite needs no
 model, network, or subprocess; process behavior lives in a small marked
 integration tier that does not run in CI. The tier's first tests
-(`tests/test_integration_protocol.py`, E2) start the engine as a subprocess
+(`tests/test_integration_protocol.py`, E2/E4) start the engine as a subprocess
 over the JSON protocol; E3 adds real local Git and process-group evidence in
 `tests/test_integration_delivery.py`; E3.5 adds Node replay and a temporary Pi
-package install in `tests/test_integration_guards.py`. Run the tier explicitly with
-`uv run pytest -m integration`.
+package install in `tests/test_integration_guards.py`; E4 adds the real
+TypeScript-to-Python replacement path in `tests/test_integration_mutator.py`;
+E5 runs that shipped path inside a real Git attempt and E3 delivery in
+`tests/test_integration_attempt.py`.
+Run the tier explicitly with `uv run pytest -m integration`.

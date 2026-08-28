@@ -4,6 +4,17 @@
 **Phase:** E3.5 (current)
 **Status:** accepted — implementation follows in the companion plan
 
+> **Correction — 2026-08-21:** Final review tightened five boundaries without
+> changing the accepted 20/5 policy. Canonical JSON must preserve every own
+> JSON property, including `__proto__`, at every nesting level. Per-key blocked
+> telemetry is retained only while that key remains in the admitted window and
+> is deleted when its last admitted occurrence is evicted. Every replay fixture
+> must declare `expected.firstBlock` as either `null` or a positive integer.
+> Package evidence must resolve the installed manifest entry, load the shipped
+> extension, register its `tool_call` handler, and dispatch through that handler;
+> installation metadata alone is insufficient. Final whitespace evidence uses
+> a base-aware `git diff --check aa918b0 --` comparison.
+
 ## Goal
 
 Ship one user-visible behavior in the Pi package: when a model tries the same
@@ -193,4 +204,3 @@ E3.5 is complete when:
    Pyrefly, strict Sphinx build, and `git diff --check` are green;
 6. the phase and exact verification commands are recorded in `ROADMAP.md`,
    public docs, and `docs/sdd.md`.
-
