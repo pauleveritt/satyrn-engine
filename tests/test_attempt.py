@@ -163,15 +163,16 @@ def test_prompt_and_pi_command_are_small_and_hermetic(tmp_path: Path) -> None:
         "- app.py\n- src/other.py\n\nYou may read files. Use the edit tool for every write. "
         "Do not create files. Stop when the task is complete."
     )
-    assert command[:6] == (
+    assert command[:7] == (
         "pi",
         "--print",
         "--mode",
         "json",
         "--no-session",
-        "--model=provider/model",
+        "--model",
+        "provider/model",
     )
-    assert build_pi_command(tmp_path, "-provider/model", prompt)[5] == "--model=-provider/model"
+    assert build_pi_command(tmp_path, "-provider/model", prompt)[6] == "-provider/model"
     assert command[-3:] == ("--tools", "read,edit", prompt)
     assert "--no-extensions" in command
     assert "orchestrator.ts" not in " ".join(command)
