@@ -48,7 +48,7 @@ def test_shipped_loop_breaker_behavior_suite_passes() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "pass 16" in completed.stdout
+    assert "pass 19" in completed.stdout
     assert "fail 0" in completed.stdout
     assert "engine.ts | 100.00 |   100.00 |  100.00" in completed.stdout
 

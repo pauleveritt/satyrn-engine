@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import FrameType
 
-from .attempt import MODEL_ENV, AttemptCode, attempt
+from .attempt import MODEL_ENV, AttemptCode, SubprocessPiRunner, attempt
 from .check import check
 from .delivery import DEFAULT_TIMEOUT, deliver
 from .exits import ExitCode
@@ -37,6 +37,34 @@ def _delivery_termination_guard() -> Iterator[None]:
         yield
     finally:
         signal.signal(signal.SIGTERM, previous)
+
+
+@contextmanager
+def _attempt_termination_guard(runner: SubprocessPiRunner) -> Iterator[None]:
+    """Keep SIGTERM/SIGHUP from bypassing artifact finalization.
+
+    The temporary Python handlers forward a direct signal to Pi's separate
+    process group, then return. This Engine process waits for Pi to exit and
+    publishes the already-written transcript spool before returning.
+    """
+    def request_finalization(signum: int, frame: FrameType | None) -> None:
+        del frame
+        runner.request_termination(signum)
+
+    previous_term = signal.signal(signal.SIGTERM, request_finalization)
+    hup = getattr(signal, "SIGHUP", None)
+    try:
+        previous_hup = (
+            signal.signal(hup, request_finalization) if hup is not None else None
+        )
+    except ValueError:  # Windows does not permit every POSIX signal.
+        previous_hup = None
+    try:
+        yield
+    finally:
+        if hup is not None and previous_hup is not None:
+            signal.signal(hup, previous_hup)
+        signal.signal(signal.SIGTERM, previous_term)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -119,8 +147,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not model:
             print(f"satyrn-engine: USAGE: --model or ${MODEL_ENV} is required", file=sys.stderr)
             return int(ExitCode.USAGE)
+        runner = SubprocessPiRunner()
         try:
-            result = attempt(Path.cwd(), Path(args.contract), model)
+            with _attempt_termination_guard(runner):
+                result = attempt(Path.cwd(), Path(args.contract), model, pi_runner=runner)
         except BrokenPipeError:
             _silence_broken_stdout()
             return 1

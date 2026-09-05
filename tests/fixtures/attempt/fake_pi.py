@@ -13,6 +13,8 @@ from pathlib import Path
 def main() -> int:
     mode = os.environ.get("SATYRN_FAKE_PI_MODE", "replace")
     print(json.dumps({"type": "agent_start", "argv": sys.argv[1:]}), flush=True)
+    if ready_path := os.environ.get("SATYRN_FAKE_PI_READY"):
+        Path(ready_path).write_text("ready", encoding="utf-8")
     if mode == "fail":
         print(json.dumps({"type": "session_shutdown", "reason": "fixture failure"}), flush=True)
         return 17

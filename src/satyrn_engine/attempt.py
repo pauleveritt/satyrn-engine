@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from fnmatch import fnmatch
@@ -206,6 +207,31 @@ class SubprocessGitRunner:
 class SubprocessPiRunner:
     """Start the one synchronous Pi print-mode child."""
 
+    def __init__(self) -> None:
+        self._process: subprocess.Popen[bytes] | None = None
+        self._termination_signal: int | None = None
+
+    def request_termination(self, signal_number: int) -> None:
+        """Forward an outer termination signal to the active Pi child."""
+        self._termination_signal = signal_number
+        if self._process is not None:
+            self._forward_termination()
+
+    def _forward_termination(self) -> None:
+        process = self._process
+        if self._termination_signal is None or process is None or process.poll() is not None:
+            return
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, self._termination_signal)
+            else:
+                process.send_signal(self._termination_signal)
+        except ProcessLookupError:
+            return
+        except OSError:
+            with suppress(OSError):
+                process.terminate()
+
     def run(
         self,
         command: Sequence[str],
@@ -214,16 +240,21 @@ class SubprocessPiRunner:
         stdout: BinaryIO,
         stderr: BinaryIO,
     ) -> int:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=cwd,
             env=environment,
             stdin=subprocess.DEVNULL,
             stdout=stdout,
             stderr=stderr,
-            check=False,
+            start_new_session=os.name == "posix",
         )
-        return completed.returncode
+        self._process = process
+        self._forward_termination()
+        try:
+            return process.wait()
+        finally:
+            self._process = None
 
 
 def build_prompt(contract: Contract, writable_paths: Sequence[str]) -> str:

@@ -6,6 +6,9 @@ export const WINDOW = 20;
 /** Matching admitted calls allowed before the next one is refused. */
 export const THRESHOLD = 5;
 
+/** Consecutive blocked calls allowed before Pi ends the current turn. */
+export const CONSECUTIVE_BLOCK_LIMIT = 3;
+
 export type JsonValue =
 	| null
 	| boolean
@@ -136,20 +139,28 @@ export function createLoopBreaker(): LoopBreaker {
 
 export default function registerLoopBreaker(pi: ExtensionAPI): void {
 	const breaker = createLoopBreaker();
+	let consecutiveBlocks = 0;
 	pi.on("tool_call", async (event) => {
 		let decision: BlockDecision | undefined;
 		try {
 			decision = breaker.inspect({ toolName: event.toolName, input: event.input });
 		} catch {
+			consecutiveBlocks = 0;
 			return undefined;
 		}
-		if (decision === undefined) return undefined;
+		if (decision === undefined) {
+			consecutiveBlocks = 0;
+			return undefined;
+		}
+		consecutiveBlocks += 1;
 
 		try {
 			await pi.appendEntry(decision.entry.kind, decision.entry.data);
 		} catch {
 			// Telemetry is evidence, not permission to run an already-refused call.
 		}
-		return { block: true, reason: decision.reason };
+		return consecutiveBlocks >= CONSECUTIVE_BLOCK_LIMIT
+			? { block: true, reason: decision.reason, terminate: true }
+			: { block: true, reason: decision.reason };
 	});
 }

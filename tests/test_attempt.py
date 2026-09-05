@@ -1700,7 +1700,8 @@ def test_cli_model_flag_and_environment_precedence(
 ) -> None:
     seen: list[str] = []
 
-    def fake_attempt(repo: Path, contract: Path, model: str) -> AttemptResult:
+    def fake_attempt(repo: Path, contract: Path, model: str, **kwargs: object) -> AttemptResult:
+        del kwargs
         del repo, contract
         seen.append(model)
         return AttemptResult(AttemptCode.OK, model=model, command_exit=0)
@@ -1717,7 +1718,8 @@ def test_cli_accepts_dash_leading_model_and_contract_after_separator(
 ) -> None:
     seen: list[tuple[Path, str]] = []
 
-    def fake_attempt(repo: Path, contract: Path, model: str) -> AttemptResult:
+    def fake_attempt(repo: Path, contract: Path, model: str, **kwargs: object) -> AttemptResult:
+        del kwargs
         del repo
         seen.append((contract, model))
         return AttemptResult(AttemptCode.OK, model=model, command_exit=0)
@@ -1740,15 +1742,16 @@ def test_cli_prints_named_attempt_refusal(
     monkeypatch.setattr(
         cli,
         "attempt",
-        lambda *args: AttemptResult(AttemptCode.ATTEMPT_FAILED, "no Pi", model="m"),
+        lambda *args, **kwargs: AttemptResult(AttemptCode.ATTEMPT_FAILED, "no Pi", model="m"),
     )
     assert cli.main(["attempt", "--model", "m", "contract.yaml"]) == ExitCode.ATTEMPT_FAILED
     assert "ATTEMPT_FAILED: no Pi" in capsys.readouterr().err
 
 
 def test_cli_reserves_exit_one_for_broken_transcript_pipe(monkeypatch: pytest.MonkeyPatch) -> None:
-    def broken(*args: object) -> AttemptResult:
+    def broken(*args: object, **kwargs: object) -> AttemptResult:
         del args
+        del kwargs
         raise BrokenPipeError
 
     monkeypatch.setattr(cli, "attempt", broken)

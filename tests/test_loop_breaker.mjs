@@ -3,6 +3,7 @@ import test from "node:test";
 
 import registerLoopBreaker, {
 	THRESHOLD,
+	CONSECUTIVE_BLOCK_LIMIT,
 	WINDOW,
 	createLoopBreaker,
 } from "../packages/engine/engine.ts";
@@ -210,6 +211,78 @@ test("the Pi adapter appends one entry and returns only Pi's block shape", async
 			data: { tool: "bash", repeats: 5, blockedSoFar: 1 },
 		},
 	]);
+});
+
+test("the third consecutive blocked call terminates the print-mode turn", async () => {
+	const entries = [];
+	const handler = registeredExtension({
+		appendEntry(kind, data) {
+			entries.push({ kind, data });
+		},
+	});
+	const call = repeated("read", { path: "tests/test_app.py" });
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await handler(call), undefined);
+	}
+
+	assert.deepEqual(await handler(call), {
+		block: true,
+		reason:
+			"This exact read call already appeared 5 times in the last 20 admitted tool calls. " +
+			"Running it again will not change the result. Use what you already know and take a different concrete action.",
+	});
+	assert.deepEqual(await handler(call), {
+		block: true,
+		reason:
+			"This exact read call already appeared 5 times in the last 20 admitted tool calls. " +
+			"Running it again will not change the result. Use what you already know and take a different concrete action.",
+	});
+	assert.deepEqual(await handler(call), {
+		block: true,
+		reason:
+			"This exact read call already appeared 5 times in the last 20 admitted tool calls. " +
+			"Running it again will not change the result. Use what you already know and take a different concrete action.",
+		terminate: true,
+	});
+	assert.equal(entries.length, CONSECUTIVE_BLOCK_LIMIT);
+});
+
+test("an admitted call resets the consecutive blocked-call termination count", async () => {
+	const handler = registeredExtension();
+	const blocked = repeated("read", { path: "tests/test_app.py" });
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await handler(blocked), undefined);
+	}
+
+	assert.equal((await handler(blocked))?.terminate, undefined);
+	assert.equal((await handler(blocked))?.terminate, undefined);
+	assert.equal(await handler(repeated("read", { path: "app.py" })), undefined);
+	assert.equal((await handler(blocked))?.terminate, undefined);
+	assert.equal((await handler(blocked))?.terminate, undefined);
+	assert.equal((await handler(blocked))?.terminate, true);
+});
+
+test("a fail-open inspection error resets the consecutive blocked-call termination count", async () => {
+	const handler = registeredExtension();
+	const blocked = repeated("read", { path: "tests/test_app.py" });
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await handler(blocked), undefined);
+	}
+	assert.equal((await handler(blocked))?.terminate, undefined);
+	assert.equal((await handler(blocked))?.terminate, undefined);
+
+	const throwingEvent = new Proxy(
+		{},
+		{
+			get() {
+				throw new Error("cannot read event");
+			},
+		},
+	);
+	assert.equal(await handler(throwingEvent), undefined);
+	assert.equal((await handler(blocked))?.terminate, undefined);
+	assert.equal((await handler(blocked))?.terminate, undefined);
+	assert.equal((await handler(blocked))?.terminate, true);
 });
 
 test("telemetry failure cannot escape or admit an already blocked call", async () => {

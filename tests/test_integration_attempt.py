@@ -4,6 +4,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -92,6 +93,13 @@ def _attempt(
         stderr.seek(0)
         error_bytes = stderr.read()
     return result, stdout.getvalue(), error_bytes
+
+
+def _wait_for(path: Path, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not path.exists():
+        assert time.monotonic() < deadline, f"timed out waiting for {path}"
+        time.sleep(0.01)
 
 
 def test_attempt_uses_shipped_e4_mutator_and_exports_artifacts(tmp_path: Path) -> None:
@@ -227,6 +235,98 @@ def test_e3_delivery_wraps_same_attempt_and_keeps_source_clean(
     assert target.read_text(encoding="utf-8") == "def value():\n    return 1\n"
     assert _git(repo, "rev-parse", "HEAD").stdout == before_head
     assert _git(repo, "status", "--porcelain").stdout == b""
+
+
+def test_group_sigterm_during_delivery_preserves_attempt_spool_before_cleanup(tmp_path: Path) -> None:
+    repo, contract, _, environment = _fixture(tmp_path)
+    ready = tmp_path / "pi-ready"
+    marker = tmp_path / "late-write"
+    transcript = tmp_path / "interrupted-transcript.jsonl"
+    environment.update(
+        {
+            "SATYRN_FAKE_PI_MODE": "delay",
+            "SATYRN_FAKE_PI_READY": str(ready),
+            "SATYRN_FAKE_PI_MARKER": str(marker),
+            TRANSCRIPT_ENV: str(transcript),
+        }
+    )
+    engine = Path(os.sys.executable).with_name("satyrn-engine")
+    process = subprocess.Popen(
+        [
+            str(engine),
+            "deliver",
+            "--repo",
+            str(repo),
+            str(contract),
+            "--",
+            str(engine),
+            "attempt",
+            "--model",
+            "fixture/model",
+            "--",
+            "contract.yaml",
+        ],
+        cwd=ROOT,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    _wait_for(ready)
+    os.killpg(process.pid, signal.SIGTERM)
+    stdout, stderr = process.communicate(timeout=10)
+
+    assert process.returncode == 128 + signal.SIGTERM
+    assert stdout == b""
+    assert b'"type": "agent_start"' in transcript.read_bytes()
+    assert b"Pi exited with status" in stderr
+    time.sleep(0.75)
+    assert not marker.exists()
+    with pytest.raises(ProcessLookupError):
+        os.killpg(process.pid, 0)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="signal forwarding proof is POSIX-only")
+@pytest.mark.parametrize("termination_signal", (signal.SIGTERM, signal.SIGHUP))
+def test_direct_termination_forwards_to_pi_and_preserves_attempt_spool(
+    tmp_path: Path,
+    termination_signal: signal.Signals,
+) -> None:
+    repo, contract, _, environment = _fixture(tmp_path)
+    ready = tmp_path / "pi-ready"
+    marker = tmp_path / "late-write"
+    transcript = tmp_path / "interrupted-transcript.jsonl"
+    environment.update(
+        {
+            "SATYRN_FAKE_PI_MODE": "delay",
+            "SATYRN_FAKE_PI_READY": str(ready),
+            "SATYRN_FAKE_PI_MARKER": str(marker),
+            TRANSCRIPT_ENV: str(transcript),
+        }
+    )
+    engine = Path(os.sys.executable).with_name("satyrn-engine")
+    process = subprocess.Popen(
+        [str(engine), "attempt", "--model", "fixture/model", str(contract)],
+        cwd=repo,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    _wait_for(ready)
+    os.kill(process.pid, termination_signal)
+    stdout, stderr = process.communicate(timeout=10)
+
+    assert process.returncode == 10
+    assert transcript.read_bytes() == stdout
+    assert b'"type": "agent_start"' in transcript.read_bytes()
+    assert b"Pi exited with status" in stderr
+    time.sleep(0.75)
+    assert not marker.exists()
+    with pytest.raises(ProcessLookupError):
+        os.killpg(process.pid, 0)
 
 
 def test_dispatcher_timeout_waits_for_delivery_cleanup(tmp_path: Path) -> None:

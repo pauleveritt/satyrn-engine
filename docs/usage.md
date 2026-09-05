@@ -247,6 +247,10 @@ JSONL output. The patch is written only when the tracked tree changed. Neither
 artifact is a grading verdict; they record what happened. A Pi start or
 nonzero-exit failure returns
 `ATTEMPT_FAILED` with exit `10` after preserving any requested artifacts. The
+Engine forwards a direct POSIX `SIGTERM` (and `SIGHUP`, where supported) to
+the active Pi child, waits for it to exit, then publishes the partial
+transcript before its own failure result. This makes an outer timeout
+diagnosable without treating its partial patch or transcript as a verdict.
 `/implement` wrapper additionally gives E3 fifteen minutes to complete the
 attempt. If the adapter's backstop deadline expires, it reports
 `ENGINE_TIMEOUT` on POSIX only after the direct delivery child closes and a
@@ -325,7 +329,9 @@ in that window have the same tool name and structurally identical JSON input,
 the sixth is refused with a message asking the model to take a different
 action. Object key order does not matter; array order does. A refused retry is
 not added to the window, so repeating it remains blocked. Each block appends a
-`loop_broken` entry.
+`loop_broken` entry. The third consecutive blocked call also ends the current
+Pi turn, preventing a print-mode session from retrying the same refusal until
+an outer timeout.
 
 The state is local to one Pi registration and never carries into another
 session or replay. The guard only sees schema-valid calls that reach

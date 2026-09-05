@@ -11,6 +11,7 @@ import pytest
 
 import satyrn_engine.cli as cli
 import satyrn_engine.delivery as delivery
+from satyrn_engine.attempt import AttemptCode, AttemptResult
 from satyrn_engine.cli import parse_args
 from satyrn_engine.delivery import (
     DEFAULT_TIMEOUT,
@@ -322,3 +323,25 @@ def test_deliver_cli_unwinds_on_sigterm_and_restores_the_handler(
 
     assert cli.main(["deliver", "--repo", ".", "contract.yaml", "--", "tool"]) == 128 + signal.SIGTERM
     assert signal.getsignal(signal.SIGTERM) is previous
+
+
+@pytest.mark.parametrize(
+    "interruption",
+    (signal.SIGTERM,) + ((signal.SIGHUP,) if os.name == "posix" else ()),
+)
+def test_attempt_cli_finishes_artifact_work_after_termination_and_restores_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    interruption: signal.Signals,
+) -> None:
+    previous = signal.getsignal(interruption)
+
+    def interrupted_then_finished(*args: object, **kwargs: object) -> AttemptResult:
+        del args
+        del kwargs
+        os.kill(os.getpid(), interruption)
+        return AttemptResult(AttemptCode.OK, model="model")
+
+    monkeypatch.setattr(cli, "attempt", interrupted_then_finished)
+
+    assert cli.main(["attempt", "--model", "model", "contract.yaml"]) == 0
+    assert signal.getsignal(interruption) is previous

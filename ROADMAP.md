@@ -66,9 +66,9 @@ The caller's checkout, index, branch, and `HEAD` remain untouched. Spec and plan
 **Phase E3.5 — The loop breaker, written here. Complete.** The Pi package
 keeps the last twenty admitted call keys and refuses a sixth exact repeat when
 five matching calls remain in that window. State is local to one extension
-registration; each block records `loop_broken`. The shipped TypeScript was
-written fresh and all six retained evidence fixtures replay against it in one
-process. Spec and plan:
+registration; each block records `loop_broken`; the third consecutive block
+also ends the current Pi turn. The shipped TypeScript was written fresh and all
+six retained evidence fixtures replay against it in one process. Spec and plan:
 `docs/superpowers/specs/2026-08-20-e3-5-loop-breaker-design.md`,
 `docs/superpowers/plans/2026-08-20-e3-5-loop-breaker.md`.
 
@@ -116,7 +116,7 @@ Defined terms: **contract**, with E1's working terms; **adapter** and
 | E1 | It installs and refuses | `check` parses, validates, path-lints, and refuses a contract with a named cause, zero model calls, zero processes started | **done** |
 | E2 | The adapter reaches E1 | `/implement CONTRACT` reaches the same refusal through the TypeScript adapter, on POSIX and Windows — the architecture gate | **done** (POSIX recorded; Windows leg deferred, see Backlog) |
 | E3 | Delivery | `deliver` runs a trivial executable in an isolated worktree, always emits a receipt, and publishes a candidate ref only for a successful changed tree | **done** |
-| E3.5 | The guards, written here | The loop-breaker guard — the one check whose job doesn't already belong to the mutation engine (E4) — is implemented fresh in this repository and proven against replay fixtures, so `pi install` ships a guard that actually exists rather than one asserted in prose | **done** |
+| E3.5 | The guards, written here | The loop-breaker guard refuses a sixth exact repeat, records every block, and ends a turn on its third consecutive block; it is implemented fresh here and proven against replay fixtures | **done** |
 | E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | **done** |
 | E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | **done** |
 | E6 | Packaged | The same `/implement` works outside either source checkout, on POSIX and Windows | **current** |
@@ -162,8 +162,9 @@ when the roadmap outgrows the front page.
   Spec: `docs/superpowers/specs/2026-08-18-e3-delivery-design.md`. Plan:
   `docs/superpowers/plans/2026-08-18-e3-delivery.md`.
 - **E3.5 — The loop breaker, written here.** One registration-local
-  TypeScript guard refuses repeated identical tool calls and records each
-  refusal. Six retained evidence fixtures replay through the shipped package.
+  TypeScript guard refuses repeated identical tool calls, records each
+  refusal, and ends a Pi turn after the third consecutive refusal. Six retained
+  evidence fixtures replay through the shipped package.
   Spec: `docs/superpowers/specs/2026-08-20-e3-5-loop-breaker-design.md`.
   Plan: `docs/superpowers/plans/2026-08-20-e3-5-loop-breaker.md`.
 - **E4 — One bounded replacement.** One conditional Pi `edit` override sends
