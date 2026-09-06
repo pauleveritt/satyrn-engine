@@ -119,6 +119,31 @@ this repository's, not the harness's:
   `newText` never matches, and a cell burns 238 refusals while
   `consecutiveBlocks` stays at zero.
 
+> **Correction, 2026-09-06, recorded rather than edited away.** The
+> sentence above is true but not the reason. **A schema-validation failure
+> is invisible to every extension hook**, so the breaker did not merely
+> fail to match these calls — it never received them. In pi 0.84.4's
+> `prepareToolCall`, `validateToolArguments` runs *before*
+> `config.beforeToolCall`, and a throw is caught into
+> `{kind:"immediate"}`; `executeToolCallsSequential` then builds the
+> finalized result directly and **skips `finalizeExecutedToolCall`**, which
+> is the only site that calls `config.afterToolCall`. So neither the
+> `tool_call` nor the `tool_result` hook sees the call. The
+> `tool_execution_start`/`_end` transcript events are still emitted, which
+> is why 973 of them are countable offline while no guard observed one.
+> Read it in
+> `~/.volta/tools/image/packages/@earendil-works/pi-coding-agent/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-OMWWHBTG.js`,
+> functions `prepareToolCall`, `executeToolCallsSequential` and
+> `finalizeExecutedToolCall`.
+>
+> **The design principle this yields, which is the durable lesson:**
+> strictness expressed in a tool's JSON Schema is enforced by the runtime
+> *outside* the engine's sight, so a model that trips it cannot be helped,
+> counted, or stopped by any guard we write. Strictness that must be
+> observable belongs in `parseEditInput`, where a refusal goes through
+> `execute`, carries a named cause, and reaches both the model and the
+> `isError` seam. `f5d1c62` moved the `path` rule across exactly that line.
+
 Counts and the recompute:
 `~/satyrn-smokes/2026-09-06-v13-143343/RESULT.md`. Evidence per cell:
 `grep -c 'must not have additional properties' cell-*-engine/*/transcript.txt`.
@@ -135,16 +160,26 @@ before code** (`CLAUDE.md`) — they are recorded here, not started:
    **701/701** — so tolerating it changes no semantics. Refusal siblings
    still refused: missing `oldText`, empty `oldText`, empty `edits`,
    missing top-level `path`, a top-level extra.
-2. **A refusal-keyed breaker, beside the identity-keyed one.** Count
-   consecutive *error results* — the seam exists, `mutator.ts:308-313`
-   already marks a refused edit `isError` — and at K refusals inject the
-   reason using the message shape `engine.ts:116-121` already writes,
-   terminating at 2K. This bounds any future tool-refusal loop, not just
-   this one. **Do not key it on "an `edit` call happened":** the harvest
-   index's "the model edited the file and nothing changed" is the same
-   trap, and a counter keyed on applied mutations separates these cells
-   (158–247 calls without an applied edit on the timeouts, 6–8 on the
-   passing cells) where a call counter scores zero.
+2. **A refusal-keyed breaker — proposed, measured, and rejected
+   2026-09-06. Do not build it.** The design was: count consecutive error
+   results at the `isError` seam (`mutator.ts:325-330`), intervene at K,
+   terminate at 2K. Two independent findings kill it. **It cannot see the
+   failure it was for** — schema-validation refusals never reach a hook
+   (correction above), so it would have observed zero of the 973.
+   **And the refusals it *can* see do not discriminate.** Pooled over all
+   24 retained Engine cells (V11c spike and V13), the longest run of
+   hook-visible mutator refusals is **0 on every one of the 7 cells that
+   failed** and 0–3 on the 17 that succeeded: refusals occur *only* in
+   healthy cells recovering from a stale revision or a missing anchor. No
+   K separates them, and any K ≤ 3 fires exclusively on known-good — the
+   exact inverse of `BRIEF.md` rule 8. A third point, if one were needed:
+   a `tool_result` handler cannot terminate a turn — `ToolResultEventResult`
+   carries only `content`, `details`, `isError` and `usage`.
+   Recompute the runs by scanning each Engine transcript for
+   `tool_execution_end` events whose `result.details.satyrn === true` and
+   `ok === false`. **What remains true** is the narrower lesson in the
+   correction above: keep observable strictness in `parseEditInput`, not
+   in the schema.
 
 **A note on scope.** The null says nothing about whether this engine's
 design beats bare Pi: five of its twelve cells never got to try. It is
