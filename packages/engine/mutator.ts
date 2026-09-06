@@ -121,6 +121,17 @@ const EditParameters = {
 				properties: {
 					oldText: { type: "string", minLength: 1 },
 					newText: { type: "string" },
+					// Tolerated, not required, and never authoritative. Models
+					// routinely repeat the file path inside the item as well as
+					// at the top level, where this schema requires it. Refusing
+					// that cost five of twelve cells in the 2026-09-06 V13 probe:
+					// 973 refused calls, every one of them `edits.0: must not
+					// have additional properties`, on a key whose value equalled
+					// the top-level `path` in 701 of 701 recovered calls. The
+					// item stays otherwise closed, and `parseEditInput` refuses
+					// a value that contradicts the top-level path rather than
+					// guessing which file was meant.
+					path: { type: "string", minLength: 1 },
 				},
 			},
 		},
@@ -177,6 +188,12 @@ function parseEditInput(input: unknown): EditInput {
 		typeof replacement.newText !== "string"
 	) {
 		throw new AdapterRefusal("INVALID_REQUEST", "edit replacement requires non-empty oldText and string newText");
+	}
+	if (replacement.path !== undefined && replacement.path !== input.path) {
+		throw new AdapterRefusal(
+			"INVALID_REQUEST",
+			"edit replacement path does not match the file path; name one file",
+		);
 	}
 	return {
 		path: input.path,

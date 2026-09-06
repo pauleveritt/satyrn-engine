@@ -175,11 +175,67 @@ test("malformed input refuses before exchange", async () => {
 		{ ...input(), edits: [input().edits[0], input().edits[0]] },
 		{ ...input(), edits: [{ oldText: "", newText: "next" }] },
 		{ ...input(), edits: [{ oldText: "old", newText: 1 }] },
+		{ ...input(), edits: [{ oldText: "old", newText: "new", path: 7 }] },
 	]) {
 		const response = await mutator.execute("call", candidate);
 		assert.equal(response.details.ok, false);
 	}
 	assert.equal(exchanges, 0);
+});
+
+test("a redundant item path that matches is accepted, and reaches the engine once", async () => {
+	// The success sibling for the refusal below, and the regression test for
+	// the 2026-09-06 V13 probe: 973 `edits.0: must not have additional
+	// properties` refusals, on a key equal to the top-level path in 701 of
+	// 701 recovered calls.
+	const requests = [];
+	const mutator = createMutator(context(), async (request) => {
+		requests.push(JSON.parse(request));
+		return success();
+	});
+
+	const response = await mutator.execute("call", {
+		path: "src/app.py",
+		edits: [{ oldText: "return 1", newText: "return 2", path: "src/app.py" }],
+	});
+
+	assert.equal(response.details.ok, true);
+	assert.equal(requests.length, 1);
+	assert.equal(requests[0].path, "src/app.py");
+	assert.equal(requests[0].old_text, "return 1");
+});
+
+test("an item path that contradicts the file path is refused before exchange", async () => {
+	let exchanges = 0;
+	const mutator = createMutator(context(), async () => {
+		exchanges += 1;
+		return success();
+	});
+
+	const response = await mutator.execute("call", {
+		path: "src/app.py",
+		edits: [{ oldText: "return 1", newText: "return 2", path: "src/other.py" }],
+	});
+
+	assert.equal(response.details.ok, false);
+	assert.equal(response.details.code, "INVALID_REQUEST");
+	// Asserted on the text the model actually receives, not on `details`:
+	// a refusal the model cannot read is what produced the 973-call loop.
+	assert.match(response.content[0].text, /does not match the file path/);
+	assert.equal(exchanges, 0);
+});
+
+test("the edit item tolerates path and nothing else", () => {
+	// Pins the shape against the two ways this fix could be widened by a
+	// later tidy: dropping `additionalProperties` on the item, or leaving
+	// `path` out again.
+	const pi = fakePi();
+	registerMutator(pi.api, context(), async () => success());
+	const items = pi.tool.parameters.properties.edits.items;
+
+	assert.equal(items.additionalProperties, false);
+	assert.deepEqual(Object.keys(items.properties).sort(), ["newText", "oldText", "path"]);
+	assert.deepEqual(items.required, ["oldText", "newText"]);
 });
 
 test("indeterminate engine outcomes poison the mutation context", async () => {
