@@ -97,6 +97,59 @@ and left the caller checkout clean. Spec and plan:
 **Phase E6 — Packaged. Not started; the current phase.** The same
 `/implement` works outside either source checkout on POSIX and Windows.
 
+**Measured from outside, 2026-09-06: the edit tool refuses the model's
+calls, and the loop breaker cannot see it.** `satyrn-evals` ran a
+preregistered three-arm probe (Baseline / Envelope / Engine) at `n=12` on
+one repair cell against `25ca0be`. The result is a **null** — Baseline
+7/12, Envelope 4/12, Engine 4/12 successful attempts — and the reason is
+this repository's, not the harness's:
+
+- **Five of twelve Engine cells timed out, and all five are edit-refusal
+  loops.** `mutator.ts:107-127` sets `additionalProperties: false` on the
+  **edit item**, whose permitted keys are `oldText` and `newText`. The
+  model sends `path` inside the item *as well as* at the top level, where
+  the schema requires it, and receives `Validation failed for tool
+  "edit": edits.0: must not have additional properties`. It re-sends with
+  a varied `newText` until the deadline. **973 refused calls across 6/12
+  cells**; five of five timeouts carry ≥151 refusals, seven of seven
+  non-timeouts carry ≤1. Neither Pi arm carries the message — it is our
+  tool.
+- **The loop breaker never fires on it.** `engine.ts:100-126` keys on
+  `callKey` — an exact match on tool name plus input — so a varying
+  `newText` never matches, and a cell burns 238 refusals while
+  `consecutiveBlocks` stays at zero.
+
+Counts and the recompute:
+`~/satyrn-smokes/2026-09-06-v13-143343/RESULT.md`. Evidence per cell:
+`grep -c 'must not have additional properties' cell-*-engine/*/transcript.txt`.
+
+**Two changes follow, and each is a phase needing its own design proposal
+before code** (`CLAUDE.md`) — they are recorded here, not started:
+
+1. **Accept the redundant `path`** on the edit item (or tolerate item
+   extras), leaving the top-level contract unchanged. The acceptance test
+   costs no inference and is already run: of **701** refused `args`
+   objects recovered from those transcripts, **701/701** fail today for
+   exactly `item extras ['path']`, **701/701** pass once item extras are
+   tolerated, and the extra key equals the top-level `path` in
+   **701/701** — so tolerating it changes no semantics. Refusal siblings
+   still refused: missing `oldText`, empty `oldText`, empty `edits`,
+   missing top-level `path`, a top-level extra.
+2. **A refusal-keyed breaker, beside the identity-keyed one.** Count
+   consecutive *error results* — the seam exists, `mutator.ts:308-313`
+   already marks a refused edit `isError` — and at K refusals inject the
+   reason using the message shape `engine.ts:116-121` already writes,
+   terminating at 2K. This bounds any future tool-refusal loop, not just
+   this one. **Do not key it on "an `edit` call happened":** the harvest
+   index's "the model edited the file and nothing changed" is the same
+   trap, and a counter keyed on applied mutations separates these cells
+   (158–247 calls without an applied edit on the timeouts, 6–8 on the
+   passing cells) where a call counter scores zero.
+
+**A note on scope.** The null says nothing about whether this engine's
+design beats bare Pi: five of its twelve cells never got to try. It is
+not evidence for or against the mutator, the breaker or the handoff.
+
 ## Concept budget
 
 *Every term below is a cost against a 5–10 h/wk volunteer's ability to hold
@@ -138,6 +191,17 @@ contract authoring (stays a main-agent skill); a multi-method protocol
 done-when named POSIX and Windows, and only POSIX has been recorded; the
 integration tier does not run in CI, so this is a manual recorded run,
 not a CI job).
+
+Added 2026-09-06, from the V13 evidence above — both are what "a workflow
+like AgentClinic" needs, and neither is started: **file creation through
+the mutator** under the contract's `writable_paths` (reopens whenever a
+task requires a new file; `attempt`'s prompt currently forbids creation
+and every eval task that needs it is excluded), and a **bounded,
+model-invocable test runner** (reopens with file creation — given only
+`read,edit`, the model invented a tool named `uv_run` and called
+`python -m pytest tests/` through it twice before Pi refused it). Ship the
+refusal-keyed breaker before or with the runner: a runner is a new way to
+stall.
 
 ## Prior work
 
