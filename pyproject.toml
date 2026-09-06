@@ -33,8 +33,13 @@ docs = [
 ]
 
 [tool.pytest.ini_options]
-# docs/_build is the docs build output, never project tests.
-norecursedirs = ["docs/_build"]
+# docs/_build is the docs build output, never project tests. `.worktrees`
+# holds git worktrees of this same repository, whose tests share their
+# module basenames with `tests/` -- collecting both makes pytest abort with
+# "import file mismatch" on every file, so the suite does not run at all.
+# Found 2026-09-06: a landed worktree left in place broke collection of all
+# 250 tests while every one of them passed.
+norecursedirs = ["docs/_build", ".worktrees"]
 # The integration tier spawns the engine as a subprocess; keep it out of
 # the hermetic default run (and out of CI). Run it explicitly with
 # `uv run pytest -m integration`.
