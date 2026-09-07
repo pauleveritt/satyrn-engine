@@ -1,8 +1,8 @@
-"""Real TypeScript -> Python evidence for E7's `run_tests` tool.
+"""Real TypeScript -> Python evidence for E7's `bash` tool.
 
 Mirrors `tests/test_integration_mutator.py`: `tools/exercise_runner.mjs`
 spawns the real engine as a subprocess, over the same protocol the shipped
-`run_tests` tool uses, and this drives it with real, non-trivial repos and
+`bash` tool uses, and this drives it with real, non-trivial repos and
 commands.
 """
 
@@ -70,9 +70,9 @@ def _fixture(tmp_path: Path, *, test_command: list[str] | None) -> Fixture:
     return Fixture(repo, contract, context)
 
 
-def _run(fixture: Fixture) -> tuple[subprocess.CompletedProcess[str], ExerciseBody]:
+def _run(fixture: Fixture, command: str) -> tuple[subprocess.CompletedProcess[str], ExerciseBody]:
     completed = subprocess.run(
-        [_node(), "--experimental-strip-types", str(EXERCISE), str(fixture.context)],
+        [_node(), "--experimental-strip-types", str(EXERCISE), str(fixture.context), command],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -83,9 +83,10 @@ def _run(fixture: Fixture) -> tuple[subprocess.CompletedProcess[str], ExerciseBo
 
 
 def test_shipped_tool_reports_a_passing_suite(tmp_path: Path) -> None:
-    fixture = _fixture(tmp_path, test_command=[sys.executable, "-c", "print('all good')"])
+    test_command = [sys.executable, "-c", "print('all good')"]
+    fixture = _fixture(tmp_path, test_command=test_command)
 
-    completed, body = _run(fixture)
+    completed, body = _run(fixture, " ".join(test_command))
 
     assert completed.returncode == 0, completed.stderr
     assert body["details"]["ok"] is True
@@ -95,9 +96,10 @@ def test_shipped_tool_reports_a_passing_suite(tmp_path: Path) -> None:
 
 
 def test_shipped_tool_reports_a_failing_suite_as_a_result_not_an_error(tmp_path: Path) -> None:
-    fixture = _fixture(tmp_path, test_command=[sys.executable, "-c", "assert 1 == 2, 'boom'"])
+    test_command = [sys.executable, "-c", "assert 1 == 2, 'boom'"]
+    fixture = _fixture(tmp_path, test_command=test_command)
 
-    completed, body = _run(fixture)
+    completed, body = _run(fixture, " ".join(test_command))
 
     assert completed.returncode == 0, completed.stderr
     assert body["details"]["ok"] is True
@@ -109,11 +111,23 @@ def test_shipped_tool_reports_a_failing_suite_as_a_result_not_an_error(tmp_path:
 def test_shipped_tool_reports_a_missing_test_command_as_a_named_refusal(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path, test_command=None)
 
-    completed, body = _run(fixture)
+    completed, body = _run(fixture, "pytest")
 
     assert completed.returncode == 0, completed.stderr
     assert body["details"]["ok"] is False
     assert body["details"]["code"] == "TEST_COMMAND_UNAVAILABLE"
+    assert body["details"]["result"] is None
+
+
+def test_shipped_tool_refuses_a_command_that_does_not_match_the_contract(tmp_path: Path) -> None:
+    test_command = [sys.executable, "-c", "print('all good')"]
+    fixture = _fixture(tmp_path, test_command=test_command)
+
+    completed, body = _run(fixture, "rm -rf /")
+
+    assert completed.returncode == 0, completed.stderr
+    assert body["details"]["ok"] is False
+    assert body["details"]["code"] == "TEST_COMMAND_NOT_ALLOWED"
     assert body["details"]["result"] is None
 
 

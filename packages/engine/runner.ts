@@ -19,18 +19,35 @@ import {
 } from "./orchestrator.ts";
 
 /**
- * The E7 `run_tests` tool. `satyrn-evals` V13d found that restricting the
+ * The E7 `bash` tool. `satyrn-evals` V13d found that restricting the
  * surface to `read,edit` cost 8 of 12 successes on a repair task relative
  * to a `bash`-carrying baseline (one-sided Fisher p = 0.00067): baseline's
  * `bash` calls were overwhelmingly `pytest`, run to read the failure and
- * edit. This tool restores exactly that one capability, and nothing else:
- * the contract's own command, verbatim, with no model-supplied argument --
- * an argument the model could choose is a shell by another name. See
- * docs/superpowers/specs/2026-09-06-e7-model-invocable-test-runner-design.md.
+ * edit. This tool restores exactly that one capability, and nothing else.
+ * See docs/superpowers/specs/2026-09-06-e7-model-invocable-test-runner-design.md.
+ *
+ * **Correction, 2026-09-06:** the original tool was named `run_tests` and
+ * took no parameters -- the contract's command ran verbatim, with no
+ * model-supplied argument, because an argument the model could choose is a
+ * shell by another name. A smoke of four uncounted cells found it was
+ * never invoked: a model's prior for a tool named `bash` expects a
+ * `command` argument, and a closed empty schema does not match that
+ * prior. Renamed to `bash`, with a required `command` string in the
+ * schema so the model's prior is satisfied there. The restriction did not
+ * move to the model -- it moved into `execute`/the Python core, which
+ * compares the supplied `command` against the contract's `test_command`
+ * and only ever runs the contract's own argv. Restricting at the schema
+ * instead would fail invisibly: pi's schema validation runs before every
+ * extension hook, so a call rejected there never reaches `execute` and is
+ * unobservable by any hook.
  */
 
 const TestParameters = {
 	type: "object",
+	properties: {
+		command: { type: "string", minLength: 1 },
+	},
+	required: ["command"],
 	additionalProperties: false,
 } as const;
 
@@ -90,12 +107,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-export function buildTestRequest(context: MutationContext): string {
+export function buildTestRequest(context: MutationContext, command: string): string {
 	return JSON.stringify({
 		version: PROTOCOL_VERSION,
 		operation: "test",
 		repo: context.repo,
 		contract: context.contract,
+		command,
 	});
 }
 
@@ -158,11 +176,19 @@ function refusalResult(code: RunnerToolRefusalCode, message: string): RunnerTool
 	};
 }
 
+function readCommand(rawInput: unknown): string {
+	if (!isRecord(rawInput) || typeof rawInput.command !== "string" || rawInput.command.length === 0) {
+		throw new AdapterRefusal("INVALID_REQUEST", "bash tool call requires a non-empty 'command' string");
+	}
+	return rawInput.command;
+}
+
 export function createRunner(context: MutationContext, exchangeRequest: ExchangeRequest): Runner {
 	return {
-		async execute(_toolCallId: string, _rawInput: unknown): Promise<RunnerToolResult> {
+		async execute(_toolCallId: string, rawInput: unknown): Promise<RunnerToolResult> {
 			try {
-				const request = buildTestRequest(context);
+				const command = readCommand(rawInput);
+				const request = buildTestRequest(context, command);
 				const response = parseTestResponse(await exchangeRequest(request));
 				if (!response.ok || response.result === null) {
 					return refusalResult(response.code, response.message);
@@ -182,15 +208,16 @@ export function createRunner(context: MutationContext, exchangeRequest: Exchange
 export function registerRunner(pi: ExtensionAPI, context: MutationContext, exchangeRequest: ExchangeRequest): void {
 	const runner = createRunner(context, exchangeRequest);
 	pi.registerTool({
-		name: "run_tests",
+		name: "bash",
 		label: "Run the contract's test command",
 		description:
-			"Run the contract-declared test suite verbatim and report its exit code and output. Takes no arguments.",
+			"Run a shell command. Only the contract's exact declared test command is ever executed; any other " +
+			"command is refused with a message naming the one command that is allowed, verbatim.",
 		parameters: TestParameters,
 		execute: runner.execute,
 	});
 	pi.on("tool_result", async (event) => {
-		if (event.toolName !== "run_tests" || !isRecord(event.details) || event.details.satyrn !== true) {
+		if (event.toolName !== "bash" || !isRecord(event.details) || event.details.satyrn !== true) {
 			return undefined;
 		}
 		return event.details.ok === true ? undefined : { isError: true };

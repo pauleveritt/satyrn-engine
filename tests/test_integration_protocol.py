@@ -118,6 +118,7 @@ def test_test_operation_runs_the_declared_command_through_the_real_console_scrip
         "operation": "test",
         "repo": str(tmp_path),
         "contract": str(contract),
+        "command": f"{sys.executable} -c assert 1 == 2, 'boom'",
     }
 
     proc = run_protocol_process(json.dumps(request))
@@ -138,6 +139,7 @@ def test_test_operation_without_a_declared_command_is_refused(tmp_path: Path) ->
         "operation": "test",
         "repo": str(tmp_path),
         "contract": str(contract),
+        "command": "pytest",
     }
 
     proc = run_protocol_process(json.dumps(request))
@@ -146,4 +148,29 @@ def test_test_operation_without_a_declared_command_is_refused(tmp_path: Path) ->
     body = json.loads(proc.stdout)
     assert body["ok"] is False
     assert body["code"] == "TEST_COMMAND_UNAVAILABLE"
+    assert body["result"] is None
+
+
+def test_test_operation_refuses_a_command_that_does_not_match_the_contract(tmp_path: Path) -> None:
+    """Sibling of the matching-command run above."""
+    contract = tmp_path / "contract.yaml"
+    contract.write_text(
+        "id: protocol-test-mismatch\ntask: run tests\n"
+        f"test_command:\n  - {sys.executable}\n  - -c\n  - \"print('all good')\"\n",
+        encoding="utf-8",
+    )
+    request = {
+        "version": 1,
+        "operation": "test",
+        "repo": str(tmp_path),
+        "contract": str(contract),
+        "command": "rm -rf /",
+    }
+
+    proc = run_protocol_process(json.dumps(request))
+
+    assert proc.returncode == 12
+    body = json.loads(proc.stdout)
+    assert body["ok"] is False
+    assert body["code"] == "TEST_COMMAND_NOT_ALLOWED"
     assert body["result"] is None

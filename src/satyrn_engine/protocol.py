@@ -33,6 +33,7 @@ _MUTATION_TO_EXIT: dict[MutationCode, ExitCode] = {
 _RUNNER_TO_EXIT: dict[RunnerCode, ExitCode] = {
     RunnerCode.OK: ExitCode.OK,
     RunnerCode.TEST_COMMAND_UNAVAILABLE: ExitCode.TEST_COMMAND_UNAVAILABLE,
+    RunnerCode.TEST_COMMAND_NOT_ALLOWED: ExitCode.TEST_COMMAND_NOT_ALLOWED,
 }
 
 
@@ -73,6 +74,7 @@ class RunTestsRequest:
     operation: Literal["test"]
     repo: Path
     contract: Path
+    command: str
 
 
 type ProtocolRequest = CheckRequest | ReplaceRequest | RunTestsRequest
@@ -172,7 +174,12 @@ def parse_request(data: str | bytes) -> ProtocolRequest:
         case "check":
             return CheckRequest(operation=operation, repo=repo, contract=contract)
         case "test":
-            return RunTestsRequest(operation=operation, repo=repo, contract=contract)
+            return RunTestsRequest(
+                operation=operation,
+                repo=repo,
+                contract=contract,
+                command=_required_string(payload, "command"),
+            )
         case "replace":
             if not repo.is_absolute() or not contract.is_absolute():
                 raise ProtocolError("replace request fields 'repo' and 'contract' must be absolute paths")
@@ -293,7 +300,7 @@ def handle_protocol(data: str | bytes) -> tuple[str, int]:
                     _render_test_check_failure(checked.code, checked.message),
                     int(checked.code),
                 )
-            test_receipt = run_tests(request.repo, checked.contract)
+            test_receipt = run_tests(request.repo, checked.contract, request.command)
             return render_test_response(test_receipt), int(_RUNNER_TO_EXIT[test_receipt.code])
         case _:  # pragma: no cover - ProtocolRequest union closes here
             raise AssertionError(request)

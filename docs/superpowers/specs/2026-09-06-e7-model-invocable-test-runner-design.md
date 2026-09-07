@@ -117,3 +117,42 @@ carried as a result.
   still spawns nothing.
 - `uv run pytest -q`, `uv run pytest -q -m integration`, every `.mjs`
   suite, `uv run ruff check`, and `just docs` all exit 0.
+
+## 9. Correction, 2026-09-06: the parameterless tool was never invoked
+
+A smoke of four uncounted cells found **zero** invocations of `run_tests`,
+including one cell that succeeded without ever running the suite. The
+wiring was correct — the contract carried `test_command`, the prompt
+named the tool, there were no load errors — the model simply never reached
+for a tool it had no prior for. A model's prior for a tool named `bash`
+is that it takes a `command` argument; a closed, parameterless schema does
+not match that prior, so the model apparently didn't try it.
+
+**The fix does not weaken the restriction — it moves where the restriction
+is enforced.** The tool is renamed to `bash`, and its schema now accepts a
+required `command: string`, satisfying the model's prior at the schema
+layer so a well-formed call actually reaches `execute`. What may *run* is
+unchanged: `execute` forwards the model's `command` to the Python core,
+which compares it against the contract's `test_command` (equality after
+stripping leading/trailing whitespace from the model's string, joined by
+single spaces on the contract's side — nothing fuzzier) and, on a match,
+runs the contract's own argv list exactly as before (`shell=False`, never
+the model's string). A mismatch is refused with a new named code,
+`TEST_COMMAND_NOT_ALLOWED`, whose message names the one command that is
+allowed, verbatim, so the model's next call can succeed.
+
+**Why the check could not stay at the schema.** An incident the same day
+showed that a schema-level rejection is invisible to every extension hook:
+pi validates a tool call against its JSON Schema in `prepareToolCall`,
+*before* `beforeToolCall` runs, and a schema-rejected call takes the
+`kind: "immediate"` path, which skips `finalizeExecutedToolCall` — the
+only site that fires `afterToolCall`. A model that guesses an argument the
+schema forbids is refused in a way no hook, transcript, or grader can see.
+Observable strictness has to live inside `execute`, never in the schema —
+so the restriction moved from "no parameters accepted" to "only one
+command argument value is ever actually run," enforced in code that a
+hook can see run.
+
+This section is a correction, not a replacement: sections 2–4 above
+describe the original (unused) design and are retained as the record of
+what was tried first and why it didn't work.

@@ -71,6 +71,7 @@ export const ENGINE_REFUSAL_CODES = [
 	"ANCHOR_AMBIGUOUS",
 	"MUTATION_FAILED",
 	"TEST_COMMAND_UNAVAILABLE",
+	"TEST_COMMAND_NOT_ALLOWED",
 ] as const;
 
 export type EngineRefusalCode = (typeof ENGINE_REFUSAL_CODES)[number];

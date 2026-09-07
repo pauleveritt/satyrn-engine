@@ -21,6 +21,7 @@ from satyrn_engine.runner import (
     RunnerCode,
     RunnerReceipt,
     RunnerResult,
+    command_matches,
     run_tests,
     tail_output,
 )
@@ -56,11 +57,34 @@ def test_tail_output_decodes_invalid_utf8_lossily() -> None:
 
 def test_run_tests_refuses_when_contract_declares_no_command(tmp_path: Path) -> None:
     contract = Contract(id="e7-none", task="test")
-    receipt = run_tests(tmp_path, contract)
+    receipt = run_tests(tmp_path, contract, "pytest")
     assert receipt.code is RunnerCode.TEST_COMMAND_UNAVAILABLE
     assert receipt.ok is False
     assert receipt.result is None
     assert "test_command" in receipt.message
+
+
+def test_run_tests_refuses_a_command_that_does_not_match_the_contract(tmp_path: Path) -> None:
+    """Sibling of the matching-command success in the integration tier.
+
+    The mismatch branch returns before `subprocess.run` is ever reached, so
+    -- unlike the actual run -- it belongs in the default tier.
+    """
+    contract = Contract(id="e7-mismatch", task="test", test_command=("pytest", "tests/"))
+    receipt = run_tests(tmp_path, contract, "rm -rf /")
+    assert receipt.code is RunnerCode.TEST_COMMAND_NOT_ALLOWED
+    assert receipt.ok is False
+    assert receipt.result is None
+    assert '"pytest tests/"' in receipt.message
+
+
+def test_command_matches_is_a_pure_strict_comparison() -> None:
+    declared = ("pytest", "tests/")
+    assert command_matches("pytest tests/", declared) is True
+    assert command_matches("  pytest tests/  ", declared) is True
+    assert command_matches("pytest  tests/", declared) is False
+    assert command_matches("pytest", declared) is False
+    assert command_matches("", declared) is False
 
 
 def test_runner_receipt_requires_result_only_when_ok() -> None:

@@ -261,7 +261,8 @@ def build_prompt(contract: Contract, writable_paths: Sequence[str]) -> str:
     """Build the intentionally small E5 handoff prompt."""
     paths = "\n".join(f"- {path}" for path in writable_paths)
     sentence = (
-        " You can run the test suite with the run_tests tool; it takes no arguments."
+        " Before finishing, verify your change by calling the bash tool with "
+        f'exactly this command: "{" ".join(contract.test_command)}".'
         if contract.test_command
         else ""
     )
@@ -285,7 +286,7 @@ def build_pi_command(
 ) -> tuple[str, ...]:
     """Return the exact hermetic Pi child argv.
 
-    `--extension .../runner.ts` (the E7 `run_tests` tool) is added only
+    `--extension .../runner.ts` (the E7 `bash` tool) is added only
     when the contract declares `test_command` -- a contract without one
     produces an argv byte-identical to before E7 (see the E7 design's
     acceptance section 7).

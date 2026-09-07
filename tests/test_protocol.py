@@ -351,12 +351,25 @@ def test_parses_test_request() -> None:
         "operation": "test",
         "repo": str(Path(__file__).parents[1]),
         "contract": str(CONTRACTS / "valid.yaml"),
+        "command": "pytest",
     }
     assert parse_request(json.dumps(request)) == RunTestsRequest(
         operation="test",
         repo=Path(__file__).parents[1],
         contract=CONTRACTS / "valid.yaml",
+        command="pytest",
     )
+
+
+def test_test_request_without_a_command_field_is_a_refused_invalid_request() -> None:
+    request = {
+        "version": 1,
+        "operation": "test",
+        "repo": str(Path(__file__).parents[1]),
+        "contract": str(CONTRACTS / "valid.yaml"),
+    }
+    with pytest.raises(ProtocolError, match="command"):
+        parse_request(json.dumps(request))
 
 
 def test_test_operation_without_declared_command_is_a_typed_refusal_not_a_crash(
@@ -375,6 +388,7 @@ def test_test_operation_without_declared_command_is_a_typed_refusal_not_a_crash(
         "operation": "test",
         "repo": str(tmp_path),
         "contract": str(contract),
+        "command": "pytest",
     }
 
     out, code = _run(json.dumps(request))
@@ -391,12 +405,42 @@ def test_test_operation_without_declared_command_is_a_typed_refusal_not_a_crash(
     assert "test_command" in body["message"]
 
 
+def test_test_operation_refuses_a_command_that_does_not_match_the_contract(
+    tmp_path: Path,
+) -> None:
+    """Sibling of the matching-command success above: the mismatch never
+    reaches `subprocess.run` either, so it stays safe under the same
+    default-tier tripwire."""
+    contract = tmp_path / "contract.yaml"
+    contract.write_text(
+        "id: e7-mismatch\ntask: test\ntest_command:\n  - pytest\n  - tests/\n",
+        encoding="utf-8",
+    )
+    request = {
+        "version": 1,
+        "operation": "test",
+        "repo": str(tmp_path),
+        "contract": str(contract),
+        "command": "rm -rf /",
+    }
+
+    out, code = _run(json.dumps(request))
+
+    assert code == int(ExitCode.TEST_COMMAND_NOT_ALLOWED)
+    body = json.loads(out)
+    assert body["ok"] is False
+    assert body["code"] == "TEST_COMMAND_NOT_ALLOWED"
+    assert body["result"] is None
+    assert '"pytest tests/"' in body["message"]
+
+
 def test_test_operation_refuses_before_running_when_contract_is_unreadable() -> None:
     request = {
         "version": 1,
         "operation": "test",
         "repo": str(Path(__file__).parents[1]),
         "contract": str(Path(__file__).parents[1] / "no-such.yaml"),
+        "command": "pytest",
     }
     out, code = _run(json.dumps(request))
     assert code == int(ExitCode.CONTRACT_UNREADABLE)
@@ -429,5 +473,14 @@ def test_render_test_response_round_trips_success_and_refusal() -> None:
         "ok": False,
         "code": "TEST_COMMAND_UNAVAILABLE",
         "message": "contract does not declare a test_command",
+        "result": None,
+    }
+
+    not_allowed = RunnerReceipt(RunnerCode.TEST_COMMAND_NOT_ALLOWED, 'only this exact command is allowed: "pytest"')
+    assert json.loads(render_test_response(not_allowed)) == {
+        "version": 1,
+        "ok": False,
+        "code": "TEST_COMMAND_NOT_ALLOWED",
+        "message": 'only this exact command is allowed: "pytest"',
         "result": None,
     }

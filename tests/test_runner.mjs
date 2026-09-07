@@ -25,12 +25,13 @@ const success = (overrides = {}) => ({
 	result: { exit_code: 0, output: "ok\n", truncated: false, timed_out: false, ...overrides },
 });
 
-test("test request carries only repo and contract", () => {
-	assert.deepEqual(JSON.parse(buildTestRequest(context())), {
+test("test request carries repo, contract, and the model's command", () => {
+	assert.deepEqual(JSON.parse(buildTestRequest(context(), "pytest")), {
 		version: 1,
 		operation: "test",
 		repo: "/workspace",
 		contract: "/workspace/contract.yaml",
+		command: "pytest",
 	});
 });
 
@@ -58,20 +59,22 @@ test("test response parser accepts a non-zero exit code as a success", () => {
 });
 
 test("test response parser accepts a named engine refusal", () => {
-	const refused = {
-		version: 1,
-		ok: false,
-		code: "TEST_COMMAND_UNAVAILABLE",
-		message: "no test_command",
-		result: null,
-	};
-	assert.deepEqual(parseTestResponse(refused), refused);
+	for (const code of ["TEST_COMMAND_UNAVAILABLE", "TEST_COMMAND_NOT_ALLOWED"]) {
+		const refused = {
+			version: 1,
+			ok: false,
+			code,
+			message: "no test_command",
+			result: null,
+		};
+		assert.deepEqual(parseTestResponse(refused), refused);
+	}
 });
 
 test("a completed run, passing or failing, is reported as a success detail", async () => {
 	const runner = createRunner(context(), async () => success({ exit_code: 3, output: "boom" }));
 
-	const response = await runner.execute("call", {});
+	const response = await runner.execute("call", { command: "pytest" });
 
 	assert.equal(response.details.ok, true);
 	assert.equal(response.details.code, "OK");
@@ -86,7 +89,7 @@ test("a timed-out run is still reported as a success detail", async () => {
 		async () => success({ exit_code: -1, output: "still running", timed_out: true }),
 	);
 
-	const response = await runner.execute("call", {});
+	const response = await runner.execute("call", { command: "pytest" });
 
 	assert.equal(response.details.ok, true);
 	assert.equal(response.details.result.timed_out, true);
@@ -106,12 +109,28 @@ test("a named engine refusal is carried through as a refusal detail", async () =
 		};
 	});
 
-	const response = await runner.execute("call", {});
+	const response = await runner.execute("call", { command: "pytest" });
 
 	assert.equal(response.details.ok, false);
 	assert.equal(response.details.code, "TEST_COMMAND_UNAVAILABLE");
 	assert.equal(response.content[0].text, "TEST_COMMAND_UNAVAILABLE: no test_command declared");
 	assert.equal(exchanges, 1);
+});
+
+test("a named-command mismatch is carried through as a refusal naming the allowed command", async () => {
+	const runner = createRunner(context(), async () => ({
+		version: 1,
+		ok: false,
+		code: "TEST_COMMAND_NOT_ALLOWED",
+		message: 'only this exact command is allowed: "pytest tests/"',
+		result: null,
+	}));
+
+	const response = await runner.execute("call", { command: "rm -rf /" });
+
+	assert.equal(response.details.ok, false);
+	assert.equal(response.details.code, "TEST_COMMAND_NOT_ALLOWED");
+	assert.match(response.content[0].text, /pytest tests\//);
 });
 
 test("an indeterminate transport failure is a contained adapter refusal", async () => {
@@ -123,36 +142,50 @@ test("an indeterminate transport failure is a contained adapter refusal", async 
 		const runner = createRunner(context(), async () => {
 			throw error;
 		});
-		const response = await runner.execute("call", {});
+		const response = await runner.execute("call", { command: "pytest" });
 		assert.equal(response.details.ok, false);
 		assert.equal(response.details.result, null);
 	}
 });
 
-test("the registered tool has a closed empty parameter schema", () => {
+test("a missing or empty command is refused locally as INVALID_REQUEST without an exchange", async () => {
+	for (const input of [{}, { command: "" }, { command: 1 }, "not an object", undefined]) {
+		let exchanges = 0;
+		const runner = createRunner(context(), async () => {
+			exchanges += 1;
+			return success();
+		});
+		const response = await runner.execute("call", input);
+		assert.equal(response.details.ok, false);
+		assert.equal(response.details.code, "INVALID_REQUEST");
+		assert.equal(exchanges, 0);
+	}
+});
+
+test("the registered tool schema requires a non-empty command string and nothing else", () => {
 	const pi = fakePi();
 	registerRunner(pi.api, context(), async () => success());
 
-	assert.equal(pi.tool.name, "run_tests");
+	assert.equal(pi.tool.name, "bash");
 	assert.equal(pi.tool.parameters.type, "object");
 	assert.equal(pi.tool.parameters.additionalProperties, false);
-	assert.equal(pi.tool.parameters.properties, undefined);
-	assert.equal(pi.tool.parameters.required, undefined);
+	assert.deepEqual(pi.tool.parameters.properties, { command: { type: "string", minLength: 1 } });
+	assert.deepEqual(pi.tool.parameters.required, ["command"]);
 });
 
 test("registered tool marks a refusal as an error but not a failing suite", async () => {
 	const pi = fakePi();
 	registerRunner(pi.api, context(), async () => success({ exit_code: 1 }));
 
-	const response = await pi.tool.execute("call", {});
+	const response = await pi.tool.execute("call", { command: "pytest" });
 	assert.equal(response.details.ok, true);
 	assert.equal(
-		await pi.resultHandler({ toolName: "run_tests", details: response.details }),
+		await pi.resultHandler({ toolName: "bash", details: response.details }),
 		undefined,
 	);
 	assert.deepEqual(
 		await pi.resultHandler({
-			toolName: "run_tests",
+			toolName: "bash",
 			details: { satyrn: true, ok: false },
 		}),
 		{ isError: true },
@@ -183,8 +216,8 @@ test("default extension registers only from a valid explicit context", async () 
 		async () => success(),
 	);
 
-	assert.equal(pi.tool.name, "run_tests");
-	assert.equal((await pi.tool.execute("call", {})).details.ok, true);
+	assert.equal(pi.tool.name, "bash");
+	assert.equal((await pi.tool.execute("call", { command: "pytest" })).details.ok, true);
 });
 
 test("default extension prepares the production transport from valid context", () => {
@@ -194,7 +227,7 @@ test("default extension prepares the production transport from valid context", (
 		SATYRN_ENGINE_REPO: "/engine",
 	});
 
-	assert.equal(pi.tool.name, "run_tests");
+	assert.equal(pi.tool.name, "bash");
 });
 
 test("engine exchange factory delegates to the existing one-shot transport", async () => {

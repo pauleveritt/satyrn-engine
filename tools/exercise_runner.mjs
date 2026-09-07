@@ -18,23 +18,24 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function usage(stream) {
 	stream.write(
-		"usage: node --experimental-strip-types tools/exercise_runner.mjs CONTEXT.json\n",
+		"usage: node --experimental-strip-types tools/exercise_runner.mjs CONTEXT.json COMMAND\n",
 	);
 }
 
 export async function main(arguments_, output = process.stdout, error = process.stderr) {
-	if (arguments_.length !== 1) {
+	if (arguments_.length !== 2) {
 		usage(error);
 		return 2;
 	}
 	try {
-		const [contextPath] = arguments_.map((path) => resolve(path));
+		const [contextPath] = [arguments_[0]].map((path) => resolve(path));
+		const command = arguments_[1];
 		const context = parseMutationContext(await readFile(contextPath, "utf8"));
 		const runner = createRunner(
 			context,
 			(request) => exchange(spawn, request, root, DEFAULT_DEADLINE_MS),
 		);
-		const result = await runner.execute("fixture", {});
+		const result = await runner.execute("fixture", { command });
 		output.write(`${JSON.stringify(result)}\n`);
 		return 0;
 	} catch (failure) {

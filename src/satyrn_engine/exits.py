@@ -26,3 +26,4 @@ class ExitCode(IntEnum):
     MUTATION_REFUSED = 9  # an accepted replacement was safely refused
     ATTEMPT_FAILED = 10  # an accepted model attempt failed after preparation
     TEST_COMMAND_UNAVAILABLE = 11  # a declared test command could not be run at all
+    TEST_COMMAND_NOT_ALLOWED = 12  # a model-supplied bash command did not match the contract's test_command

@@ -227,8 +227,8 @@ def test_a_contract_with_test_command_registers_the_runner_extension_and_prompt_
 
     assert command.count("--extension") == 3
     assert os.fspath(tmp_path / "packages" / "engine" / "runner.ts") in command
-    assert "run_tests" in prompt
-    assert "takes no arguments" in prompt
+    assert "bash tool" in prompt
+    assert 'exactly this command: "pytest"' in prompt
     assert command[:7] == (
         "pi",
         "--print",
@@ -347,7 +347,8 @@ def test_attempt_with_test_command_adds_runner_extension_and_prompt_sentence(tmp
     assert pi.command is not None
     assert pi.command.count("--extension") == 3
     assert any(part.endswith("runner.ts") for part in pi.command)
-    assert "run_tests" in pi.command[-1]
+    assert "bash tool" in pi.command[-1]
+    assert 'exactly this command: "pytest"' in pi.command[-1]
 
 
 @pytest.mark.parametrize(
