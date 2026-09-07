@@ -27,6 +27,7 @@ class Contract:
     id: str
     task: str
     writable_paths: tuple[str, ...] = ()
+    test_command: tuple[str, ...] = ()
 
 
 def load_contract(path: Path) -> Contract:
@@ -63,10 +64,12 @@ def load_contract(path: Path) -> Contract:
         raise ContractError(ExitCode.CONTRACT_MISSING_FIELD, "; ".join(problems))
 
     normalized_paths = tuple(cast(list[str], data.get("writable_paths", [])))
+    normalized_command = tuple(cast(list[str], data.get("test_command", [])))
     return Contract(
         id=data["id"],
         task=data["task"],
         writable_paths=normalized_paths,
+        test_command=normalized_command,
     )
 
 
@@ -78,14 +81,26 @@ def _field_problems(data: dict[str, object]) -> list[str]:
             problems.append(f"missing required field {field!r}")
         elif not isinstance(value, str) or not value.strip():
             problems.append(f"required field {field!r} must be a non-empty string")
-    if "writable_paths" not in data:
-        return problems
+    if "writable_paths" in data:
+        match data["writable_paths"]:
+            case list() as paths if all(isinstance(path, str) and path.strip() for path in paths):
+                pass
+            case list():
+                problems.append("optional field 'writable_paths' must contain only non-empty strings")
+            case _:
+                problems.append("optional field 'writable_paths' must be a list")
 
-    match data["writable_paths"]:
-        case list() as paths if all(isinstance(path, str) and path.strip() for path in paths):
-            pass
-        case list():
-            problems.append("optional field 'writable_paths' must contain only non-empty strings")
-        case _:
-            problems.append("optional field 'writable_paths' must be a list")
+    if "test_command" in data:
+        match data["test_command"]:
+            case list() as command if command and all(
+                isinstance(token, str) and token.strip() for token in command
+            ):
+                pass
+            case list():
+                problems.append(
+                    "optional field 'test_command' must be a non-empty list of non-empty strings"
+                )
+            case _:
+                problems.append("optional field 'test_command' must be a list")
+
     return problems

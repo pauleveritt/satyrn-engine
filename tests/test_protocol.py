@@ -15,15 +15,20 @@ from satyrn_engine.exits import ExitCode
 from satyrn_engine.mutation import MutationCode, MutationReceipt, MutationResult
 from satyrn_engine.protocol import (
     _MUTATION_TO_EXIT,
+    _RUNNER_TO_EXIT,
+    OPERATIONS,
     PROTOCOL_VERSION,
     CheckRequest,
     ProtocolError,
     ReplaceRequest,
+    RunTestsRequest,
     parse_request,
     render_replace_response,
     render_response,
+    render_test_response,
     run_protocol,
 )
+from satyrn_engine.runner import RunnerCode, RunnerReceipt, RunnerResult
 
 FIXTURES = Path(__file__).parent / "fixtures" / "protocol"
 CONTRACTS = Path(__file__).parent / "fixtures" / "contracts"
@@ -330,3 +335,99 @@ def test_unavailable_revision_is_typed_only_after_contract_path_and_readability(
 
 def test_mutation_exit_mapping_is_exhaustive() -> None:
     assert set(_MUTATION_TO_EXIT) == set(MutationCode)
+
+
+def test_runner_exit_mapping_is_exhaustive() -> None:
+    assert set(_RUNNER_TO_EXIT) == set(RunnerCode)
+
+
+def test_operations_includes_test() -> None:
+    assert OPERATIONS == ("check", "replace", "test")
+
+
+def test_parses_test_request() -> None:
+    request = {
+        "version": 1,
+        "operation": "test",
+        "repo": str(Path(__file__).parents[1]),
+        "contract": str(CONTRACTS / "valid.yaml"),
+    }
+    assert parse_request(json.dumps(request)) == RunTestsRequest(
+        operation="test",
+        repo=Path(__file__).parents[1],
+        contract=CONTRACTS / "valid.yaml",
+    )
+
+
+def test_test_operation_without_declared_command_is_a_typed_refusal_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    """No `test_command` never reaches `subprocess.run` (binding rule 3).
+
+    `tests/conftest.py` monkeypatches `subprocess.run` to explode in this
+    default tier; this exercises the real `run_tests` function through the
+    full `run_protocol` seam and proves the no-command path never calls it.
+    """
+    contract = tmp_path / "contract.yaml"
+    contract.write_text("id: e7-no-command\ntask: test\n", encoding="utf-8")
+    request = {
+        "version": 1,
+        "operation": "test",
+        "repo": str(tmp_path),
+        "contract": str(contract),
+    }
+
+    out, code = _run(json.dumps(request))
+
+    assert code == int(ExitCode.TEST_COMMAND_UNAVAILABLE)
+    body = json.loads(out)
+    assert body == {
+        "version": 1,
+        "ok": False,
+        "code": "TEST_COMMAND_UNAVAILABLE",
+        "message": body["message"],
+        "result": None,
+    }
+    assert "test_command" in body["message"]
+
+
+def test_test_operation_refuses_before_running_when_contract_is_unreadable() -> None:
+    request = {
+        "version": 1,
+        "operation": "test",
+        "repo": str(Path(__file__).parents[1]),
+        "contract": str(Path(__file__).parents[1] / "no-such.yaml"),
+    }
+    out, code = _run(json.dumps(request))
+    assert code == int(ExitCode.CONTRACT_UNREADABLE)
+    body = json.loads(out)
+    assert body["code"] == "CONTRACT_UNREADABLE"
+    assert body["result"] is None
+
+
+def test_render_test_response_round_trips_success_and_refusal() -> None:
+    success = RunnerReceipt(
+        RunnerCode.OK,
+        result=RunnerResult(exit_code=1, output="assert 1 == 2", truncated=False, timed_out=False),
+    )
+    refusal = RunnerReceipt(RunnerCode.TEST_COMMAND_UNAVAILABLE, "contract does not declare a test_command")
+
+    assert json.loads(render_test_response(success)) == {
+        "version": 1,
+        "ok": True,
+        "code": "OK",
+        "message": "",
+        "result": {
+            "exit_code": 1,
+            "output": "assert 1 == 2",
+            "truncated": False,
+            "timed_out": False,
+        },
+    }
+    assert json.loads(render_test_response(refusal)) == {
+        "version": 1,
+        "ok": False,
+        "code": "TEST_COMMAND_UNAVAILABLE",
+        "message": "contract does not declare a test_command",
+        "result": None,
+    }

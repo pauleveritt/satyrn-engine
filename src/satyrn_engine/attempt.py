@@ -260,19 +260,45 @@ class SubprocessPiRunner:
 def build_prompt(contract: Contract, writable_paths: Sequence[str]) -> str:
     """Build the intentionally small E5 handoff prompt."""
     paths = "\n".join(f"- {path}" for path in writable_paths)
+    sentence = (
+        " You can run the test suite with the run_tests tool; it takes no arguments."
+        if contract.test_command
+        else ""
+    )
     return (
         "Implement this bounded task:\n"
         f"{contract.task}\n\n"
         "Writable files:\n"
         f"{paths}\n\n"
-        "You may read files. Use the edit tool for every write. "
+        "You may read files. Use the edit tool for every write."
+        f"{sentence} "
         "Do not create files. Stop when the task is complete."
     )
 
 
-def build_pi_command(engine_repo: Path, model: str, prompt: str) -> tuple[str, ...]:
-    """Return the exact hermetic Pi child argv."""
+def build_pi_command(
+    engine_repo: Path,
+    model: str,
+    prompt: str,
+    *,
+    test_command: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """Return the exact hermetic Pi child argv.
+
+    `--extension .../runner.ts` (the E7 `run_tests` tool) is added only
+    when the contract declares `test_command` -- a contract without one
+    produces an argv byte-identical to before E7 (see the E7 design's
+    acceptance section 7).
+    """
     package = engine_repo / "packages" / "engine"
+    extensions: tuple[str, ...] = (
+        "--extension",
+        os.fspath(package / "engine.ts"),
+        "--extension",
+        os.fspath(package / "mutator.ts"),
+    )
+    if test_command:
+        extensions += ("--extension", os.fspath(package / "runner.ts"))
     return (
         "pi",
         "--print",
@@ -282,10 +308,7 @@ def build_pi_command(engine_repo: Path, model: str, prompt: str) -> tuple[str, .
         "--model",
         model,
         "--no-extensions",
-        "--extension",
-        os.fspath(package / "engine.ts"),
-        "--extension",
-        os.fspath(package / "mutator.ts"),
+        *extensions,
         "--no-skills",
         "--no-prompt-templates",
         "--no-themes",
@@ -501,7 +524,10 @@ def _prepare(
     except (OSError, RuntimeError) as exc:
         return _failed(model, f"cannot resolve engine repository: {exc}")
     package = engine_repo / "packages" / "engine"
-    if not all((package / name).is_file() for name in ("engine.ts", "mutator.ts")):
+    required_extensions = ("engine.ts", "mutator.ts")
+    if contract.test_command:
+        required_extensions += ("runner.ts",)
+    if not all((package / name).is_file() for name in required_extensions):
         return _failed(model, f"engine package is unavailable under {engine_repo}")
 
     artifacts = _artifact_destinations(forbidden_roots, environment, artifact_owner)
@@ -606,7 +632,12 @@ def _run(
     child_environment[ENGINE_REPO_ENV] = os.fspath(context.engine_repo)
     child_environment[MUTATION_CONTEXT_ENV] = mutation_context
     prompt = build_prompt(context.contract, tuple(sorted(context.revisions)))
-    command = build_pi_command(context.engine_repo, context.model, prompt)
+    command = build_pi_command(
+        context.engine_repo,
+        context.model,
+        prompt,
+        test_command=context.contract.test_command,
+    )
     transcript_spool = temporary_parent / "transcript.jsonl"
 
     try:

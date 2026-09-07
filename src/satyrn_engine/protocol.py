@@ -14,9 +14,10 @@ from .mutation import (
     normalize_relative_path,
     replace_once,
 )
+from .runner import RunnerCode, RunnerReceipt, run_tests
 
 PROTOCOL_VERSION = 1
-OPERATIONS = ("check", "replace")
+OPERATIONS = ("check", "replace", "test")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 _MUTATION_TO_EXIT: dict[MutationCode, ExitCode] = {
@@ -27,6 +28,11 @@ _MUTATION_TO_EXIT: dict[MutationCode, ExitCode] = {
     MutationCode.ANCHOR_MISSING: ExitCode.MUTATION_REFUSED,
     MutationCode.ANCHOR_AMBIGUOUS: ExitCode.MUTATION_REFUSED,
     MutationCode.MUTATION_FAILED: ExitCode.MUTATION_REFUSED,
+}
+
+_RUNNER_TO_EXIT: dict[RunnerCode, ExitCode] = {
+    RunnerCode.OK: ExitCode.OK,
+    RunnerCode.TEST_COMMAND_UNAVAILABLE: ExitCode.TEST_COMMAND_UNAVAILABLE,
 }
 
 
@@ -60,7 +66,16 @@ class ReplaceRequest:
     new_text: str
 
 
-type ProtocolRequest = CheckRequest | ReplaceRequest
+@dataclass(frozen=True, slots=True)
+class RunTestsRequest:
+    """A contract-declared test-command protocol request."""
+
+    operation: Literal["test"]
+    repo: Path
+    contract: Path
+
+
+type ProtocolRequest = CheckRequest | ReplaceRequest | RunTestsRequest
 
 
 class ResponsePayload(TypedDict):
@@ -83,6 +98,21 @@ class ReplaceResponsePayload(ResponsePayload):
     """Replacement response, including an operation-specific result."""
 
     result: MutationResultPayload | None
+
+
+class RunnerResultPayload(TypedDict):
+    """JSON result of a completed (or timed-out) test command run."""
+
+    exit_code: int
+    output: str
+    truncated: bool
+    timed_out: bool
+
+
+class RunTestsResponsePayload(ResponsePayload):
+    """Test-run response, including an operation-specific result."""
+
+    result: RunnerResultPayload | None
 
 
 def _decode(data: str | bytes) -> str:
@@ -141,6 +171,8 @@ def parse_request(data: str | bytes) -> ProtocolRequest:
     match operation:
         case "check":
             return CheckRequest(operation=operation, repo=repo, contract=contract)
+        case "test":
+            return RunTestsRequest(operation=operation, repo=repo, contract=contract)
         case "replace":
             if not repo.is_absolute() or not contract.is_absolute():
                 raise ProtocolError("replace request fields 'repo' and 'contract' must be absolute paths")
@@ -198,6 +230,34 @@ def _render_replace_check_failure(code: ExitCode, message: str) -> str:
     return json.dumps(payload, separators=(",", ":"))
 
 
+def render_test_response(receipt: RunnerReceipt) -> str:
+    """Render one operation-specific test-run response."""
+    result: RunnerResultPayload | None = None
+    if receipt.result is not None:
+        result = {
+            "exit_code": receipt.result.exit_code,
+            "output": receipt.result.output,
+            "truncated": receipt.result.truncated,
+            "timed_out": receipt.result.timed_out,
+        }
+    payload: RunTestsResponsePayload = {
+        "version": PROTOCOL_VERSION,
+        "ok": receipt.ok,
+        "code": receipt.code.value,
+        "message": receipt.message,
+        "result": result,
+    }
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def _render_test_check_failure(code: ExitCode, message: str) -> str:
+    payload: RunTestsResponsePayload = {
+        **_base_payload(code, message),
+        "result": None,
+    }
+    return json.dumps(payload, separators=(",", ":"))
+
+
 def handle_protocol(data: str | bytes) -> tuple[str, int]:
     """Turn one request into ``(response_text, exit_code)``."""
     try:
@@ -206,25 +266,37 @@ def handle_protocol(data: str | bytes) -> tuple[str, int]:
         response = render_response(ExitCode.INVALID_REQUEST, exc.message)
         return response, int(ExitCode.INVALID_REQUEST)
 
-    if isinstance(request, CheckRequest):
-        result = check(request.repo, request.contract)
-        return render_response(result.code, result.message), int(result.code)
-
-    checked = check(request.repo, request.contract)
-    if checked.code is not ExitCode.OK or checked.contract is None:
-        return (
-            _render_replace_check_failure(checked.code, checked.message),
-            int(checked.code),
-        )
-    receipt = replace_once(
-        request.repo,
-        checked.contract,
-        request.path,
-        request.expected_sha256,
-        request.old_text,
-        request.new_text,
-    )
-    return render_replace_response(receipt), int(_MUTATION_TO_EXIT[receipt.code])
+    match request:
+        case CheckRequest():
+            result = check(request.repo, request.contract)
+            return render_response(result.code, result.message), int(result.code)
+        case ReplaceRequest():
+            checked = check(request.repo, request.contract)
+            if checked.code is not ExitCode.OK or checked.contract is None:
+                return (
+                    _render_replace_check_failure(checked.code, checked.message),
+                    int(checked.code),
+                )
+            receipt = replace_once(
+                request.repo,
+                checked.contract,
+                request.path,
+                request.expected_sha256,
+                request.old_text,
+                request.new_text,
+            )
+            return render_replace_response(receipt), int(_MUTATION_TO_EXIT[receipt.code])
+        case RunTestsRequest():
+            checked = check(request.repo, request.contract)
+            if checked.code is not ExitCode.OK or checked.contract is None:
+                return (
+                    _render_test_check_failure(checked.code, checked.message),
+                    int(checked.code),
+                )
+            test_receipt = run_tests(request.repo, checked.contract)
+            return render_test_response(test_receipt), int(_RUNNER_TO_EXIT[test_receipt.code])
+        case _:  # pragma: no cover - ProtocolRequest union closes here
+            raise AssertionError(request)
 
 
 def run_protocol(stdin: BinaryIO, stdout: BinaryIO) -> int:

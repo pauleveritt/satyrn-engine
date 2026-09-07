@@ -8,6 +8,7 @@ yields to this marker.
 
 import json
 import subprocess
+import sys
 from hashlib import sha256
 from pathlib import Path
 
@@ -101,3 +102,48 @@ def test_replace_operation_uses_stable_success_and_refusal_exits(tmp_path: Path)
     assert json.loads(accepted.stdout)["code"] == "OK"
     assert refused.returncode == 9
     assert json.loads(refused.stdout)["code"] == "ANCHOR_MISSING"
+
+
+def test_test_operation_runs_the_declared_command_through_the_real_console_script(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "contract.yaml"
+    contract.write_text(
+        "id: protocol-test\ntask: run tests\n"
+        f"test_command:\n  - {sys.executable}\n  - -c\n  - \"assert 1 == 2, 'boom'\"\n",
+        encoding="utf-8",
+    )
+    request = {
+        "version": 1,
+        "operation": "test",
+        "repo": str(tmp_path),
+        "contract": str(contract),
+    }
+
+    proc = run_protocol_process(json.dumps(request))
+
+    assert proc.returncode == 0
+    body = json.loads(proc.stdout)
+    assert body["ok"] is True
+    assert body["code"] == "OK"
+    assert body["result"]["exit_code"] != 0
+    assert "boom" in body["result"]["output"]
+
+
+def test_test_operation_without_a_declared_command_is_refused(tmp_path: Path) -> None:
+    contract = tmp_path / "contract.yaml"
+    contract.write_text("id: protocol-test-none\ntask: run tests\n", encoding="utf-8")
+    request = {
+        "version": 1,
+        "operation": "test",
+        "repo": str(tmp_path),
+        "contract": str(contract),
+    }
+
+    proc = run_protocol_process(json.dumps(request))
+
+    assert proc.returncode == 11
+    body = json.loads(proc.stdout)
+    assert body["ok"] is False
+    assert body["code"] == "TEST_COMMAND_UNAVAILABLE"
+    assert body["result"] is None

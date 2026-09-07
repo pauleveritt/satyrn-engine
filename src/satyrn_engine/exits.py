@@ -25,3 +25,4 @@ class ExitCode(IntEnum):
     NO_CANDIDATE = 8  # an accepted delivery operation created no candidate
     MUTATION_REFUSED = 9  # an accepted replacement was safely refused
     ATTEMPT_FAILED = 10  # an accepted model attempt failed after preparation
+    TEST_COMMAND_UNAVAILABLE = 11  # a declared test command could not be run at all

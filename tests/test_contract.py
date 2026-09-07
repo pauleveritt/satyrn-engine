@@ -27,6 +27,21 @@ def test_load_contract_with_writable_paths() -> None:
     )
 
 
+def test_load_contract_without_test_command_has_empty_default() -> None:
+    contract = load_contract(FIXTURES / "valid.yaml")
+    assert contract.test_command == ()
+
+
+def test_load_contract_with_test_command(tmp_path: Path) -> None:
+    path = tmp_path / "with-command.yaml"
+    path.write_text(
+        "id: e7-smoke\ntask: test\ntest_command:\n  - python\n  - -m\n  - pytest\n",
+        encoding="utf-8",
+    )
+    contract = load_contract(path)
+    assert contract.test_command == ("python", "-m", "pytest")
+
+
 def test_load_missing_field_is_refused() -> None:
     with pytest.raises(ContractError) as excinfo:
         load_contract(FIXTURES / "missing-field.yaml")
@@ -86,3 +101,20 @@ def test_load_invalid_writable_paths_is_refused(tmp_path: Path, value: object) -
         load_contract(path)
     assert excinfo.value.code is ExitCode.CONTRACT_MISSING_FIELD
     assert "writable_paths" in excinfo.value.message
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["pytest", None, [], ["pytest", ""], ["pytest", 1]],
+)
+def test_load_invalid_test_command_is_refused(tmp_path: Path, value: object) -> None:
+    path = tmp_path / "invalid-test-command.yaml"
+    rendered = "null" if value is None else repr(value)
+    path.write_text(
+        "id: e7-invalid\ntask: test\ntest_command: " + rendered + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ContractError) as excinfo:
+        load_contract(path)
+    assert excinfo.value.code is ExitCode.CONTRACT_MISSING_FIELD
+    assert "test_command" in excinfo.value.message

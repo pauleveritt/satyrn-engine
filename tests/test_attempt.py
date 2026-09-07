@@ -179,6 +179,68 @@ def test_prompt_and_pi_command_are_small_and_hermetic(tmp_path: Path) -> None:
     assert command.count("--extension") == 2
 
 
+def test_a_contract_without_test_command_produces_a_byte_identical_argv(tmp_path: Path) -> None:
+    """E7 acceptance item 1: no `test_command` changes nothing about the argv.
+
+    Pinned as an exact tuple, not a subset assertion, so any future change
+    to E5's argv shape that also touches this branch is caught here.
+    """
+    contract = Contract("one", "Fix it", ("app.py",))
+    prompt = build_prompt(contract, ("app.py",))
+
+    assert contract.test_command == ()
+    assert build_pi_command(tmp_path, "provider/model", prompt) == (
+        "pi",
+        "--print",
+        "--mode",
+        "json",
+        "--no-session",
+        "--model",
+        "provider/model",
+        "--no-extensions",
+        "--extension",
+        os.fspath(tmp_path / "packages" / "engine" / "engine.ts"),
+        "--extension",
+        os.fspath(tmp_path / "packages" / "engine" / "mutator.ts"),
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-themes",
+        "--no-context-files",
+        "--no-approve",
+        "--tools",
+        "read,edit",
+        prompt,
+    )
+    assert prompt == (
+        "Implement this bounded task:\nFix it\n\nWritable files:\n- app.py\n\n"
+        "You may read files. Use the edit tool for every write. "
+        "Do not create files. Stop when the task is complete."
+    )
+
+
+def test_a_contract_with_test_command_registers_the_runner_extension_and_prompt_sentence(
+    tmp_path: Path,
+) -> None:
+    contract = Contract("one", "Fix it", ("app.py",), ("pytest",))
+    prompt = build_prompt(contract, ("app.py",))
+    command = build_pi_command(tmp_path, "provider/model", prompt, test_command=contract.test_command)
+
+    assert command.count("--extension") == 3
+    assert os.fspath(tmp_path / "packages" / "engine" / "runner.ts") in command
+    assert "run_tests" in prompt
+    assert "takes no arguments" in prompt
+    assert command[:7] == (
+        "pi",
+        "--print",
+        "--mode",
+        "json",
+        "--no-session",
+        "--model",
+        "provider/model",
+    )
+    assert command[-3:] == ("--tools", "read,edit", prompt)
+
+
 def test_attempt_result_has_exhaustive_stable_exit_mapping() -> None:
     expected = {
         AttemptCode.OK: ExitCode.OK,
@@ -250,6 +312,42 @@ def test_attempt_without_artifact_env_still_forwards_transcript(tmp_path: Path) 
     result, stdout, _, _, _ = _run(tmp_path, git=git)
     assert result.code is AttemptCode.OK
     assert stdout == b'{"type":"session_shutdown"}\n'
+
+
+def test_attempt_with_test_command_adds_runner_extension_and_prompt_sentence(tmp_path: Path) -> None:
+    """E7 end to end through the real seam: `_prepare` requires `runner.ts`
+    (present in this checkout's own `packages/engine/`) and `_run` passes
+    `test_command` through to `build_pi_command` and `build_prompt`.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+    contract = repo / "contract.yaml"
+    contract.write_text(
+        "id: attempt-e7\ntask: Replace one with two\nwritable_paths:\n  - app.py\n"
+        "test_command:\n  - pytest\n",
+        encoding="utf-8",
+    )
+    git = FakeGit(repo)
+    pi = FakePi()
+    env = {attempt_module.ENGINE_REPO_ENV: str(Path(__file__).parents[1])}
+    result = attempt_module.attempt(
+        repo,
+        contract,
+        "provider/model",
+        environment=env,
+        git_runner=git,
+        pi_runner=pi,
+        stdout=io.BytesIO(),
+        stderr=io.BytesIO(),
+    )
+
+    assert result.code is AttemptCode.OK
+    assert pi.command is not None
+    assert pi.command.count("--extension") == 3
+    assert any(part.endswith("runner.ts") for part in pi.command)
+    assert "run_tests" in pi.command[-1]
 
 
 @pytest.mark.parametrize(
@@ -1076,6 +1174,34 @@ def test_engine_package_must_exist(tmp_path: Path) -> None:
         FakeGit(repo),
         environment={attempt_module.ENGINE_REPO_ENV: str(tmp_path / "missing-engine")},
     )
+    assert result.code is AttemptCode.ATTEMPT_FAILED
+    assert "engine package" in result.message
+
+
+def test_engine_package_must_include_runner_when_test_command_is_declared(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+    contract = repo / "contract.yaml"
+    contract.write_text(
+        "id: attempt-e7-partial\ntask: Replace one with two\nwritable_paths:\n  - app.py\n"
+        "test_command:\n  - pytest\n",
+        encoding="utf-8",
+    )
+    partial_engine = tmp_path / "partial-engine"
+    package = partial_engine / "packages" / "engine"
+    package.mkdir(parents=True)
+    (package / "engine.ts").write_text("", encoding="utf-8")
+    (package / "mutator.ts").write_text("", encoding="utf-8")
+
+    result, _ = _run_existing(
+        repo,
+        contract,
+        FakeGit(repo),
+        environment={attempt_module.ENGINE_REPO_ENV: str(partial_engine)},
+    )
+
     assert result.code is AttemptCode.ATTEMPT_FAILED
     assert "engine package" in result.message
 
