@@ -45,7 +45,9 @@ def _attempt_termination_guard(runner: SubprocessPiRunner) -> Iterator[None]:
 
     The temporary Python handlers forward a direct signal to Pi's separate
     process group, then return. This Engine process waits for Pi to exit and
-    publishes the already-written transcript spool before returning.
+    finishes forwarding the transcript -- already streamed straight into its
+    destination as Pi wrote it (E10) -- and publishing the patch, before
+    returning.
     """
     def request_finalization(signum: int, frame: FrameType | None) -> None:
         del frame

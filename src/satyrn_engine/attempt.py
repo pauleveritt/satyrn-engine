@@ -111,11 +111,19 @@ class _FileIdentity:
 
 @dataclass(slots=True)
 class _ArtifactDestination:
-    """An absent artifact path pinned to its already-validated parent."""
+    """An artifact path pinned to its already-validated parent.
+
+    ``content_descriptor`` is set only for the transcript (E10): unlike
+    every other artifact, which stays absent until it is published by
+    ``os.link`` after the run, the transcript is created exclusively here,
+    at preparation time, and this descriptor is the open handle Pi writes
+    into directly.
+    """
 
     path: Path
     parent_identity: _FileIdentity
     parent_descriptor: int | None
+    content_descriptor: int | None = None
 
     def descriptor(self) -> int:
         """Return the owned parent descriptor while it remains open."""
@@ -127,6 +135,12 @@ class _ArtifactDestination:
         """Transfer descriptor ownership exactly once for cleanup."""
         descriptor = self.parent_descriptor
         self.parent_descriptor = None
+        return descriptor
+
+    def take_content_descriptor(self) -> int | None:
+        """Transfer the exclusively-created content descriptor exactly once."""
+        descriptor = self.content_descriptor
+        self.content_descriptor = None
         return descriptor
 
 
@@ -652,10 +666,28 @@ def _run(
         prompt,
         test_command=context.contract.test_command,
     )
-    transcript_spool = temporary_parent / "transcript.jsonl"
+    transcript_destination = artifacts.transcript
+    # E10: when a transcript destination was requested, its file was
+    # already created exclusively during `_prepare` (see
+    # `_artifact_destinations`), and Pi writes directly into that
+    # descriptor -- there is nothing left to spool or publish afterward.
+    # The spool below exists only to give Pi somewhere to write, and
+    # stdout something to forward, when no destination was requested.
+    transcript_spool: Path | None = None
 
     try:
-        transcript_output = transcript_spool.open("xb")
+        if transcript_destination is not None:
+            content_descriptor = transcript_destination.take_content_descriptor()
+            if content_descriptor is None:  # pragma: no cover - invariant
+                raise AssertionError(f"transcript destination has no content descriptor: {transcript_destination.path}")
+            try:
+                transcript_output = os.fdopen(content_descriptor, "wb")
+            except BaseException:
+                os.close(content_descriptor)
+                raise
+        else:
+            transcript_spool = temporary_parent / "transcript.jsonl"
+            transcript_output = transcript_spool.open("xb")
         active_exception: BaseException | None = None
         try:
             command_exit = pi.run(
@@ -674,7 +706,10 @@ def _run(
             try:
                 transcript_output.close()
             except BaseException as cleanup_error:
-                detail = f"cannot close transcript spool {transcript_spool}: {cleanup_error}"
+                transcript_output_path = (
+                    transcript_destination.path if transcript_spool is None else transcript_spool
+                )
+                detail = f"cannot close transcript {transcript_output_path}: {cleanup_error}"
                 if active_exception is not None:
                     active_exception.add_note(f"secondary cleanup failure: {detail}")
                 else:
@@ -683,9 +718,7 @@ def _run(
         return _failed(context.model, f"cannot run Pi: {_exception_detail(exc)}")
 
     try:
-        if artifacts.transcript is not None:
-            _publish_file(transcript_spool, artifacts.transcript)
-        _copy_file(transcript_spool, stdout)
+        _forward_transcript(transcript_spool, transcript_destination, stdout)
     except (OSError, ValueError) as exc:
         return _failed(
             context.model,
@@ -842,12 +875,28 @@ def _artifact_destinations(
             descriptor = destination.descriptor()
             if _identity(os.fstat(descriptor)) != expected_identity:
                 raise OSError(f"{label} artifact parent changed during preparation: {path.parent}")
-            try:
-                os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
-            except FileNotFoundError:
-                pass
+            if label is _ArtifactKind.TRANSCRIPT:
+                # E10: create the transcript exclusively now, through the
+                # already-pinned parent, instead of only checking for it.
+                # `O_EXCL` gives the same "nothing else created this path"
+                # proof `os.link` gave after publication -- obtained here,
+                # before the run, so Pi can write directly into it.
+                try:
+                    destination.content_descriptor = os.open(
+                        path.name,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o600,
+                        dir_fd=descriptor,
+                    )
+                except FileExistsError:
+                    raise FileExistsError(f"{label} artifact already exists: {path}") from None
             else:
-                raise FileExistsError(f"{label} artifact already exists: {path}")
+                try:
+                    os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise FileExistsError(f"{label} artifact already exists: {path}")
             destinations[label] = destination
     except (OSError, ValueError) as exc:
         try:
@@ -922,6 +971,22 @@ def _inside_protected_root(
 def _close_destinations(destinations: Sequence[_ArtifactDestination]) -> None:
     primary: BaseException | None = None
     for destination in reversed(destinations):
+        if (content_descriptor := destination.take_content_descriptor()) is not None:
+            # E10: a prepared-but-never-run transcript (e.g. a later
+            # preparation step failed) still owns its exclusively-created
+            # content descriptor; close it here rather than leak it.
+            try:
+                os.close(content_descriptor)
+            except BaseException as cleanup_error:
+                detail = (
+                    f"cannot close transcript artifact descriptor {destination.path}: {cleanup_error}; "
+                    "descriptor ownership released without retry"
+                )
+                if primary is None:
+                    primary = cleanup_error
+                    primary.add_note(detail)
+                else:
+                    primary.add_note(f"secondary cleanup failure: {detail}")
         if (descriptor := destination.take_descriptor()) is None:
             continue
         try:
@@ -964,12 +1029,42 @@ def _merge_attempt_cleanup(
     return pending, cleanup_exception
 
 
-def _publish_file(source: Path, destination: _ArtifactDestination) -> None:
-    def write(output: BinaryIO) -> None:
-        with source.open("rb") as input_file:
-            shutil.copyfileobj(input_file, output, length=64 * 1024)
+def _forward_transcript(
+    spool: Path | None,
+    destination: _ArtifactDestination | None,
+    output: BinaryIO,
+) -> None:
+    """Copy the transcript to stdout.
 
-    _publish(destination, write)
+    E10: the transcript is no longer spooled-then-linked, so there is
+    nothing to publish here -- ``destination``, when present, already
+    holds the complete file (Pi wrote directly into it). This only
+    forwards the bytes to stdout, reading back through the still-open
+    parent descriptor so a symlink swapped in after preparation is never
+    followed. When no destination was requested, ``spool`` is the file Pi
+    wrote into instead.
+    """
+    if destination is not None:
+        content_descriptor = os.open(
+            destination.path.name,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=destination.descriptor(),
+        )
+        try:
+            input_file = os.fdopen(content_descriptor, "rb")
+        except BaseException:
+            os.close(content_descriptor)
+            raise
+        try:
+            while chunk := input_file.read(64 * 1024):
+                output.write(chunk)
+        finally:
+            input_file.close()
+        output.flush()
+        return
+    if spool is None:  # pragma: no cover - invariant
+        raise AssertionError("transcript has neither a destination nor a spool")
+    _copy_file(spool, output)
 
 
 def _publish_bytes(content: bytes, destination: _ArtifactDestination) -> None:

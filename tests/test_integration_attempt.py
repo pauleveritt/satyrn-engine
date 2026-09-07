@@ -329,6 +329,50 @@ def test_direct_termination_forwards_to_pi_and_preserves_attempt_spool(
         os.killpg(process.pid, 0)
 
 
+def test_transcript_is_readable_and_streaming_while_pi_still_runs(tmp_path: Path) -> None:
+    """E10's whole point (spec section 1): the transcript destination is
+    the real file Pi writes into, complete-as-of-now at every moment --
+    not a spool copied over only after Pi exits. A test that only checked
+    the final content would already pass against the pre-E10 engine and
+    prove nothing, so this reads the destination while the child is still
+    blocked mid-run, using the existing delay-mode fixture and its
+    ready/marker idiom.
+    """
+    repo, contract, _, environment = _fixture(tmp_path)
+    ready = tmp_path / "pi-ready"
+    marker = tmp_path / "late-write"
+    transcript = tmp_path / "streaming-transcript.jsonl"
+    environment.update(
+        {
+            "SATYRN_FAKE_PI_MODE": "delay",
+            "SATYRN_FAKE_PI_READY": str(ready),
+            "SATYRN_FAKE_PI_MARKER": str(marker),
+            TRANSCRIPT_ENV: str(transcript),
+        }
+    )
+    engine = Path(os.sys.executable).with_name("satyrn-engine")
+    process = subprocess.Popen(
+        [str(engine), "attempt", "--model", "fixture/model", str(contract)],
+        cwd=repo,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        _wait_for(ready)
+        # fake_pi.py writes its first transcript line, then the marker,
+        # then sleeps for 30s -- waiting for the marker too proves the
+        # child is past its first write and still alive when we read.
+        _wait_for(marker)
+        assert process.poll() is None, "Pi should still be blocked in its 30s sleep"
+        assert b'"type": "agent_start"' in transcript.read_bytes()
+    finally:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.communicate(timeout=10)
+
+
 def test_dispatcher_timeout_waits_for_delivery_cleanup(tmp_path: Path) -> None:
     repo, contract, _, environment = _fixture(tmp_path)
     marker = tmp_path / "late-write"

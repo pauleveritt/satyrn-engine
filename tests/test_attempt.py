@@ -334,6 +334,25 @@ def test_attempt_success_exports_exact_artifacts_and_context(tmp_path: Path) -> 
     assert any(call[0] == "diff" for call in git.calls)
 
 
+def test_transcript_destination_is_empty_not_missing_when_pi_writes_nothing(tmp_path: Path) -> None:
+    """Spec section 4's last requirement: a child that exits without
+    writing leaves an empty transcript file at the destination, not an
+    absent one -- the exclusively-created destination exists the moment
+    preparation succeeds, before Pi ever runs.
+    """
+    output = tmp_path / "artifacts"
+    output.mkdir()
+    transcript = output / "transcript.jsonl"
+    result, stdout, _, _, _ = _run(
+        tmp_path,
+        pi=FakePi(output=b""),
+        environment={attempt_module.TRANSCRIPT_ENV: str(transcript)},
+    )
+    assert result.code is AttemptCode.OK
+    assert transcript.exists()
+    assert transcript.read_bytes() == stdout == b""
+
+
 def test_attempt_without_artifact_env_still_forwards_transcript(tmp_path: Path) -> None:
     git = FakeGit(tmp_path / "repo", diff=b"")
     result, stdout, _, _, _ = _run(tmp_path, git=git)
@@ -1329,9 +1348,24 @@ def test_artifact_parent_is_pinned_before_path_is_redirected(tmp_path: Path) -> 
     assert not (repo / "transcript").exists()
 
 
-def test_destination_created_after_preparation_is_never_overwritten(tmp_path: Path) -> None:
+def test_patch_destination_created_after_preparation_is_never_overwritten(tmp_path: Path) -> None:
+    """The patch still publishes by spool-then-link (E10 moved only the
+    transcript's version of this guarantee earlier -- see
+    ``test_transcript_preexisting_destination_is_refused_before_pi_starts``
+    below), so a destination created between preparation and publication
+    must still be refused by `os.link`'s exclusivity rather than
+    overwritten.
+
+    Corrected 2026-09-07 (E10): this test used to run this exact race
+    against the transcript. It no longer can: the transcript destination
+    is created exclusively at preparation, before Pi ever starts, so
+    nothing can win a race to create it out from under the run -- that
+    race is foreclosed by construction rather than refused after the
+    fact. See the replacement test below for the transcript's moved
+    guarantee.
+    """
     repo, contract, _ = _repo(tmp_path)
-    destination = tmp_path / "transcript"
+    destination = tmp_path / "patch"
 
     class RacingPi(FakePi):
         def run(self, *args: object, **kwargs: object) -> int:
@@ -1345,7 +1379,7 @@ def test_destination_created_after_preparation_is_never_overwritten(tmp_path: Pa
         "model",
         environment={
             attempt_module.ENGINE_REPO_ENV: str(Path(__file__).parents[1]),
-            attempt_module.TRANSCRIPT_ENV: str(destination),
+            attempt_module.PATCH_ENV: str(destination),
         },
         git_runner=FakeGit(repo),
         pi_runner=RacingPi(),
@@ -1356,21 +1390,66 @@ def test_destination_created_after_preparation_is_never_overwritten(tmp_path: Pa
     assert destination.read_bytes() == b"caller"
 
 
+def test_transcript_preexisting_destination_is_refused_before_pi_starts(tmp_path: Path) -> None:
+    """E10's moved guarantee: the transcript destination is created
+    exclusively (`O_CREAT | O_EXCL`) during preparation, so a destination
+    that already exists is refused there -- before Pi is ever started --
+    the same "nothing else created this path" proof `os.link` used to
+    give only after publication, just obtained earlier. Its sibling
+    success (an absent destination is created and written) is exercised
+    throughout this module, e.g.
+    ``test_attempt_success_exports_exact_artifacts_and_context``.
+    """
+    repo, contract, _ = _repo(tmp_path)
+    destination = tmp_path / "transcript"
+    destination.write_bytes(b"already here")
+    pi = FakePi()
+
+    result = attempt_module.attempt(
+        repo,
+        contract,
+        "model",
+        environment={
+            attempt_module.ENGINE_REPO_ENV: str(Path(__file__).parents[1]),
+            attempt_module.TRANSCRIPT_ENV: str(destination),
+        },
+        git_runner=FakeGit(repo),
+        pi_runner=pi,
+        stdout=io.BytesIO(),
+        stderr=io.BytesIO(),
+    )
+    assert result.code is AttemptCode.ATTEMPT_FAILED
+    assert "transcript artifact already exists" in result.message
+    assert destination.read_bytes() == b"already here"
+    assert pi.command is None
+
+
 def test_transcript_patch_and_git_diff_publication_failures_are_named(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Corrected 2026-09-07 (E10): the transcript failure here used to be
+    injected into `_publish_file`, the spool-to-destination copy. E10
+    replaced that with `_forward_transcript`, which only copies the
+    already-published destination back to stdout -- the injection point
+    moves with it, but the wrapping message (`cannot publish transcript`)
+    and the caller-facing behavior it proves are unchanged.
+    """
     output = tmp_path / "out"
     output.mkdir()
-    original_publish_file = attempt_module._publish_file
-    monkeypatch.setattr(attempt_module, "_publish_file", lambda *args: (_ for _ in ()).throw(OSError("transcript")))
+    original_forward_transcript = attempt_module._forward_transcript
+    monkeypatch.setattr(
+        attempt_module,
+        "_forward_transcript",
+        lambda *args: (_ for _ in ()).throw(OSError("transcript")),
+    )
     result, *_ = _run(
         tmp_path,
         environment={attempt_module.TRANSCRIPT_ENV: str(output / "transcript")},
     )
     assert "publish transcript" in result.message
 
-    monkeypatch.setattr(attempt_module, "_publish_file", original_publish_file)
+    monkeypatch.setattr(attempt_module, "_forward_transcript", original_forward_transcript)
     repo = tmp_path / "second" / "repo"
     repo.parent.mkdir()
     git = FakeGit(repo)
@@ -1471,14 +1550,32 @@ def test_artifact_primary_failure_keeps_cleanup_detail_and_retained_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Corrected 2026-09-07 (E10): this used to fail the transcript's
+    spool-to-destination copy via `shutil.copyfileobj`, the only caller of
+    which was `_publish_file`. E10 moved the transcript off spool-then-link
+    publication entirely -- it is now written directly into its
+    exclusively-created destination -- so `_publish_file` and that failure
+    surface no longer exist for it. The patch artifact still publishes by
+    spool-then-link, so this now proves the same primary-failure/retained-
+    temporary-path combination for the patch's write instead, failing the
+    second `os.fsync` call (the first is the transcript's own, on its
+    default spool -- no TRANSCRIPT_ENV is set here) and the patch's
+    temporary unlink.
+    """
     output = tmp_path / "out"
     output.mkdir()
 
-    monkeypatch.setattr(
-        attempt_module.shutil,
-        "copyfileobj",
-        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("write failed")),
-    )
+    call_count = 0
+    original_fsync = attempt_module.os.fsync
+
+    def fail_second_fsync(descriptor: int) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise OSError("write failed")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(attempt_module.os, "fsync", fail_second_fsync)
     real_unlink = attempt_module.os.unlink
 
     def fail_artifact_unlink(path: str, *, dir_fd: int | None = None) -> None:
@@ -1489,7 +1586,7 @@ def test_artifact_primary_failure_keeps_cleanup_detail_and_retained_path(
     monkeypatch.setattr(attempt_module.os, "unlink", fail_artifact_unlink)
     result, *_ = _run(
         tmp_path,
-        environment={attempt_module.TRANSCRIPT_ENV: str(output / "transcript")},
+        environment={attempt_module.PATCH_ENV: str(output / "patch")},
     )
     assert result.code is AttemptCode.ATTEMPT_FAILED
     assert "write failed" in result.message
@@ -1501,10 +1598,23 @@ def test_artifact_unexpected_exception_identity_survives_secondary_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Sibling of the failure above, moved to the patch for the same E10
+    reason: `_publish_file`, the only caller of `shutil.copyfileobj`, no
+    longer exists for the transcript."""
     output = tmp_path / "out"
     output.mkdir()
     primary = MemoryError("write exhausted")
-    monkeypatch.setattr(attempt_module.shutil, "copyfileobj", lambda *args, **kwargs: (_ for _ in ()).throw(primary))
+    call_count = 0
+    original_fsync = attempt_module.os.fsync
+
+    def fail_second_fsync(descriptor: int) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise primary
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(attempt_module.os, "fsync", fail_second_fsync)
     real_unlink = attempt_module.os.unlink
 
     def fail_artifact_unlink(path: str, *, dir_fd: int | None = None) -> None:
@@ -1516,7 +1626,7 @@ def test_artifact_unexpected_exception_identity_survives_secondary_cleanup(
     with pytest.raises(MemoryError) as excinfo:
         _run(
             tmp_path,
-            environment={attempt_module.TRANSCRIPT_ENV: str(output / "transcript")},
+            environment={attempt_module.PATCH_ENV: str(output / "patch")},
         )
     assert excinfo.value is primary
     assert any("secondary cleanup failure" in note and "retained path" in note for note in primary.__notes__)
