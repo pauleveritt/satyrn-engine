@@ -316,7 +316,20 @@ def build_pi_command(
         "--no-context-files",
         "--no-approve",
         "--tools",
-        "read,edit",
+        # `--tools` gates extension-registered tools too, not just pi's
+        # built-ins: with `read,edit` the registered `bash` answered
+        # "Tool bash not found" for every call the model made
+        # (2026-09-06 smoke). The name must appear here or the tool does
+        # not exist, however carefully it was registered.
+        #
+        # `bash` is also a pi built-in, and naming it here yields *our*
+        # bounded tool rather than a shell, because `registerTool`
+        # overrides a built-in of the same name -- which `edit` has been
+        # relying on since E4, demonstrated by the engine's own edit schema
+        # refusing calls that pi's built-in `edit` would have accepted.
+        # The smoke re-proves it per batch by reading what a `bash` call
+        # actually did.
+        "read,edit,bash" if test_command else "read,edit",
         prompt,
     )
 

@@ -179,6 +179,28 @@ def test_prompt_and_pi_command_are_small_and_hermetic(tmp_path: Path) -> None:
     assert command.count("--extension") == 2
 
 
+def test_a_declared_test_command_puts_the_tool_name_in_the_tools_flag(
+    tmp_path: Path,
+) -> None:
+    """The sibling for the byte-identical test below, and the 2026-09-06
+    smoke's finding: `--tools` gates extension-registered tools as well as
+    built-ins, so a tool absent from this list answers "Tool bash not
+    found" no matter how it was registered."""
+    argv = build_pi_command(
+        tmp_path, "provider/model", "prompt", test_command=("uv", "run", "pytest")
+    )
+
+    assert argv[argv.index("--tools") + 1] == "read,edit,bash"
+
+
+def test_a_contract_without_test_command_leaves_the_tools_flag_alone(
+    tmp_path: Path,
+) -> None:
+    argv = build_pi_command(tmp_path, "provider/model", "prompt")
+
+    assert argv[argv.index("--tools") + 1] == "read,edit"
+
+
 def test_a_contract_without_test_command_produces_a_byte_identical_argv(tmp_path: Path) -> None:
     """E7 acceptance item 1: no `test_command` changes nothing about the argv.
 
@@ -238,7 +260,12 @@ def test_a_contract_with_test_command_registers_the_runner_extension_and_prompt_
         "--model",
         "provider/model",
     )
-    assert command[-3:] == ("--tools", "read,edit", prompt)
+    # Corrected 2026-09-06: this asserted `read,edit` even with a runner
+    # registered, which is what the bug looked like from inside the
+    # tests. `--tools` gates extension-registered tools, so the
+    # registered tool answered "Tool bash not found" for every call
+    # the model made in the smoke.
+    assert command[-3:] == ("--tools", "read,edit,bash", prompt)
 
 
 def test_attempt_result_has_exhaustive_stable_exit_mapping() -> None:
