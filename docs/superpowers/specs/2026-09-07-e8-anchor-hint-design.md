@@ -131,6 +131,31 @@ heuristic was not adjusted, and no second criterion was invented after
 seeing the number — that is the move this project's discipline exists to
 prevent.
 
+### The test was also invalid, found by review after the refusal
+
+§4 replays "each `ANCHOR_MISSING` that was a cell's *first* edit failure —
+the file is still at base then". **Zero of the 208 `ANCHOR_MISSING` events
+in the corpus are first-on-file; all 208 follow a successful `OK` on that
+same file.** So the 35 cases replayed were scored against a file state that
+never existed, and the 3% is not a measurement of anything. The refusal was
+accidentally right, not rightly reached.
+
+Recompute:
+
+```
+for each engine transcript, walk edit start/end pairs in order;
+count ANCHOR_MISSING events whose path has not yet had an ok:true result
+```
+
+**The stronger finding the review reached instead:** of the 208, **182 had
+`newText` already present in the live file** — the edit had landed and the
+model re-issued it with the original anchor. Only ~25 are anchors genuinely
+absent. And separately, **386 engine edits across 42 cells had
+`oldText == newText` and were reported `OK`** (`mutation.py:145-165` has no
+identity check), so the engine tells the model it replaced something when
+it wrote identical bytes. That is the pathology; a nearest-window hint
+addresses ~25 events in 5,675 calls.
+
 ### Where the reasoning went wrong
 
 The motivating statistic was that a failed anchor is **median 0.81 similar
