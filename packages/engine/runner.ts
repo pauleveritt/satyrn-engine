@@ -42,6 +42,16 @@ import {
  * unobservable by any hook.
  */
 
+// **Correction, 2026-09-07.** The paragraph above attributes the
+// zero-invocation smoke to the model declining a closed empty schema.
+// That inference was wrong and is kept rather than edited away: `--tools`
+// gates extension-registered tools as well as pi's built-ins, so with
+// `read,edit` this tool answered "Tool bash not found" for every call and
+// was never reachable under any name. The argument for taking a `command`
+// argument still stands on its own -- a closed schema refuses invisibly,
+// since pi validates before `beforeToolCall` -- but it was not what the
+// smoke measured. See `attempt.py`'s `--tools` comment.
+
 const TestParameters = {
 	type: "object",
 	properties: {
