@@ -20,9 +20,25 @@ class MutationCode(StrEnum):
     PATH_UNDECLARED = "PATH_UNDECLARED"
     REVISION_UNAVAILABLE = "REVISION_UNAVAILABLE"
     REVISION_STALE = "REVISION_STALE"
+    NO_CHANGE_REQUESTED = "NO_CHANGE_REQUESTED"
     ANCHOR_MISSING = "ANCHOR_MISSING"
+    ANCHOR_ALREADY_APPLIED = "ANCHOR_ALREADY_APPLIED"
     ANCHOR_AMBIGUOUS = "ANCHOR_AMBIGUOUS"
     MUTATION_FAILED = "MUTATION_FAILED"
+
+
+# E9: across 499 retained transcripts, 2,872 edit calls failed, and the
+# model's freshest *textual* view of the file stayed its pre-edit `read` --
+# a successful edit returned only `Replaced app.py; sha256=...`, no file
+# state at all. `region` carries the post-edit text back instead so the
+# model's next call is grounded in what the file now says. See
+# docs/superpowers/specs/2026-09-07-e9-file-state-in-edit-results-design.md.
+REGION_CONTEXT_LINES = 3
+REGION_MAX_LINES = 40
+REGION_MAX_BYTES = 4_000
+_REGION_TRUNCATION_MARKER = (
+    f"...[region truncated at {REGION_MAX_LINES} lines / {REGION_MAX_BYTES} bytes]...\n"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +47,7 @@ class MutationResult:
 
     path: str
     sha256: str
+    region: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.path, str):
@@ -45,6 +62,8 @@ class MutationResult:
             character not in "0123456789abcdef" for character in self.sha256
         ):
             raise ValueError("mutation result sha256 must be 64 lowercase hexadecimal characters")
+        if not isinstance(self.region, str):
+            raise TypeError("mutation result region must be a string")
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +109,42 @@ def normalize_relative_path(candidate: str) -> str:
 def file_sha256(content: bytes) -> str:
     """Return the lowercase SHA-256 revision for exact file bytes."""
     return sha256(content).hexdigest()
+
+
+def _line_of_offset(content: bytes, offset: int) -> int:
+    """The 1-based line number containing byte `offset` of `content`."""
+    return content.count(b"\n", 0, offset) + 1
+
+
+def _post_edit_region(before: bytes, after: bytes, anchor_offset: int, new_bytes: bytes) -> str:
+    """The changed region of `after`: numbered lines, context, capped.
+
+    `anchor_offset` is the byte offset of the (unique) match inside
+    `before`; because `after` is `before` with exactly that span replaced,
+    everything up to `anchor_offset` is identical in both, so the same
+    offset locates the start of the change in `after` too.
+    """
+    start_line = _line_of_offset(before, anchor_offset)
+    end_line = start_line + new_bytes.count(b"\n")
+    lines = after.decode("utf-8").splitlines()
+    total = len(lines)
+    region_start = max(1, start_line - REGION_CONTEXT_LINES)
+    region_end = min(total, end_line + REGION_CONTEXT_LINES)
+    numbered = [f"{number}: {lines[number - 1]}" for number in range(region_start, region_end + 1)]
+
+    truncated = False
+    if len(numbered) > REGION_MAX_LINES:
+        numbered = numbered[:REGION_MAX_LINES]
+        truncated = True
+    rendered = "\n".join(numbered)
+    encoded = rendered.encode("utf-8")
+    if len(encoded) > REGION_MAX_BYTES:
+        truncated = True
+        cut = encoded[:REGION_MAX_BYTES]
+        while cut and (cut[-1] & 0xC0) == 0x80:
+            cut = cut[:-1]
+        rendered = cut.decode("utf-8", errors="ignore")
+    return rendered + "\n" + _REGION_TRUNCATION_MARKER if truncated else rendered
 
 
 def replace_once(
@@ -145,8 +200,35 @@ def replace_once(
             new_bytes = new_text.encode("utf-8")
         except UnicodeEncodeError as exc:
             return MutationReceipt(MutationCode.MUTATION_FAILED, f"cannot encode replacement text: {exc}")
+
+        # (c) checked before any write, and before the anchor is even
+        # located: 386 edits across 42 cells had old_text == new_text and
+        # were reported OK, "Replaced" -- active misinformation about a
+        # no-op. See the E9 design doc referenced above.
+        if old_bytes == new_bytes:
+            return MutationReceipt(
+                MutationCode.NO_CHANGE_REQUESTED,
+                f"old_text and new_text are identical in {path}; nothing to replace",
+            )
+
+        anchor_offset = before.find(old_bytes)
         match before.count(old_bytes):
             case 0:
+                # (b) 182 of 208 ANCHOR_MISSING events, across the same
+                # sample, were an edit that had already landed, re-sent
+                # with its original (now-stale) anchor. A plain substring
+                # test -- a fact about the file, not a similarity guess
+                # (fuzzy anchor matching is refused, E8). `new_bytes` is
+                # never empty here: the identity check above already
+                # returned for old_bytes == new_bytes == b"", and an empty
+                # `new_bytes` would otherwise "match" trivially everywhere
+                # and say nothing true about the file.
+                if new_bytes and new_bytes in before:
+                    line = _line_of_offset(before, before.find(new_bytes))
+                    return MutationReceipt(
+                        MutationCode.ANCHOR_ALREADY_APPLIED,
+                        f"new_text is already present in {path} at line {line}; old_text was not found",
+                    )
                 return MutationReceipt(
                     MutationCode.ANCHOR_MISSING,
                     f"old_text was not found in {path}",
@@ -166,7 +248,11 @@ def replace_once(
             return MutationReceipt(MutationCode.MUTATION_FAILED, f"cannot replace {path}: {exc}")
         return MutationReceipt(
             MutationCode.OK,
-            result=MutationResult(path=path, sha256=file_sha256(after)),
+            result=MutationResult(
+                path=path,
+                sha256=file_sha256(after),
+                region=_post_edit_region(before, after, anchor_offset, new_bytes),
+            ),
         )
     finally:
         os.close(target_descriptor)

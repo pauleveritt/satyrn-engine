@@ -8,6 +8,8 @@ import pytest
 
 from satyrn_engine.contract import Contract
 from satyrn_engine.mutation import (
+    REGION_MAX_BYTES,
+    REGION_MAX_LINES,
     MutationCode,
     MutationReceipt,
     MutationResult,
@@ -49,6 +51,10 @@ def test_replaces_one_unique_anchor_and_returns_next_revision(tmp_path: Path) ->
     assert receipt.result is not None
     assert receipt.result.path == "app.py"
     assert receipt.result.sha256 == file_sha256(target.read_bytes())
+    # E9(a): the model-facing text is the post-edit region, not the hash --
+    # the sha256 above is still carried, but only in `details`/the protocol
+    # `result`, never in the text a model reads.
+    assert receipt.result.region == "1: def value():\n2:     return 2"
     assert S_IMODE(target.stat().st_mode) == 0o754
 
 
@@ -149,6 +155,102 @@ def test_refuses_ambiguous_anchor_without_changing_file(tmp_path: Path) -> None:
 
     assert receipt.code is MutationCode.ANCHOR_AMBIGUOUS
     assert target.read_bytes() == before
+
+
+def test_refuses_missing_anchor_already_applied_names_the_line(tmp_path: Path) -> None:
+    """E9(b): 182 of 208 ANCHOR_MISSING events, in the transcripts behind
+    the design doc, were an edit that had already landed, re-sent with its
+    original (now-stale) anchor. Sibling of
+    ``test_refuses_missing_anchor_without_changing_file`` below, which pins
+    the unchanged behaviour when ``new_text`` is *also* absent."""
+    target = tmp_path / "app.py"
+    target.write_text("def value():\n    return 2\n", encoding="utf-8")
+    before = target.read_bytes()
+
+    receipt = _replace(tmp_path, "app.py", "return 1", "return 2")
+
+    assert receipt.code is MutationCode.ANCHOR_ALREADY_APPLIED
+    assert receipt.result is None
+    assert "line 2" in receipt.message
+    assert target.read_bytes() == before
+
+
+def test_refuses_missing_anchor_with_empty_new_text_stays_anchor_missing(tmp_path: Path) -> None:
+    """An empty ``new_text`` (a deletion) is trivially "present" in every
+    file, so it carries no fact about whether the deletion already
+    happened -- treated as ANCHOR_MISSING, not ANCHOR_ALREADY_APPLIED."""
+    target = tmp_path / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    before = target.read_bytes()
+
+    receipt = _replace(tmp_path, "app.py", "value = 2\n", "")
+
+    assert receipt.code is MutationCode.ANCHOR_MISSING
+    assert target.read_bytes() == before
+
+
+def test_refuses_identical_replacement_without_changing_file(tmp_path: Path) -> None:
+    """E9(c): sibling of the genuine-replacement success above
+    (``test_replaces_one_unique_anchor_and_returns_next_revision``); 386
+    edits across 42 cells had ``old_text == new_text`` and were reported
+    OK, "Replaced" before this change."""
+    target = tmp_path / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    before = target.read_bytes()
+
+    receipt = _replace(tmp_path, "app.py", "value = 1", "value = 1")
+
+    assert receipt.code is MutationCode.NO_CHANGE_REQUESTED
+    assert receipt.result is None
+    assert target.read_bytes() == before
+
+
+def test_identity_check_precedes_anchor_lookup(tmp_path: Path) -> None:
+    """An identical old_text/new_text pair that does not even occur in the
+    file still refuses as NO_CHANGE_REQUESTED, not ANCHOR_MISSING -- the
+    check runs before the anchor is located at all."""
+    target = tmp_path / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    before = target.read_bytes()
+
+    receipt = _replace(tmp_path, "app.py", "value = 9", "value = 9")
+
+    assert receipt.code is MutationCode.NO_CHANGE_REQUESTED
+    assert target.read_bytes() == before
+
+
+def test_region_truncates_when_line_count_exceeds_cap(tmp_path: Path) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("before\nANCHOR\nafter\n", encoding="utf-8")
+
+    new_text = "\n".join(f"line-{index:03d}" for index in range(100))
+    receipt = _replace(tmp_path, "app.py", "ANCHOR", new_text)
+
+    assert receipt.code is MutationCode.OK
+    assert receipt.result is not None
+    region = receipt.result.region
+    assert "truncated" in region
+    numbered_lines = [line for line in region.splitlines() if line and line[0].isdigit()]
+    assert len(numbered_lines) <= REGION_MAX_LINES
+    # Genuine replacement still applies byte-identically regardless of the
+    # message's own truncation.
+    assert target.read_text(encoding="utf-8") == f"before\n{new_text}\nafter\n"
+
+
+def test_region_truncates_when_byte_size_exceeds_cap(tmp_path: Path) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("before\nANCHOR\nafter\n", encoding="utf-8")
+
+    long_line = "x" * 300
+    new_text = "\n".join(long_line for _ in range(20))  # ~6000 bytes, well under 40 lines
+    receipt = _replace(tmp_path, "app.py", "ANCHOR", new_text)
+
+    assert receipt.code is MutationCode.OK
+    assert receipt.result is not None
+    region = receipt.result.region
+    assert "truncated" in region
+    assert len(region.encode("utf-8")) <= REGION_MAX_BYTES + 200  # cap plus the marker itself
+    assert target.read_text(encoding="utf-8") == f"before\n{new_text}\nafter\n"
 
 
 @pytest.mark.parametrize(

@@ -109,6 +109,7 @@ def test_accepts_replace_request_and_returns_next_revision(tmp_path: Path) -> No
         "result": {
             "path": "tests/fixtures/app.py",
             "sha256": sha256(b"value = 2\n").hexdigest(),
+            "region": "1: value = 2",
         },
     }
     assert nested.read_bytes() == b"value = 2\n"
@@ -272,7 +273,7 @@ def test_render_response_round_trips() -> None:
 def test_render_replace_response_round_trips_success_and_refusal() -> None:
     success = MutationReceipt(
         MutationCode.OK,
-        result=MutationResult(path="app.py", sha256="1" * 64),
+        result=MutationResult(path="app.py", sha256="1" * 64, region="1: value = 2"),
     )
     refusal = MutationReceipt(MutationCode.ANCHOR_MISSING, "old_text was not found")
 
@@ -281,7 +282,7 @@ def test_render_replace_response_round_trips_success_and_refusal() -> None:
         "ok": True,
         "code": "OK",
         "message": "",
-        "result": {"path": "app.py", "sha256": "1" * 64},
+        "result": {"path": "app.py", "sha256": "1" * 64, "region": "1: value = 2"},
     }
     assert json.loads(render_replace_response(refusal)) == {
         "version": 1,
@@ -290,6 +291,87 @@ def test_render_replace_response_round_trips_success_and_refusal() -> None:
         "message": "old_text was not found",
         "result": None,
     }
+
+
+def test_render_replace_response_round_trips_new_e9_refusal_codes() -> None:
+    """Sibling of the round-trip above, for the two codes E9 adds
+    (mutation.py's NO_CHANGE_REQUESTED and ANCHOR_ALREADY_APPLIED): both
+    must appear in the protocol response exactly like every other refusal."""
+    already_applied = MutationReceipt(
+        MutationCode.ANCHOR_ALREADY_APPLIED,
+        "new_text is already present in app.py at line 2; old_text was not found",
+    )
+    no_change = MutationReceipt(
+        MutationCode.NO_CHANGE_REQUESTED,
+        "old_text and new_text are identical in app.py; nothing to replace",
+    )
+
+    assert json.loads(render_replace_response(already_applied)) == {
+        "version": 1,
+        "ok": False,
+        "code": "ANCHOR_ALREADY_APPLIED",
+        "message": "new_text is already present in app.py at line 2; old_text was not found",
+        "result": None,
+    }
+    assert json.loads(render_replace_response(no_change)) == {
+        "version": 1,
+        "ok": False,
+        "code": "NO_CHANGE_REQUESTED",
+        "message": "old_text and new_text are identical in app.py; nothing to replace",
+        "result": None,
+    }
+
+
+def test_full_protocol_reports_no_change_requested_and_leaves_file_unmodified(
+    tmp_path: Path,
+) -> None:
+    """E9(c) through the full `run_protocol` seam, not just `replace_once`
+    directly: the file must be unmodified end to end."""
+    nested = tmp_path / "tests" / "fixtures" / "app.py"
+    nested.parent.mkdir(parents=True)
+    before = b"value = 1\n"
+    nested.write_bytes(before)
+    payload = _replace_request(
+        tmp_path,
+        CONTRACTS / "writable.yaml",
+        path="tests/fixtures/app.py",
+        expected_sha256=sha256(before).hexdigest(),
+        old_text="value = 1",
+        new_text="value = 1",
+    )
+
+    out, code = _run(json.dumps(payload))
+
+    assert code == int(ExitCode.MUTATION_REFUSED)
+    body = json.loads(out)
+    assert body["code"] == "NO_CHANGE_REQUESTED"
+    assert body["result"] is None
+    assert nested.read_bytes() == before
+
+
+def test_full_protocol_reports_anchor_already_applied(tmp_path: Path) -> None:
+    """E9(b) through the full `run_protocol` seam."""
+    nested = tmp_path / "tests" / "fixtures" / "app.py"
+    nested.parent.mkdir(parents=True)
+    before = b"value = 2\n"
+    nested.write_bytes(before)
+    payload = _replace_request(
+        tmp_path,
+        CONTRACTS / "writable.yaml",
+        path="tests/fixtures/app.py",
+        expected_sha256=sha256(before).hexdigest(),
+        old_text="value = 1",
+        new_text="value = 2",
+    )
+
+    out, code = _run(json.dumps(payload))
+
+    assert code == int(ExitCode.MUTATION_REFUSED)
+    body = json.loads(out)
+    assert body["code"] == "ANCHOR_ALREADY_APPLIED"
+    assert "line 1" in body["message"]
+    assert body["result"] is None
+    assert nested.read_bytes() == before
 
 
 def test_replace_contract_refusal_keeps_replace_response_shape(tmp_path: Path) -> None:

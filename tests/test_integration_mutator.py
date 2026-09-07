@@ -132,6 +132,7 @@ def test_shipped_adapter_replaces_one_anchor_through_real_engine(tmp_path: Path)
         "result": {
             "path": "src/app.py",
             "sha256": sha256(b"def value():\n    return 2\n").hexdigest(),
+            "region": "1: def value():\n2:     return 2",
         },
     }
     assert fixture.target.read_bytes() == b"def value():\n    return 2\n"

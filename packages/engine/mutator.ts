@@ -38,6 +38,7 @@ export interface EditInput {
 export interface ReplacementResult {
 	readonly path: string;
 	readonly sha256: string;
+	readonly region: string;
 }
 
 export interface ReplacementSuccessResponse {
@@ -226,7 +227,8 @@ export function parseReplacementResponse(response: EngineResponse): ReplacementR
 			!isRecord(response.result) ||
 			typeof response.result.path !== "string" ||
 			typeof response.result.sha256 !== "string" ||
-			!SHA256.test(response.result.sha256)
+			!SHA256.test(response.result.sha256) ||
+			typeof response.result.region !== "string"
 		) {
 			throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "successful replacement response has an unexpected shape");
 		}
@@ -238,6 +240,7 @@ export function parseReplacementResponse(response: EngineResponse): ReplacementR
 			result: {
 				path: response.result.path,
 				sha256: response.result.sha256,
+				region: response.result.region,
 			},
 		};
 	}
@@ -258,8 +261,14 @@ export function parseReplacementResponse(response: EngineResponse): ReplacementR
 }
 
 function successResult(replacement: ReplacementResult): MutationToolResult {
+	// E9(a): the model-facing text is the post-edit region -- the changed
+	// text plus surrounding context, line-numbered -- not a hash. The
+	// sha256 stays available to callers through `details.result`, but it
+	// carried no file state and left the model's freshest textual view at
+	// its pre-edit `read`. See mutation.py's `_post_edit_region`, which
+	// computes this text against the post-edit bytes.
 	return {
-		content: [{ type: "text", text: `Replaced ${replacement.path}; sha256=${replacement.sha256}` }],
+		content: [{ type: "text", text: replacement.region }],
 		details: { satyrn: true, ok: true, code: "OK", result: replacement },
 	};
 }

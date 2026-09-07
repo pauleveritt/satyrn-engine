@@ -26,12 +26,12 @@ const input = () => ({
 	edits: [{ oldText: "return 1", newText: "return 2" }],
 });
 
-const success = (revision = SECOND_REVISION) => ({
+const success = (revision = SECOND_REVISION, region = "1: return 2") => ({
 	version: 1,
 	ok: true,
 	code: "OK",
 	message: "",
-	result: { path: "src/app.py", sha256: revision },
+	result: { path: "src/app.py", sha256: revision, region },
 });
 
 test("mutation context accepts one typed revision map", () => {
@@ -82,12 +82,17 @@ test("success advances the revision used by the next request", async () => {
 	const second = await mutator.execute("second", input());
 
 	assert.deepEqual(first, {
-		content: [{ type: "text", text: `Replaced src/app.py; sha256=${SECOND_REVISION}` }],
+		// E9(a): the model-facing text is the post-edit region computed by
+		// the Python core, not a hash line -- see mutator.ts's
+		// `successResult`. This replaces the prior
+		// `Replaced src/app.py; sha256=...` assertion, which encoded the
+		// hash-only message this change corrects.
+		content: [{ type: "text", text: "1: return 2" }],
 		details: {
 			satyrn: true,
 			ok: true,
 			code: "OK",
-			result: { path: "src/app.py", sha256: SECOND_REVISION },
+			result: { path: "src/app.py", sha256: SECOND_REVISION, region: "1: return 2" },
 		},
 	});
 	assert.equal(second.details.ok, true);
@@ -298,7 +303,7 @@ test("a mismatched successful path is a contained malformed response", async () 
 		exchanges += 1;
 		return {
 			...success(),
-			result: { path: "other.py", sha256: SECOND_REVISION },
+			result: { path: "other.py", sha256: SECOND_REVISION, region: "1: return 2" },
 		};
 	});
 

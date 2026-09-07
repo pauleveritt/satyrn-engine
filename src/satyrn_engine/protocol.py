@@ -25,7 +25,9 @@ _MUTATION_TO_EXIT: dict[MutationCode, ExitCode] = {
     MutationCode.PATH_UNDECLARED: ExitCode.MUTATION_REFUSED,
     MutationCode.REVISION_UNAVAILABLE: ExitCode.MUTATION_REFUSED,
     MutationCode.REVISION_STALE: ExitCode.MUTATION_REFUSED,
+    MutationCode.NO_CHANGE_REQUESTED: ExitCode.MUTATION_REFUSED,
     MutationCode.ANCHOR_MISSING: ExitCode.MUTATION_REFUSED,
+    MutationCode.ANCHOR_ALREADY_APPLIED: ExitCode.MUTATION_REFUSED,
     MutationCode.ANCHOR_AMBIGUOUS: ExitCode.MUTATION_REFUSED,
     MutationCode.MUTATION_FAILED: ExitCode.MUTATION_REFUSED,
 }
@@ -94,6 +96,7 @@ class MutationResultPayload(TypedDict):
 
     path: str
     sha256: str
+    region: str
 
 
 class ReplaceResponsePayload(ResponsePayload):
@@ -218,7 +221,11 @@ def render_replace_response(receipt: MutationReceipt) -> str:
     """Render one operation-specific replacement response."""
     result: MutationResultPayload | None = None
     if receipt.result is not None:
-        result = {"path": receipt.result.path, "sha256": receipt.result.sha256}
+        result = {
+            "path": receipt.result.path,
+            "sha256": receipt.result.sha256,
+            "region": receipt.result.region,
+        }
     payload: ReplaceResponsePayload = {
         "version": PROTOCOL_VERSION,
         "ok": receipt.ok,
