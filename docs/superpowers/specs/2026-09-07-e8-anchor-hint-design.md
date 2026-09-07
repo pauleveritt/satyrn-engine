@@ -1,7 +1,9 @@
 # E8 — an `ANCHOR_MISSING` refusal that says what is actually there
 
-**Status: proposed 2026-09-07, awaiting maintainer confirmation.** No code
-until confirmed (`CLAUDE.md`).
+**Status: REFUSED BY ITS OWN ACCEPTANCE TEST, 2026-09-07. Not built.**
+The replay in §4 was run before any engine code was written, and the idea
+failed it. The document is kept in full — the reasoning, the evidence, and
+the refusal — because a correction is recorded, not edited away. See §6.
 
 ## 1. The evidence
 
@@ -109,3 +111,45 @@ Baseline and Envelope arms, not ours. This change cannot reach them. Nor
 does it touch the unexplained read lock. It addresses the engine's own
 share: `anchor_refusal` was 12 events in V13f's Engine arm and 25 in
 V11c's, alongside a 60.9% no-change rate on Engine edit calls overall.
+
+## 6. Outcome: the replay refused it
+
+Run before writing any engine code, exactly as §4 specifies.
+
+```
+first-failure cases replayable against a base file:   35
+  hint == the anchor that later worked (exact):        1/35   (3%)
+  hint >= 0.8 similar to the anchor that worked:      13/35
+  no hint offered (best window below the 0.5 floor):   1/35
+  hint would have handed over usable text:            14/35   (40%)
+```
+
+§4 required the returned window to equal the anchor that later worked **in
+the majority** of cases. It does so in **3%**, and reaches merely-usable in
+40%. **The change does not ship.** The floor was not tuned, the window
+heuristic was not adjusted, and no second criterion was invented after
+seeing the number — that is the move this project's discipline exists to
+prevent.
+
+### Where the reasoning went wrong
+
+The motivating statistic was that a failed anchor is **median 0.81 similar
+to the anchor that later worked**. That is a fact about two strings the
+*model* produced. It does not imply that **the file's nearest window to the
+failed anchor is that successful anchor** — a source file contains many
+similar-looking regions, and the nearest window is usually a different one.
+Two different claims; §2 treated the first as evidence for the second.
+
+### What is not concluded
+
+That informative refusals do not help — `TEST_COMMAND_NOT_ALLOWED` moved
+12 of 12 cells and that stands. Only *this* way of computing the hint, on
+*this* corpus, under *this* criterion, is refused.
+
+Three limits of the test itself, recorded so a future proposal can improve
+on it rather than re-run it: only 35 of the 133 recovered events had a base
+file and a first-failure position; the criterion assumes the model's later
+successful anchor is what it originally meant, which is an assumption; and
+a same-line-count window cannot find a match of a different height. **A
+future proposal must predeclare a different criterion before measuring, not
+adopt one of these after reading this page.**
