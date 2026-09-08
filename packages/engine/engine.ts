@@ -39,6 +39,12 @@ export interface BlockDecision {
 
 export interface LoopBreaker {
 	inspect(call: ToolCall): BlockDecision | undefined;
+	/**
+	 * Report a landed edit: `path` now holds the bytes digested by `sha256`.
+	 * That digest becomes `path`'s current revision, which is part of the key
+	 * of every later call that reads `path` or the tree it belongs to.
+	 */
+	noteChange(path: string, sha256: string): void;
 }
 
 function canonicalJson(value: unknown, ancestors: WeakSet<object>): JsonValue | undefined {
@@ -86,20 +92,45 @@ function canonicalJson(value: unknown, ancestors: WeakSet<object>): JsonValue | 
 	}
 }
 
-function callKey(call: ToolCall): string | undefined {
+/** The revision component of a path this attempt has not yet landed an edit on. */
+const NO_REVISION = "unedited";
+
+/**
+ * The part of the workspace this call's result can depend on, as a key
+ * component.
+ *
+ * A call naming a `path` reads that path, so only that path's revision can
+ * change what it returns. A call naming no path -- the declared test command,
+ * a build, a `git diff` -- can be changed by an edit anywhere, so it carries
+ * the whole revision map. The map is serialized in sorted key order rather
+ * than hashed: the component only has to compare equal for equal maps, and a
+ * plain serialization keeps the breaker free of a crypto dependency.
+ */
+function workspacePart(input: JsonValue, revisions: ReadonlyMap<string, string>): string {
+	if (input !== null && typeof input === "object" && !Array.isArray(input)) {
+		const path = (input as { readonly [key: string]: JsonValue }).path;
+		if (typeof path === "string") return revisions.get(path) ?? NO_REVISION;
+	}
+	const entries = [...revisions.entries()].sort(([left], [right]) => (left < right ? -1 : 1));
+	return JSON.stringify(entries);
+}
+
+function callKey(call: ToolCall, revisions: ReadonlyMap<string, string>): string | undefined {
 	const input = canonicalJson(call.input, new WeakSet());
-	return input === undefined ? undefined : JSON.stringify([call.toolName, input]);
+	if (input === undefined) return undefined;
+	return JSON.stringify([call.toolName, input, workspacePart(input, revisions)]);
 }
 
 export function createLoopBreaker(): LoopBreaker {
 	const admitted: string[] = [];
 	const blockedByKey = new Map<string, number>();
+	const revisions = new Map<string, string>();
 
 	return {
 		inspect(call: ToolCall): BlockDecision | undefined {
 			let key: string | undefined;
 			try {
-				key = callKey(call);
+				key = callKey(call, revisions);
 			} catch {
 				return undefined;
 			}
@@ -134,8 +165,74 @@ export function createLoopBreaker(): LoopBreaker {
 			}
 			return undefined;
 		},
+
+		noteChange(path: string, sha256: string): void {
+			// A landed edit changed the bytes under the model, so `path` now holds
+			// a new revision. Every call keyed on that path -- and every path-less
+			// call, which carries the whole revision map -- gets a key it has not
+			// been seen at before, so repeating one now is verification rather than
+			// cycling: it can return something new. Nothing is forgotten. The
+			// window and the blocked counts stand; only the keys move.
+			//
+			// Keying rather than clearing is what keeps this from weakening the
+			// bound elsewhere. Clearing had to be global, because the calls this
+			// defect strands include exactly the ones no path can be attributed to
+			// -- `pytest -q`, `git diff`, a build command -- so a landed edit to one
+			// path also retired repeats of reads of an untouched path: forty reads
+			// of an unchanged file admitted, none refused, while another file kept
+			// changing. With the revision in the key, an untouched path's revision
+			// does not move, its read key does not move, and those reads are refused
+			// at THRESHOLD again -- five admitted, thirty-five refused over the same
+			// forty. Whole-tree calls still go free after any landed edit, which is
+			// the point: any landed edit really can change what they print.
+			//
+			// Churn stays bounded because revisions RECUR. Landing is not progress:
+			// a landed edit only proves the anchor was real, unique and not yet
+			// applied, and alternating edits satisfy that forever. Toggling a line
+			// into and out of app.py (the v14a cell-009 shape) returns the file to a
+			// digest it has already held, so the read of it reproduces a key the
+			// window has already counted and accumulates to THRESHOLD like any other
+			// repeat, and consecutive refusals still terminate the turn. Revisions
+			// are held per path rather than as one composite fingerprint of the
+			// tree, so N files each toggling between two contents cannot manufacture
+			// 2^N distinct workspaces to spend on reads; a path-less call does
+			// compare whole maps, but under churn those maps recur too.
+			//
+			// What this does NOT do, stated plainly. Unbounded new bytes are free: a
+			// model appending one fresh line per edit produces a novel revision
+			// every time, so the read of that file and every path-less call carry a
+			// novel key every time, without bound. No state-keyed rule can close
+			// that, because a novel state is progress by the only definition the
+			// engine can check. This rule restores the strictness the window had
+			// before staleness was considered -- no more than that.
+			//
+			// Nor did that baseline strictness stop the shape it is measured
+			// against. In v14a cell-009 the breaker refused ten reads and the
+			// attempt still ran to COMMAND_TIMEOUT at 900s across 146 calls, because
+			// the toggling *edit* keys recurred every three to five calls and
+			// WINDOW=20 never accumulated THRESHOLD of them. That is evidence this
+			// breaker did not stop that sequence. It is not evidence that no rule
+			// could: a count ceiling is not a diagnosis of unproductive work, and
+			// would truncate legitimate repair too.
+			//
+			// Scope: revisions are learned only on the Satyrn mutator's route.
+			// registerMutator runs only under SATYRN_MUTATION_CONTEXT; in an
+			// ordinary Pi session `edit` is Pi's builtin, emits no details.satyrn,
+			// and nothing here fires. The false refusal persists there unchanged.
+			//
+			// Refused edits (NO_CHANGE_REQUESTED, ANCHOR_MISSING,
+			// ANCHOR_ALREADY_APPLIED) never reach here at all.
+			revisions.set(path, sha256);
+		},
 	};
 }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+/** The post-edit digest shape `mutator.ts` guarantees on a successful edit. */
+const SHA256 = /^[0-9a-f]{64}$/;
 
 export default function registerLoopBreaker(pi: ExtensionAPI): void {
 	const breaker = createLoopBreaker();
@@ -162,5 +259,29 @@ export default function registerLoopBreaker(pi: ExtensionAPI): void {
 		return consecutiveBlocks >= CONSECUTIVE_BLOCK_LIMIT
 			? { block: true, reason: decision.reason, terminate: true }
 			: { block: true, reason: decision.reason };
+	});
+
+	pi.on("tool_result", async (event) => {
+		try {
+			const details = event.details;
+			if (
+				event.toolName === "edit" &&
+				isRecord(details) &&
+				details.satyrn === true &&
+				details.ok === true &&
+				isRecord(details.result)
+			) {
+				const { path, sha256 } = details.result;
+				// Evidence we cannot read is not evidence of progress: an
+				// absent or malformed digest leaves the window standing.
+				if (typeof path === "string" && typeof sha256 === "string" && SHA256.test(sha256)) {
+					breaker.noteChange(path, sha256);
+				}
+			}
+		} catch {
+			// A result we cannot read is not evidence that anything changed.
+		}
+		// This listener observes; the mutator owns the edit result itself.
+		return undefined;
 	});
 }

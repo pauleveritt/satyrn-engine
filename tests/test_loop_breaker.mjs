@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import registerLoopBreaker, {
@@ -19,17 +20,40 @@ function admit(breaker, call, count) {
 	}
 }
 
+/** The digest `mutator.ts` would report for a named state of a file. */
+const stateSha = (state) => createHash("sha256").update(String(state)).digest("hex");
+
+/** A Pi `tool_result` event for the bounded editor. */
+const editResult = (details) => ({ toolName: "edit", details });
+
+/** A landed edit leaving `path` holding the bytes digested by `stateSha(state)`. */
+const landedEdit = (path, state) =>
+	editResult({
+		satyrn: true,
+		ok: true,
+		code: "OK",
+		result: { path, sha256: stateSha(state), region: "  1 | changed" },
+	});
+
+const refusedEdit = (code) => editResult({ satyrn: true, ok: false, code, result: null });
+
 function registeredExtension({ appendEntry = () => undefined } = {}) {
-	let handler;
+	const handlers = new Map();
 	registerLoopBreaker({
 		on(event, candidate) {
-			assert.equal(event, "tool_call");
-			handler = candidate;
+			assert.ok(
+				event === "tool_call" || event === "tool_result",
+				`unexpected registered event ${event}`,
+			);
+			assert.equal(handlers.has(event), false, `event ${event} registered twice`);
+			handlers.set(event, candidate);
 		},
 		appendEntry,
 	});
-	assert.equal(typeof handler, "function");
-	return handler;
+	assert.deepEqual([...handlers.keys()].sort(), ["tool_call", "tool_result"]);
+	assert.equal(typeof handlers.get("tool_call"), "function");
+	assert.equal(typeof handlers.get("tool_result"), "function");
+	return { call: handlers.get("tool_call"), result: handlers.get("tool_result") };
 }
 
 test("the sixth identical admitted call is refused with typed telemetry", () => {
@@ -176,19 +200,19 @@ test("every non-JSON value is admitted without entering the window", () => {
 
 test("each extension registration owns an empty breaker", async () => {
 	const call = repeated("bash", { command: "registration-isolation" });
-	const first = registeredExtension();
+	const { call: first } = registeredExtension();
 	for (let index = 0; index < THRESHOLD; index += 1) {
 		assert.equal(await first(call), undefined);
 	}
 
-	const second = registeredExtension();
+	const { call: second } = registeredExtension();
 	assert.equal(await second(call), undefined);
 	assert.equal((await first(call))?.block, true);
 });
 
 test("the Pi adapter appends one entry and returns only Pi's block shape", async () => {
 	const entries = [];
-	const handler = registeredExtension({
+	const { call: handler } = registeredExtension({
 		appendEntry(kind, data) {
 			entries.push({ kind, data });
 		},
@@ -215,7 +239,7 @@ test("the Pi adapter appends one entry and returns only Pi's block shape", async
 
 test("the third consecutive blocked call terminates the print-mode turn", async () => {
 	const entries = [];
-	const handler = registeredExtension({
+	const { call: handler } = registeredExtension({
 		appendEntry(kind, data) {
 			entries.push({ kind, data });
 		},
@@ -248,7 +272,7 @@ test("the third consecutive blocked call terminates the print-mode turn", async 
 });
 
 test("an admitted call resets the consecutive blocked-call termination count", async () => {
-	const handler = registeredExtension();
+	const { call: handler } = registeredExtension();
 	const blocked = repeated("read", { path: "tests/test_app.py" });
 	for (let index = 0; index < THRESHOLD; index += 1) {
 		assert.equal(await handler(blocked), undefined);
@@ -263,7 +287,7 @@ test("an admitted call resets the consecutive blocked-call termination count", a
 });
 
 test("a fail-open inspection error resets the consecutive blocked-call termination count", async () => {
-	const handler = registeredExtension();
+	const { call: handler } = registeredExtension();
 	const blocked = repeated("read", { path: "tests/test_app.py" });
 	for (let index = 0; index < THRESHOLD; index += 1) {
 		assert.equal(await handler(blocked), undefined);
@@ -286,7 +310,7 @@ test("a fail-open inspection error resets the consecutive blocked-call terminati
 });
 
 test("telemetry failure cannot escape or admit an already blocked call", async () => {
-	const handler = registeredExtension({
+	const { call: handler } = registeredExtension({
 		appendEntry() {
 			throw new Error("telemetry unavailable");
 		},
@@ -300,7 +324,7 @@ test("telemetry failure cannot escape or admit an already blocked call", async (
 });
 
 test("unexpected canonicalization errors cannot escape the Pi handler", async () => {
-	const handler = registeredExtension();
+	const { call: handler } = registeredExtension();
 	const throwingInput = new Proxy(
 		{},
 		{
@@ -314,7 +338,7 @@ test("unexpected canonicalization errors cannot escape the Pi handler", async ()
 });
 
 test("unexpected Pi event access errors cannot escape the handler", async () => {
-	const handler = registeredExtension();
+	const { call: handler } = registeredExtension();
 	const throwingEvent = new Proxy(
 		{},
 		{
@@ -325,4 +349,283 @@ test("unexpected Pi event access errors cannot escape the handler", async () => 
 	);
 
 	assert.equal(await handler(throwingEvent), undefined);
+});
+
+test("forward repair: reading and retesting after each new state is never refused", async () => {
+	const { call, result } = registeredExtension();
+	const read = repeated("read", { path: "app.py" });
+	const retest = repeated("bash", { command: "pytest -q tests/test_app.py" });
+
+	// One repair cycle: look at the file, change it, look again, retest.
+	// Every landed edit here leaves app.py in bytes it has never held before
+	// in this attempt, so it makes the previous read and the previous test
+	// run stale: repeating them is verification, not cycling.
+	for (let cycle = 0; cycle < THRESHOLD + 1; cycle += 1) {
+		assert.equal(await call(read), undefined, `read refused in cycle ${cycle + 1}`);
+		assert.equal(
+			await call(
+				repeated("edit", {
+					path: "app.py",
+					edits: [{ oldText: `anchor ${cycle}`, newText: `replacement ${cycle}` }],
+				}),
+			),
+			undefined,
+			`edit refused in cycle ${cycle + 1}`,
+		);
+		assert.equal(await result(landedEdit("app.py", cycle)), undefined);
+		assert.equal(await call(retest), undefined, `retest refused in cycle ${cycle + 1}`);
+	}
+});
+
+test("a refused edit changes nothing, so identical calls around it stay bounded", async () => {
+	const { call, result } = registeredExtension();
+	const read = repeated("read", { path: "app.py" });
+
+	for (const code of ["NO_CHANGE_REQUESTED", "ANCHOR_ALREADY_APPLIED", "ANCHOR_MISSING"]) {
+		assert.equal(await call(read), undefined);
+		assert.equal(await result(refusedEdit(code)), undefined);
+	}
+	assert.equal(await call(read), undefined);
+	assert.equal(await call(read), undefined);
+
+	assert.equal((await call(read))?.block, true);
+});
+
+test("a result from another tool is not evidence that the workspace changed", async () => {
+	const { call, result } = registeredExtension();
+	const read = repeated("read", { path: "app.py" });
+	const foreign = [
+		{ toolName: "bash", details: { satyrn: true, ok: true, code: "OK", result: null } },
+		{ toolName: "edit", details: undefined },
+		{ toolName: "edit", details: null },
+		{ toolName: "edit", details: { ok: true } },
+	];
+
+	for (const [index, event] of foreign.entries()) {
+		assert.equal(await call(read), undefined, `read refused at result ${index}`);
+		assert.equal(await result(event), undefined);
+	}
+	assert.equal(await call(read), undefined);
+
+	assert.equal((await call(read))?.block, true);
+});
+
+test("an unreadable tool_result cannot escape the handler or retire the window", async () => {
+	const { call, result } = registeredExtension();
+	const read = repeated("read", { path: "app.py" });
+	const throwingEvent = new Proxy(
+		{},
+		{
+			get() {
+				throw new Error("cannot read result");
+			},
+		},
+	);
+
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await call(read), undefined);
+		assert.equal(await result(throwingEvent), undefined);
+	}
+
+	assert.equal((await call(read))?.block, true);
+});
+
+test("a landed edit retires the window without loosening the threshold for what follows", async () => {
+	const { call, result } = registeredExtension();
+	const retest = repeated("bash", { command: "pytest -q" });
+
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await call(retest), undefined);
+	}
+	assert.equal((await call(retest))?.block, true);
+
+	assert.equal(await result(landedEdit("app.py", "new")), undefined);
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await call(retest), undefined, `retest refused after a landed edit`);
+	}
+
+	assert.deepEqual((await call(retest))?.entry, undefined);
+	assert.equal((await call(retest))?.block, true);
+});
+
+test("a landed edit resets blockedSoFar with the window it belongs to", () => {
+	const breaker = createLoopBreaker();
+	const call = repeated("read", { path: "app.py" });
+	admit(breaker, call, THRESHOLD);
+	assert.equal(breaker.inspect(call)?.entry.data.blockedSoFar, 1);
+	assert.equal(breaker.inspect(call)?.entry.data.blockedSoFar, 2);
+
+	breaker.noteChange("app.py", stateSha("new"));
+
+	admit(breaker, call, THRESHOLD);
+	assert.equal(breaker.inspect(call)?.entry.data.blockedSoFar, 1);
+});
+
+test("consecutive blocks still terminate the turn when no edit lands", async () => {
+	const { call, result } = registeredExtension();
+	const read = repeated("read", { path: "app.py" });
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await call(read), undefined);
+	}
+
+	assert.equal((await call(read))?.terminate, undefined);
+	assert.equal(await result(refusedEdit("ANCHOR_MISSING")), undefined);
+	assert.equal((await call(read))?.terminate, undefined);
+	assert.equal((await call(read))?.terminate, true);
+});
+
+test("churn: alternating edits between two states is still refused, and terminates the turn", async () => {
+	// The v14a cell-009 shape (retained batch 2026-09-07-v14a-123039): the
+	// model toggled `"complaint_model": Complaint` into and out of app.py
+	// nine times, re-reading between every toggle. Every toggle is a real,
+	// unique, not-yet-applied anchor, so every edit LANDS -- landing alone
+	// therefore cannot be the progress signal. Because the read is keyed on
+	// app.py's revision, a toggle back to a revision the file has already
+	// held reproduces an earlier key, so those keys RECUR and accumulate to
+	// THRESHOLD exactly as an unchanging workspace would.
+	const { call, result } = registeredExtension();
+	const read = repeated("read", { path: "app.py" });
+
+	assert.equal(await result(landedEdit("app.py", "with-model")), undefined);
+
+	// Ten reads across ten toggles: five at each of the two revisions.
+	for (let toggle = 0; toggle < 2 * THRESHOLD; toggle += 1) {
+		assert.equal(await call(read), undefined, `read refused too early at toggle ${toggle}`);
+		const state = toggle % 2 === 0 ? "without-model" : "with-model";
+		assert.equal(await result(landedEdit("app.py", state)), undefined);
+	}
+
+	assert.equal((await call(read))?.block, true);
+	assert.equal((await call(read))?.terminate, undefined);
+	assert.equal((await call(read))?.terminate, true);
+});
+
+test("editing one path does not unblock repeated reads of an unchanged other", async () => {
+	// The regression this replaces: retirement used to be global, so a landed
+	// edit to app.py also retired repeats of reads of an untouched models.py.
+	// models.py's revision never moves, so its read key never moves either.
+	const { call, result } = registeredExtension();
+	const read = repeated("read", { path: "models.py" });
+
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await call(read), undefined, `read refused too early at edit ${index}`);
+		assert.equal(await result(landedEdit("app.py", `app-${index}`)), undefined);
+	}
+
+	assert.equal((await call(read))?.block, true);
+	assert.equal((await call(read))?.terminate, undefined);
+	assert.equal((await call(read))?.terminate, true);
+});
+
+test("forty reads of an unchanged path stay bounded while another path keeps changing", async () => {
+	// The measured shape: forty reads of an unchanged models.py, a novel edit
+	// to app.py landing between every one of them.
+	const { call, result } = registeredExtension();
+	const read = repeated("read", { path: "models.py" });
+	let admitted = 0;
+	let blocked = 0;
+
+	for (let index = 0; index < 40; index += 1) {
+		if ((await call(read)) === undefined) admitted += 1;
+		else blocked += 1;
+		assert.equal(await result(landedEdit("app.py", `app-${index}`)), undefined);
+	}
+
+	assert.deepEqual({ admitted, blocked }, { admitted: THRESHOLD, blocked: 40 - THRESHOLD });
+});
+
+test("a test command at a workspace the tree has already held reproduces its key", async () => {
+	// A path-less call carries the whole revision map, so it goes free after a
+	// landed edit anywhere. Churn across two files still returns the map to a
+	// pair it has already held, so the key recurs and accumulates to THRESHOLD.
+	const { call, result } = registeredExtension();
+	const retest = repeated("bash", { command: "pytest -q" });
+
+	assert.equal(await result(landedEdit("b.py", "b-1")), undefined);
+	for (let toggle = 0; toggle < THRESHOLD; toggle += 1) {
+		assert.equal(await result(landedEdit("a.py", "a-1")), undefined);
+		assert.equal(await call(retest), undefined, `test command refused too early at ${toggle}`);
+		assert.equal(await result(landedEdit("a.py", "a-2")), undefined);
+		assert.equal(await call(retest), undefined);
+	}
+
+	assert.equal(await result(landedEdit("a.py", "a-1")), undefined);
+	assert.equal((await call(retest))?.block, true);
+});
+
+test("editing a path permits reading it back and re-running the test command", async () => {
+	const { call, result } = registeredExtension();
+	const read = repeated("read", { path: "app.py" });
+	const retest = repeated("bash", { command: "pytest -q tests/test_app.py" });
+
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await call(read), undefined);
+		assert.equal(await call(retest), undefined);
+	}
+	assert.equal((await call(read))?.block, true);
+	assert.equal((await call(retest))?.block, true);
+
+	// One real change to app.py: the read of app.py carries app.py's new
+	// revision, and the path-less test command carries the new revision map.
+	assert.equal(await result(landedEdit("app.py", "repaired")), undefined);
+
+	assert.equal(await call(read), undefined);
+	assert.equal(await call(retest), undefined);
+
+	// An edit to a second file frees the whole-tree command again: it can
+	// change what the test run prints. The read of app.py keeps counting under
+	// app.py's own revision, which that edit did not move.
+	assert.equal(await result(landedEdit("zz.py", "added")), undefined);
+	assert.equal(await call(retest), undefined);
+	assert.equal(await call(read), undefined);
+});
+
+test("a landed edit whose evidence cannot be read does not clear staleness", async () => {
+	const { call, result } = registeredExtension();
+	const read = repeated("read", { path: "app.py" });
+	const unreadable = [
+		editResult({ satyrn: true, ok: true, code: "OK", result: null }),
+		editResult({
+			satyrn: true,
+			ok: true,
+			code: "OK",
+			result: { path: "app.py", region: "  1 | changed" },
+		}),
+		editResult({
+			satyrn: true,
+			ok: true,
+			code: "OK",
+			result: { path: "app.py", sha256: 5, region: "  1 | changed" },
+		}),
+		editResult({
+			satyrn: true,
+			ok: true,
+			code: "OK",
+			result: { path: "app.py", sha256: "not-a-digest", region: "  1 | changed" },
+		}),
+		editResult({
+			satyrn: true,
+			ok: true,
+			code: "OK",
+			result: { path: 7, sha256: stateSha("f"), region: "  1 | changed" },
+		}),
+	];
+
+	for (const [index, event] of unreadable.entries()) {
+		assert.equal(await call(read), undefined, `read refused at result ${index}`);
+		assert.equal(await result(event), undefined);
+	}
+
+	assert.equal((await call(read))?.block, true);
+});
+
+test("a repeated state reported straight to the breaker clears nothing", () => {
+	const breaker = createLoopBreaker();
+	const call = repeated("read", { path: "app.py" });
+	breaker.noteChange("app.py", stateSha("first"));
+	admit(breaker, call, THRESHOLD);
+
+	breaker.noteChange("app.py", stateSha("first"));
+
+	assert.equal(breaker.inspect(call)?.block, true);
 });
