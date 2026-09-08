@@ -36,8 +36,19 @@ class MutationCode(StrEnum):
 REGION_CONTEXT_LINES = 3
 REGION_MAX_LINES = 40
 REGION_MAX_BYTES = 4_000
-_REGION_TRUNCATION_MARKER = (
-    f"...[region truncated at {REGION_MAX_LINES} lines / {REGION_MAX_BYTES} bytes]...\n"
+
+# Two distinct markers: one for the ordinary case (context around the edit
+# was trimmed to fit a cap, but the edit itself is whole) and one for the
+# rarer case (the edit itself -- with no context at all -- still busts a
+# cap). A reader must be able to tell these apart: the first says the
+# edit is intact; the second warns the edit itself did not fully survive.
+_REGION_CONTEXT_TRUNCATED_MARKER = (
+    f"...[region context trimmed to fit cap: {REGION_MAX_LINES} lines / {REGION_MAX_BYTES} bytes"
+    f"; the change above is shown in full]...\n"
+)
+_REGION_CHANGE_TRUNCATED_MARKER = (
+    f"...[region truncated: the change itself exceeds {REGION_MAX_LINES} lines / "
+    f"{REGION_MAX_BYTES} bytes with no context]...\n"
 )
 
 
@@ -116,6 +127,58 @@ def _line_of_offset(content: bytes, offset: int) -> int:
     return content.count(b"\n", 0, offset) + 1
 
 
+def _clip_to_bytes(text: str, limit: int) -> str:
+    """`text` cut to at most `limit` UTF-8 bytes, never splitting a
+    multi-byte character."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    cut = encoded[:limit]
+    while cut and (cut[-1] & 0xC0) == 0x80:
+        cut = cut[:-1]
+    return cut.decode("utf-8", errors="ignore")
+
+
+def _balanced_grow(budget: int, desired_before: int, desired_after: int) -> tuple[int, int]:
+    """Split `budget` context lines between the two sides of an edit.
+
+    Grants one line at a time to whichever side has taken fewer so far
+    (ties favor `before`), stopping once both sides have what they
+    desire or the budget runs out. This keeps the surviving window as
+    balanced as possible rather than draining one side first.
+    """
+    before = after = 0
+    remaining = budget
+    while remaining > 0 and (before < desired_before or after < desired_after):
+        if before < desired_before and before <= after:
+            before += 1
+        elif after < desired_after:
+            after += 1
+        else:
+            before += 1
+        remaining -= 1
+    return before, after
+
+
+def _balanced_shrink(context_before: int, context_after: int, excess: int) -> tuple[int, int]:
+    """Remove `excess` lines total from context, one at a time from
+    whichever side currently holds more (ties favor removing from
+    `after`), so the surviving context stays balanced. Only ever touches
+    context counts -- the changed span is never passed through here.
+    """
+    before, after = context_before, context_after
+    remaining = excess
+    while remaining > 0 and (before > 0 or after > 0):
+        if after >= before and after > 0:
+            after -= 1
+        elif before > 0:
+            before -= 1
+        else:
+            break
+        remaining -= 1
+    return before, after
+
+
 def _post_edit_region(before: bytes, after: bytes, anchor_offset: int, new_bytes: bytes) -> str:
     """The changed region of `after`: numbered lines, context, capped.
 
@@ -123,28 +186,95 @@ def _post_edit_region(before: bytes, after: bytes, anchor_offset: int, new_bytes
     `before`; because `after` is `before` with exactly that span replaced,
     everything up to `anchor_offset` is identical in both, so the same
     offset locates the start of the change in `after` too.
+
+    Budget is reserved for the changed span FIRST, in both the line and
+    byte dimensions; only surplus budget is spent on context, and context
+    is what gets trimmed when a cap bites. Only when the changed span
+    ALONE busts a cap does the span itself get cut -- and that case is
+    marked with a distinct marker from ordinary context trimming, so a
+    reader can tell "context was trimmed" from "the change itself did not
+    fit".
     """
     start_line = _line_of_offset(before, anchor_offset)
     end_line = start_line + new_bytes.count(b"\n")
-    lines = after.decode("utf-8").splitlines()
+    # Split on "\n" alone, never str.splitlines(): the latter also breaks on
+    # \x0c, \r, \x1c-\x1e, \x85, U+2028 and U+2029, while `_line_of_offset`
+    # and `end_line` count "\n" only. A form feed before the anchor -- ordinary
+    # in CPython stdlib modules -- shifted every line number and made the
+    # "reserved" span the wrong lines, so the region could show none of the
+    # change while reporting no truncation at all.
+    lines = after.decode("utf-8").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()  # a trailing newline ends the last line, it does not add one
     total = len(lines)
-    region_start = max(1, start_line - REGION_CONTEXT_LINES)
-    region_end = min(total, end_line + REGION_CONTEXT_LINES)
-    numbered = [f"{number}: {lines[number - 1]}" for number in range(region_start, region_end + 1)]
+    if total == 0:
+        # The whole file was deleted (or the edit deleted the only
+        # remaining line and its trailing newline). Nothing to show.
+        return ""
+    # A replacement that deletes a whole trailing line (newline included)
+    # can point `start_line`/`end_line` past the last line that still
+    # exists in `after` -- there is no residual "changed" line to show,
+    # so clamp to the last real line rather than indexing past it.
+    end_line = min(end_line, total)
+    start_line = min(start_line, end_line)
+    changed_line_count = end_line - start_line + 1
 
-    truncated = False
-    if len(numbered) > REGION_MAX_LINES:
-        numbered = numbered[:REGION_MAX_LINES]
-        truncated = True
-    rendered = "\n".join(numbered)
-    encoded = rendered.encode("utf-8")
-    if len(encoded) > REGION_MAX_BYTES:
-        truncated = True
-        cut = encoded[:REGION_MAX_BYTES]
-        while cut and (cut[-1] & 0xC0) == 0x80:
-            cut = cut[:-1]
-        rendered = cut.decode("utf-8", errors="ignore")
-    return rendered + "\n" + _REGION_TRUNCATION_MARKER if truncated else rendered
+    def numbered(range_start: int, range_end: int) -> list[str]:
+        return [f"{number}: {lines[number - 1]}" for number in range(range_start, range_end + 1)]
+
+    # 1) Reserve the changed span's own line budget before spending
+    # anything on context. If the span alone is already too long, it is
+    # the only thing that can be truncated -- keep its head and mark it
+    # distinctly from a context trim.
+    if changed_line_count > REGION_MAX_LINES:
+        changed_lines = numbered(start_line, start_line + REGION_MAX_LINES - 1)
+    else:
+        changed_lines = numbered(start_line, end_line)
+
+    changed_rendered = "\n".join(changed_lines)
+    if changed_line_count > REGION_MAX_LINES or len(changed_rendered.encode("utf-8")) > REGION_MAX_BYTES:
+        rendered = _clip_to_bytes(changed_rendered, REGION_MAX_BYTES)
+        return rendered + "\n" + _REGION_CHANGE_TRUNCATED_MARKER
+
+    # 2) The changed span fits both caps whole. Allocate the remaining
+    # LINE budget as context, trimmed from whichever side has more
+    # surplus once the naive [start - REGION_CONTEXT_LINES,
+    # end + REGION_CONTEXT_LINES] window would exceed REGION_MAX_LINES.
+    avail_before = start_line - 1
+    avail_after = total - end_line
+    desired_before = min(REGION_CONTEXT_LINES, avail_before)
+    desired_after = min(REGION_CONTEXT_LINES, avail_after)
+    line_budget = REGION_MAX_LINES - changed_line_count
+
+    context_trimmed = desired_before + desired_after > line_budget
+    if context_trimmed:
+        context_before, context_after = _balanced_grow(line_budget, desired_before, desired_after)
+    else:
+        context_before, context_after = desired_before, desired_after
+
+    def render(context_before: int, context_after: int) -> str:
+        parts: list[str] = []
+        if context_before:
+            parts.extend(numbered(start_line - context_before, start_line - 1))
+        parts.extend(changed_lines)
+        if context_after:
+            parts.extend(numbered(end_line + 1, end_line + context_after))
+        return "\n".join(parts)
+
+    rendered = render(context_before, context_after)
+
+    # 3) Apply the BYTE cap the same way: shrink context lines, never the
+    # changed span, until the region fits. The changed span alone was
+    # already verified to fit under REGION_MAX_BYTES above, so shrinking
+    # context all the way to zero is guaranteed to succeed.
+    while len(rendered.encode("utf-8")) > REGION_MAX_BYTES and (context_before > 0 or context_after > 0):
+        context_trimmed = True
+        context_before, context_after = _balanced_shrink(context_before, context_after, 1)
+        rendered = render(context_before, context_after)
+
+    if context_trimmed:
+        return rendered + "\n" + _REGION_CONTEXT_TRUNCATED_MARKER
+    return rendered
 
 
 def replace_once(

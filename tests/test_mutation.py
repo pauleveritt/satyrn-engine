@@ -6,6 +6,7 @@ from stat import S_IMODE
 
 import pytest
 
+from satyrn_engine import mutation
 from satyrn_engine.contract import Contract
 from satyrn_engine.mutation import (
     REGION_MAX_BYTES,
@@ -220,6 +221,10 @@ def test_identity_check_precedes_anchor_lookup(tmp_path: Path) -> None:
 
 
 def test_region_truncates_when_line_count_exceeds_cap(tmp_path: Path) -> None:
+    """The replacement itself (100 lines) is bigger than REGION_MAX_LINES
+    (40) with zero context, so this is the "change alone doesn't fit"
+    case: it must carry the DISTINCT change-truncated marker, not the
+    ordinary context-trimmed one."""
     target = tmp_path / "app.py"
     target.write_text("before\nANCHOR\nafter\n", encoding="utf-8")
 
@@ -230,6 +235,8 @@ def test_region_truncates_when_line_count_exceeds_cap(tmp_path: Path) -> None:
     assert receipt.result is not None
     region = receipt.result.region
     assert "truncated" in region
+    assert "the change itself exceeds" in region
+    assert "context trimmed" not in region
     numbered_lines = [line for line in region.splitlines() if line and line[0].isdigit()]
     assert len(numbered_lines) <= REGION_MAX_LINES
     # Genuine replacement still applies byte-identically regardless of the
@@ -238,6 +245,10 @@ def test_region_truncates_when_line_count_exceeds_cap(tmp_path: Path) -> None:
 
 
 def test_region_truncates_when_byte_size_exceeds_cap(tmp_path: Path) -> None:
+    """The replacement itself (~6000 bytes) is bigger than REGION_MAX_BYTES
+    (4000) with zero context, so this is also a "change alone doesn't fit"
+    case, and must carry the same distinct marker as the line-cap case
+    above -- not the ordinary context-trimmed one."""
     target = tmp_path / "app.py"
     target.write_text("before\nANCHOR\nafter\n", encoding="utf-8")
 
@@ -249,8 +260,144 @@ def test_region_truncates_when_byte_size_exceeds_cap(tmp_path: Path) -> None:
     assert receipt.result is not None
     region = receipt.result.region
     assert "truncated" in region
+    assert "the change itself exceeds" in region
+    assert "context trimmed" not in region
     assert len(region.encode("utf-8")) <= REGION_MAX_BYTES + 200  # cap plus the marker itself
     assert target.read_text(encoding="utf-8") == f"before\n{new_text}\nafter\n"
+
+
+def test_region_shows_short_edit_unchanged_in_small_file(tmp_path: Path) -> None:
+    """Common path guard: a small file and a one-line edit produce the
+    same untruncated region as before this change."""
+    target = tmp_path / "app.py"
+    target.write_text("def value():\n    return 1\n", encoding="utf-8")
+
+    receipt = _replace(tmp_path, "app.py", "return 1", "return 2")
+
+    assert receipt.code is MutationCode.OK
+    assert receipt.result is not None
+    assert receipt.result.region == "1: def value():\n2:     return 2"
+    assert "truncated" not in receipt.result.region
+    assert "trimmed" not in receipt.result.region
+
+
+def test_region_shows_single_line_edit_with_large_context_untruncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A long file, a tiny one-line edit, and a context radius that still
+    fits comfortably under both caps: no truncation at all.
+
+    The radius is set explicitly rather than inherited from the shipped
+    default, so this asserts the property -- a window that fits is not
+    trimmed -- rather than whatever ``REGION_CONTEXT_LINES`` happens to be.
+    A build shipping a wider default trims context here legitimately, and
+    that is a different property from the one under test.
+    """
+    monkeypatch.setattr(mutation, "REGION_CONTEXT_LINES", 3)
+    lines = [f"L{index:03d}" for index in range(1, 61)]  # 60 lines
+    lines[29] = "ANCHOR"  # line 30, 1-based
+    target = tmp_path / "app.py"
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    receipt = _replace(tmp_path, "app.py", "ANCHOR", "EDITED")
+
+    assert receipt.code is MutationCode.OK
+    assert receipt.result is not None
+    region = receipt.result.region
+    assert "truncated" not in region
+    assert "trimmed" not in region
+    assert "30: EDITED" in region
+    # Three context lines each side of the 1-line edit, as set above.
+    assert "27: L027" in region
+    assert "33: L033" in region
+
+
+def test_region_shows_full_edit_when_line_cap_would_otherwise_cut_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the defect: a 200-line file, a 20-line edit at line
+    100, and a context radius (30) that pushes the naive [start-30,
+    end+30] window past REGION_MAX_LINES (40). The old code kept the
+    FIRST 40 lines of that window and silently cut off the tail of the
+    edit (EDITED10..EDITED19 never appeared). The fix must reserve the
+    edit's own line budget first, so every EDITED line survives and only
+    context is trimmed."""
+    monkeypatch.setattr(mutation, "REGION_CONTEXT_LINES", 30)
+    lines = [f"L{index:03d}" for index in range(1, 201)]  # 200 lines
+    lines[99] = "ANCHOR"  # line 100, 1-based
+    target = tmp_path / "app.py"
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    new_text = "\n".join(f"EDITED{index:02d}" for index in range(20))
+    receipt = _replace(tmp_path, "app.py", "ANCHOR", new_text)
+
+    assert receipt.code is MutationCode.OK
+    assert receipt.result is not None
+    region = receipt.result.region
+    for index in range(20):
+        assert f"EDITED{index:02d}" in region, f"EDITED{index:02d} missing from region"
+    # This case is ordinary context trimming, not a change-alone failure.
+    assert "context trimmed" in region
+    assert "the change itself exceeds" not in region
+    numbered_lines = [line for line in region.splitlines() if line and line[0].isdigit()]
+    assert len(numbered_lines) <= REGION_MAX_LINES
+
+
+def test_region_shows_full_edit_when_byte_cap_would_otherwise_cut_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the defect: 30 lines of ~200 bytes each, a small
+    edit at line 28, and a context radius (30) that pulls in the whole
+    file. The line cap never fires (30 lines < 40), but the naive byte
+    cap kept only a BYTE PREFIX of the rendered text, and the edit -- near
+    the end of the file -- was entirely absent while the region still
+    claimed "truncated". The fix must trim context bytes, never the
+    change, so the edit's marker text always survives."""
+    monkeypatch.setattr(mutation, "REGION_CONTEXT_LINES", 30)
+    filler = "y" * 195
+    lines = [f"{filler}{index:03d}" for index in range(1, 31)]  # 30 lines, ~200 bytes each
+    lines[27] = "ANCHOR"  # line 28, 1-based
+    target = tmp_path / "app.py"
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    receipt = _replace(tmp_path, "app.py", "ANCHOR", "EDITED-MARKER")
+
+    assert receipt.code is MutationCode.OK
+    assert receipt.result is not None
+    region = receipt.result.region
+    assert "EDITED-MARKER" in region
+    assert len(region.encode("utf-8")) <= REGION_MAX_BYTES + 300  # cap plus the marker itself
+    # This case is ordinary context trimming, not a change-alone failure.
+    assert "context trimmed" in region
+    assert "the change itself exceeds" not in region
+
+
+def test_context_is_trimmed_before_the_change_when_the_change_fits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the edit itself fits under both caps but the naive window
+    (edit + full REGION_CONTEXT_LINES both sides) does not, context must
+    be the thing that shrinks -- never the edit -- and the region must be
+    marked with the ordinary context-trimmed marker, not the change-alone
+    one."""
+    monkeypatch.setattr(mutation, "REGION_CONTEXT_LINES", 25)
+    lines = [f"L{index:03d}" for index in range(1, 101)]  # 100 lines
+    lines[49] = "ANCHOR"  # line 50, 1-based
+    target = tmp_path / "app.py"
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    new_text = "\n".join(f"EDITED{index:02d}" for index in range(10))  # 10-line edit
+    receipt = _replace(tmp_path, "app.py", "ANCHOR", new_text)
+
+    assert receipt.code is MutationCode.OK
+    assert receipt.result is not None
+    region = receipt.result.region
+    for index in range(10):
+        assert f"EDITED{index:02d}" in region
+    assert "context trimmed" in region
+    assert "the change itself exceeds" not in region
+    numbered_lines = [line for line in region.splitlines() if line and line[0].isdigit()]
+    assert len(numbered_lines) <= REGION_MAX_LINES
 
 
 @pytest.mark.parametrize(
@@ -440,3 +587,54 @@ def test_mutation_receipt_closes_success_and_refusal_invariants(
 ) -> None:
     with pytest.raises(error):
         MutationReceipt(code=code, message=message, result=result)  # type: ignore[arg-type]
+
+
+def test_region_line_numbers_survive_non_newline_separators(tmp_path: Path) -> None:
+    """A form feed before the anchor must not shift the reserved span.
+
+    ``str.splitlines`` also breaks on \\x0c, \\r, \\x1c-\\x1e, \\x85, U+2028 and
+    U+2029, while the anchor's line is found by counting "\\n" alone. Form feeds
+    are ordinary in CPython stdlib modules, and with four of them the region
+    once showed none of the change and reported no truncation while numbering
+    every line wrongly.
+    """
+    target = tmp_path / "app.py"
+    target.write_text(
+        "import os\n\x0c\nA\n\x0c\nB\n\x0c\nC\n\x0c\nD\nE\nF\nANCHOR\nG\nH\n",
+        encoding="utf-8",
+    )
+
+    receipt = _replace(tmp_path, "app.py", "ANCHOR", "EDITED")
+
+    assert receipt.code is MutationCode.OK
+    assert receipt.result is not None
+    region = receipt.result.region
+    assert "12: EDITED" in region  # the real line, counting "\n" only
+    assert "truncated" not in region
+    assert "trimmed" not in region
+
+
+def test_region_handles_deleting_a_whole_trailing_line(tmp_path: Path) -> None:
+    """The span can point past the last line that still exists after the edit."""
+    target = tmp_path / "app.py"
+    target.write_text("keep\ndrop\n", encoding="utf-8")
+
+    receipt = _replace(tmp_path, "app.py", "drop\n", "")
+
+    assert receipt.code is MutationCode.OK
+    assert receipt.result is not None
+    assert target.read_text(encoding="utf-8") == "keep\n"
+    assert "1: keep" in receipt.result.region
+
+
+def test_region_is_empty_when_the_edit_empties_the_file(tmp_path: Path) -> None:
+    """Nothing remains to show, and that is not an error."""
+    target = tmp_path / "app.py"
+    target.write_text("only\n", encoding="utf-8")
+
+    receipt = _replace(tmp_path, "app.py", "only\n", "")
+
+    assert receipt.code is MutationCode.OK
+    assert receipt.result is not None
+    assert target.read_text(encoding="utf-8") == ""
+    assert receipt.result.region == ""
