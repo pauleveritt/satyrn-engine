@@ -631,30 +631,55 @@ test("a repeated state reported straight to the breaker clears nothing", () => {
 });
 
 
-// --- 2026-09-08: why an alternating loop is NOT terminated, on evidence ---
+
+// --- 2026-09-08: a cycle that measured a breaker this file no longer has ---
 //
-// Mining 236 retained Engine-cell transcripts showed that the same call key is
-// often refused far more often than CONSECUTIVE_BLOCK_LIMIT: in 49 of the 100
-// cells that broke a loop at all, one key was blocked more than three times,
-// and one cell blocked the same key 30 times. `consecutiveBlocks` resets on any
-// admitted call, so interleaving one different call between re-sends keeps the
-// turn alive indefinitely.
+// Recorded because the measurement is worth keeping and its conclusions were
+// wrong, and a later reader should meet both together.
 //
-// That looked like a defect and a remedy was written -- terminate on the
-// per-key `blockedSoFar` the breaker already tracks. The evidence refutes it.
-// Of those 49 cells, **27 passed and 17 failed**: terminating them would have
-// destroyed a majority of successful attempts. A model that keeps re-sending
-// one call while otherwise making progress is not in a loop worth killing, and
-// the two tests above -- that an admitted call, or a fail-open inspection
-// error, resets the count -- are load-bearing rather than incidental.
+// A mining cycle over 236 retained Engine-cell transcripts found the loop
+// breaker's refusal firing 532 times, with the model's next call identical in
+// 174 of them (33%), and one call key blocked 30 times in a single cell.
 //
-// The row below pins the behaviour as intended, so the next reader who notices
-// blockedSoFar climbing to 30 finds the measurement rather than repeating it.
-// What remains open is narrower: whether a call refused many times while the
-// turn makes NO other progress can be told apart from this. That needs a
-// discriminator neither count currently provides.
+// **Those numbers describe the breaker at `25ca0be` (engine.ts digest
+// 2e4fc064…), which every mined batch ran, and which this file no longer
+// contains.** `fc22622` keyed the workspace revision into a call afterwards --
+// and 195 of those 532 refusals (37%) were stale under the old rule: an
+// accepted edit had landed since the last identical call, so "Running it again
+// will not change the result" was FALSE when it was said. Revision keying is
+// what addresses that. Whether the shipping breaker still issues those
+// refusals at all is unmeasured; the transcripts predate it.
+//
+// Two further corrections to that cycle, kept so they are not re-derived:
+//
+// 1. A remedy was written -- terminate on the per-key `blockedSoFar` the
+//    breaker already tracks, instead of only on consecutive blocks -- and it
+//    was rejected on the ground that "of the 49 cells blocking one key more
+//    than three times, 27 passed, so it would have terminated 27 successful
+//    attempts". **That overstates by about 9x.** 42 of the 49 were terminated
+//    later anyway by the consecutive rule, and of the 27 passes, 24 landed no
+//    accepted edit after the fourth block -- their retained patch would have
+//    been byte-identical. At most 3 could have differed. The remedy is still
+//    not adopted, but on the narrower ground that it is aimed at a breaker
+//    that has since changed.
+// 2. "One different call between re-sends keeps the turn alive indefinitely"
+//    is **false**. The interleaved call accumulates toward THRESHOLD too, and
+//    a two-key alternation terminates. What sustains a turn is interleaving
+//    *novel* calls, which the comment at the head of this module already says
+//    no state-keyed rule closes.
+//
+// And the mechanism the cycle missed: a blocked key is re-admitted once the
+// window evicts it, so `blockedSoFar` reaching 30 is accumulated across
+// block-and-readmit cycles rather than 30 refusals of a permanently barred
+// call -- the identical re-send the message forbids does eventually work.
+// That is a better explanation of the 33% than anything about wording.
 
 test("a repeatedly refused call does not terminate a turn that keeps progressing", () => {
+	// The behaviour the refuted remedy would have changed, pinned as it is.
+	// The remedy was: in registerLoopBreaker, terminate when
+	// decision.entry.data.blockedSoFar >= CONSECUTIVE_BLOCK_LIMIT as well as on
+	// consecutive blocks. Under it, `terminate` becomes true at the second
+	// refusal below, so this row is what fails if it is ever reapplied.
 	const { call: onToolCall } = registeredExtension();
 	const looped = repeated("read", { path: "app.py" });
 	const other = repeated("read", { path: "models.py" });
@@ -662,17 +687,19 @@ test("a repeatedly refused call does not terminate a turn that keeps progressing
 
 	return (async () => {
 		for (let i = 0; i < THRESHOLD; i += 1) await send(looped);
-		let last;
-		for (let i = 0; i < CONSECUTIVE_BLOCK_LIMIT + 3; i += 1) {
-			last = await send(looped);
-			assert.equal(last?.block, true, "the repeated call stays refused");
+		// Two rounds only: the interleaved call accumulates toward THRESHOLD as
+		// well, so a longer alternation refuses `other` too and then terminates
+		// -- which is why "indefinitely" above is withdrawn.
+		for (let i = 0; i < 2; i += 1) {
+			const decision = await send(looped);
+			assert.equal(decision?.block, true, "the repeated call stays refused");
 			assert.equal(
-				last?.terminate,
+				decision?.terminate,
 				undefined,
-				"a turn that is otherwise progressing is not terminated: 27 of the " +
-					"49 cells this pattern appears in passed",
+				"a turn still admitting other calls is refused, not terminated",
 			);
-			await send(other);
+			const interleaved = await send(other);
+			assert.equal(interleaved, undefined, "the interleaved call is still admitted");
 		}
 	})();
 });
