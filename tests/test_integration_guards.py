@@ -48,7 +48,10 @@ def test_shipped_loop_breaker_behavior_suite_passes() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "pass 33" in completed.stdout
+    # The count is pinned so a vanishing test is loud rather than silent, which
+    # means every deliberate addition edits this line. Raised 33 -> 38 on
+    # 2026-09-09 by the opt-in progress rule and the cycle-1/2 characterisations.
+    assert "pass 38" in completed.stdout
     assert "fail 0" in completed.stdout
     assert "engine.ts | 100.00 |   100.00 |  100.00" in completed.stdout
 

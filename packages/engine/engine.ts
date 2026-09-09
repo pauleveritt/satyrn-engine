@@ -234,8 +234,43 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** The post-edit digest shape `mutator.ts` guarantees on a successful edit. */
 const SHA256 = /^[0-9a-f]{64}$/;
 
+/**
+ * Opt-in: terminate a turn when the breaker refuses a call and no edit has yet
+ * been accepted in that turn.
+ *
+ * A spending rule, off unless a batch asks for it, exactly like the attempt
+ * path's repeated-call limit -- a rule that ends turns changes what can be
+ * observed, so enabling it is a recorded condition rather than a default.
+ *
+ * Measured over 236 retained Engine-cell transcripts (2026-09-09). At the
+ * moment of a refusal, using only what precedes it, the cell's eventual
+ * pass-rate is:
+ *
+ *   no accepted edit yet   103 refusals   pass-rate 0.09  (80 produced nothing)
+ *   1-2 accepted edits     100 refusals   pass-rate 0.74
+ *   3 or more              329 refusals   pass-rate 0.42
+ *
+ * Per cell, the rule would end 38 of 236: 26 that produced no patch at all, 7
+ * that failed, and **5 that passed** -- and all 5 landed an edit after the
+ * trigger, so those 5 are a real loss, not a byte-identical patch. The trade is
+ * 76% of the produced-nothing population against 3% of the passes.
+ *
+ * It is deliberately NOT the per-key rule tried and refuted in cycle 1: that
+ * one fired on cells whose pass-rate was ordinary. This fires only where
+ * nothing has worked yet.
+ */
+const REQUIRE_PROGRESS_ENV = "SATYRN_BREAKER_REQUIRE_PROGRESS";
+
+export function requireProgressEnabled(
+	environment: { readonly [key: string]: string | undefined } = process.env,
+): boolean {
+	return environment[REQUIRE_PROGRESS_ENV] === "1";
+}
+
 export default function registerLoopBreaker(pi: ExtensionAPI): void {
 	const breaker = createLoopBreaker();
+	const requireProgress = requireProgressEnabled();
+	let acceptedEdits = 0;
 	let consecutiveBlocks = 0;
 	pi.on("tool_call", async (event) => {
 		let decision: BlockDecision | undefined;
@@ -256,7 +291,8 @@ export default function registerLoopBreaker(pi: ExtensionAPI): void {
 		} catch {
 			// Telemetry is evidence, not permission to run an already-refused call.
 		}
-		return consecutiveBlocks >= CONSECUTIVE_BLOCK_LIMIT
+		const noProgressYet = requireProgress && acceptedEdits === 0;
+		return consecutiveBlocks >= CONSECUTIVE_BLOCK_LIMIT || noProgressYet
 			? { block: true, reason: decision.reason, terminate: true }
 			: { block: true, reason: decision.reason };
 	});
@@ -276,6 +312,7 @@ export default function registerLoopBreaker(pi: ExtensionAPI): void {
 				// absent or malformed digest leaves the window standing.
 				if (typeof path === "string" && typeof sha256 === "string" && SHA256.test(sha256)) {
 					breaker.noteChange(path, sha256);
+					acceptedEdits += 1;
 				}
 			}
 		} catch {
