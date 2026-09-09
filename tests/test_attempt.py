@@ -18,6 +18,7 @@ from satyrn_engine.attempt import (
     GitResult,
     build_pi_command,
     build_prompt,
+    record_invocation,
 )
 from satyrn_engine.contract import Contract
 from satyrn_engine.exits import ExitCode
@@ -2064,3 +2065,33 @@ def test_a_contract_without_a_test_command_appends_nothing() -> None:
     argv = build_pi_command(Path("/repo"), "m", "do the thing")
     assert "--append-system-prompt" not in argv
     assert "bash" not in argv[argv.index("--tools") + 1]
+
+
+def test_the_invocation_is_recorded_beside_the_contract(tmp_path: Path) -> None:
+    """The assembled system prompt is not retained anywhere, by pi or by us.
+
+    pi builds it from the argv, its own version and the cwd, and emits no
+    system message into the transcript -- checked across a retained batch. So
+    the prompt cannot be captured after the fact; what CAN be captured is
+    everything that determines it. This writes the pi argv and version beside
+    the contract, in a directory evals already retains, so a past run's prompt
+    is reconstructible rather than guessed at.
+    """
+    contract = tmp_path / "c.yaml"
+    argv = ("pi", "--tools", "read,edit,bash", "--append-system-prompt", "x", "prompt")
+    record_invocation(contract, argv)
+    written = contract.with_suffix(".invocation.json")
+    assert written.is_file()
+    assert json.loads(written.read_text())["argv"] == list(argv)
+
+
+def test_recording_the_invocation_never_fails_the_attempt(tmp_path: Path) -> None:
+    """Refusal direction: evidence capture is not a reason to lose a run.
+
+    Sibling of the row above -- that one proves it writes, this proves a
+    failure to write is swallowed. An unwritable directory must not turn a
+    model attempt into an error.
+    """
+    unwritable = tmp_path / "missing" / "c.yaml"
+    record_invocation(unwritable, ("pi",))  # must not raise
+

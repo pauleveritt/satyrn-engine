@@ -291,6 +291,31 @@ def build_prompt(contract: Contract, writable_paths: Sequence[str]) -> str:
     )
 
 
+def record_invocation(contract_path: Path, argv: tuple[str, ...]) -> None:
+    """Record what determines the model's system prompt, beside the contract.
+
+    pi assembles the system prompt from the argv, its own version and the cwd,
+    and emits no system message into the transcript -- so the prompt itself
+    cannot be recovered from a finished run. Everything that determines it can
+    be, and this writes that beside the contract, in a directory the caller
+    already retains.
+
+    Only the argv: pi's version is already pinned in the caller's arm record and
+    verified by its preflight, and probing it here would put a subprocess in
+    the attempt path that the default test tier forbids outright.
+
+    Never raises. Evidence capture is not a reason to lose a model attempt, so
+    an unwritable path is dropped rather than propagated.
+    """
+    try:
+        contract_path.with_suffix(".invocation.json").write_text(
+            json.dumps({"argv": list(argv)}, indent=2)
+            + "\n"
+        )
+    except OSError:
+        return
+
+
 def build_pi_command(
     engine_repo: Path,
     model: str,
@@ -679,6 +704,9 @@ def _run(
         prompt,
         test_command=context.contract.test_command,
     )
+    # Written before pi starts: the assembled system prompt is a function of
+    # this argv, pi's version and the cwd, and pi retains none of it.
+    record_invocation(context.frozen_contract, command)
     transcript_destination = artifacts.transcript
     # E10: when a transcript destination was requested, its file was
     # already created exclusively during `_prepare` (see
