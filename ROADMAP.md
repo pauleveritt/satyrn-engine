@@ -208,10 +208,60 @@ Defined terms: **contract**, with E1's working terms; **adapter** and
 | E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | **done** |
 | E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | **done** |
 | E6 | Packaged | The same `/implement` works outside either source checkout, on POSIX and Windows | **current** |
+| HP3 | Chained isolation | Phase N of a multi-request workload runs in a worktree branched from phase N-1's **accepted commit**, not `HEAD`, so committed code folds forward through the checkout while context folds forward through the packet; a refused phase stops the chain with no candidate ref and no partial chain | **proposed** — mirrored from `satyrn-evals` Phase HP |
 
 Done-when criteria are restated in each phase's plan — for E1, the Goal
 of `docs/superpowers/plans/2026-08-16-e1-check.md` — not in this file,
 to avoid drift between two copies.
+
+### HP3, and why a cycle from another repository appears here
+
+`satyrn-evals` opened **Phase HP**, the handoff packet: an orchestrator
+carries an existing multi-request workload through bounded implementer
+handoffs. Ownership was settled deliberately and along the line `BRIEF.md`
+already draws. **This repository owns packet execution, chained isolation and
+candidate production**, because it already owns the contract seam and because
+contract authoring is a main-agent skill and not engine machinery
+(`BRIEF.md:15,29`). `satyrn-evals` owns the packet schema, the arm, capture,
+grading, attribution and comparison, and does not import engine internals.
+
+HP3 is the only cycle of that phase that lands here. It is listed in this
+table because a cycle nobody's roadmap owns is a cycle nobody schedules, and
+because **its acceptance has to be re-earned in this repository** rather than
+asserted from the other one.
+
+**The reference implementation already exists and is not ours.** SwiftStar's
+`WorktreeTransaction` states the property in its own docstring: each phase
+runs in a disposable worktree branched from the prior phase's commit rather
+than `HEAD`, so "the code folds forward through the checkout, while context
+folds forward through the packet", and on a phase receipt the transaction
+stops with no partial chain
+(`swiftstar/Sources/SwiftStarAppKit/WorktreeTransaction.swift:4-12`). Borrow
+the behaviour; re-earn it here against this repository's own fixtures, as
+`BRIEF.md`'s provenance rule requires of everything taken from a prior
+project.
+
+**Entry condition.** HP1, the packet schema, and HP2, the offline route, are
+both **complete and committed** in `satyrn-evals`
+(`docs/superpowers/plans/2026-09-09-hp1-handoff-packet.md` and
+`2026-09-09-hp2-offline-route.md`). HP2 already holds the no-partial-chain
+rule in its route so the two cycles cannot disagree; HP3 replaces its plain
+workspace with real chained worktrees.
+
+**Not in HP3:** a worker pool, parallel dispatch, automatic retry or repair,
+generalized routing, or any orchestrator. Autonomous packet authoring is out
+of scope for the whole phase — a system authoring and gating contract content
+on its own is measured at 3/8 against 8/8 by hand, with a remediated
+authoring prompt collapsing to 0/8 all no-op (`local-ai-pi/ROADMAP.md:386-402`).
+
+**When HP3 starts, this repository's planning surface needs the caps regime
+`satyrn-evals` adopted on 2026-09-02** — a backlog file and a document-length
+checker. The work exists, unmerged, on branch `research/facts-field-backlog`
+(commit `c7af592`), but that branch predates the 2026-09-07 reset in
+`satyrn-evals`, so derive the regime from the current post-reset shape rather
+than merging the stale branch. That branch also carries the recorded
+deferral of a `facts` field in the handoff contract (`7b847eb`), which Phase
+HP's packet now specifies; read it before re-deciding anything about facts.
 
 ## Backlog
 
