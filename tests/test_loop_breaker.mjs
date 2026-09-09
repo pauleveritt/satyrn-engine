@@ -785,3 +785,5 @@ test("with the progress rule on, an accepted edit spares the turn", () => {
 		else process.env.SATYRN_BREAKER_REQUIRE_PROGRESS = previous;
 	}
 });
+
+// --- 2026-09-09: the runner's prose, and the guideline it must counteract ---

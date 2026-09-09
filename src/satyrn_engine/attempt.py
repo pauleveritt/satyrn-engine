@@ -306,6 +306,18 @@ def build_pi_command(
     acceptance section 7).
     """
     package = engine_repo / "packages" / "engine"
+    # pi's system-prompt builder adds "Use bash for file operations like ls,
+    # rg, find" whenever bash is selected and no grep/find/ls tool is. The
+    # engine must name `bash` in --tools or its registered runner does not
+    # exist, so on a contract with a test command that guideline always fires
+    # -- instructing the model to do exactly what the runner refuses. Appended
+    # rather than replacing pi's prompt, so its other guidance is untouched.
+    correction: tuple[str, ...] = (
+        "--append-system-prompt",
+        "The bash tool here runs only this contract's declared test command; "
+        "it is not a shell. Do not use it for ls, rg, find or any other "
+        "exploration -- read files with the read tool instead.",
+    )
     extensions: tuple[str, ...] = (
         "--extension",
         os.fspath(package / "engine.ts"),
@@ -344,6 +356,7 @@ def build_pi_command(
         # The smoke re-proves it per batch by reading what a `bash` call
         # actually did.
         "read,edit,bash" if test_command else "read,edit",
+        *(correction if test_command else ()),
         prompt,
     )
 

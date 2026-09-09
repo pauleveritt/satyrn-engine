@@ -327,6 +327,11 @@ export function registerMutator(pi: ExtensionAPI, context: MutationContext, exch
 	pi.registerTool({
 		name: "edit",
 		label: "Bounded revision-checked edit",
+		// Overrides pi's built-in `edit`. Without a snippet the model was
+		// described the built-in's behaviour, or nothing at all, while the
+		// schema it had to satisfy was this one.
+		promptSnippet:
+			"replaces one exact unique text anchor in one contract-declared file; not a general file writer",
 		description: "Replace one exact unique text anchor in one contract-declared file.",
 		parameters: EditParameters,
 		execute: mutator.execute,

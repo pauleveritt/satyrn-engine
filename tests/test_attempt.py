@@ -265,7 +265,15 @@ def test_a_contract_with_test_command_registers_the_runner_extension_and_prompt_
     # tests. `--tools` gates extension-registered tools, so the
     # registered tool answered "Tool bash not found" for every call
     # the model made in the smoke.
-    assert command[-3:] == ("--tools", "read,edit,bash", prompt)
+    # Extended 2026-09-09: the argv now also appends a system-prompt
+    # correction. The task prompt asserted just above already explains the
+    # restriction, but it is lower priority than pi's own guideline telling the
+    # model to use bash for ls, rg and find -- which fires because `bash` must
+    # be named in --tools for the registered runner to exist at all.
+    assert command[-5:-3] == ("--tools", "read,edit,bash")
+    assert command[-3] == "--append-system-prompt"
+    assert "not a shell" in command[-2]
+    assert command[-1] == prompt
 
 
 def test_attempt_result_has_exhaustive_stable_exit_mapping() -> None:
@@ -2021,3 +2029,38 @@ def test_cli_reserves_exit_one_for_broken_transcript_pipe(monkeypatch: pytest.Mo
     monkeypatch.setattr(cli, "attempt", broken)
     monkeypatch.setattr(cli, "_silence_broken_stdout", lambda: None)
     assert cli.main(["attempt", "--model", "m", "contract.yaml"]) == 1
+
+
+# --- 2026-09-09: the argv must correct pi's shell-exploration guideline ---
+
+
+def test_pi_argv_corrects_the_shell_exploration_guideline() -> None:
+    """pi tells the model to use bash for `ls`, `rg` and `find`; ours refuses.
+
+    pi's system-prompt builder adds "Use bash for file operations like ls, rg,
+    find" whenever bash is selected and no grep/find/ls tool is. The engine
+    MUST name `bash` in --tools or its registered runner does not exist, so the
+    guideline always fires on a contract that declares a test command -- and
+    the runner refuses every command but that one. The argv appends a
+    correction rather than replacing pi's prompt, so the rest of pi's guidance
+    is untouched.
+    """
+    argv = build_pi_command(
+        Path("/repo"), "m", "do the thing", test_command=("uv", "run", "pytest")
+    )
+    assert "--append-system-prompt" in argv
+    correction = argv[argv.index("--append-system-prompt") + 1]
+    assert "ls" in correction and "find" in correction
+    assert "test command" in correction
+
+
+def test_a_contract_without_a_test_command_appends_nothing() -> None:
+    """The sibling: no runner, no misleading guideline, no correction.
+
+    Without a test command the runner extension is not loaded and `bash` is not
+    in --tools, so pi never emits the guideline and appending a correction
+    would describe a tool the model does not have.
+    """
+    argv = build_pi_command(Path("/repo"), "m", "do the thing")
+    assert "--append-system-prompt" not in argv
+    assert "bash" not in argv[argv.index("--tools") + 1]

@@ -471,3 +471,28 @@ test("engine exchange factory delegates to the existing one-shot transport", asy
 	assert.deepEqual(await transport("request"), success());
 	assert.equal(requestText, "request");
 });
+
+// --- 2026-09-09: the model-facing prose must match the tool ---
+//
+// pi lists a tool under "Available tools" only when its registration supplies
+// a promptSnippet (system-prompt.js: visibleTools filters on it). The engine
+// supplied none, so its bounded `edit` -- which overrides pi's built-in of the
+// same name -- was described to the model by whatever pi says about the
+// built-in, or omitted. The schemas were always right; the prose was not.
+
+test("the bounded edit registers a prompt snippet naming its restriction", () => {
+	const registered = [];
+	registerMutator(
+		{ registerTool: (tool) => registered.push(tool), on: () => undefined },
+		context(),
+		async () => success(),
+	);
+	const edit = registered.find((tool) => tool.name === "edit");
+	assert.ok(edit, "the edit tool is registered");
+	assert.equal(typeof edit.promptSnippet, "string");
+	assert.match(
+		edit.promptSnippet,
+		/anchor/i,
+		"the snippet must say what makes this edit different from pi's built-in",
+	);
+});

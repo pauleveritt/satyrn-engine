@@ -220,6 +220,13 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 	pi.registerTool({
 		name: "bash",
 		label: "Run the contract's test command",
+		// pi lists a tool under "Available tools" only when its registration
+		// supplies this, and its default guidelines tell the model to "use bash
+		// for file operations like ls, rg, find" whenever bash is selected and
+		// no grep/find/ls tool is (system-prompt.js). This tool refuses all of
+		// that, so this line is the model's only warning before it tries.
+		promptSnippet:
+			"runs only the contract's exact declared test command; every other command is refused",
 		description:
 			"Run a shell command. Only the contract's exact declared test command is ever executed; any other " +
 			"command is refused with a message naming the one command that is allowed, verbatim.",
