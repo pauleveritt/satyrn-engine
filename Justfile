@@ -17,3 +17,17 @@ docs:
 # /implement spawns this checkout. Run it from the repository root.
 pi-engine:
     SATYRN_ENGINE_REPO=$$PWD pi
+
+# Cap the active planning documents (ROADMAP, BACKLOG) and refuse trailing
+# whitespace. No model, no network, no subprocess.
+lint-docs:
+    uv run python tools/lint_docs.py
+
+# Every gate, in order, stopping at the first non-zero exit. Read this
+# recipe's own exit code; never pipe it into anything, which is how a check
+# that cannot fail gets written.
+gates:
+    uv run pytest -q
+    uv run ruff check
+    just lint-docs
+    just docs
