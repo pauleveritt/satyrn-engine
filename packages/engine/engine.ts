@@ -258,6 +258,25 @@ const SHA256 = /^[0-9a-f]{64}$/;
  * It is deliberately NOT the per-key rule tried and refuted in cycle 1: that
  * one fired on cells whose pass-rate was ordinary. This fires only where
  * nothing has worked yet.
+ *
+ * **Two limits on that trade, found in review and stated here rather than in a
+ * commit message.** First, `CONSECUTIVE_BLOCK_LIMIT` already ends most of what
+ * this would end: of the 26 produced-nothing cells, 22 ended two calls later
+ * anyway on three consecutive refusals. The rule's *incremental* saving is
+ * **4 cells and 162 calls** -- 149 of them a single timed-out cell -- against
+ * 5 passes that did 65 calls of real repair after the trigger. "76% of the
+ * produced-nothing population against 3% of the passes" describes the
+ * population, not the margin, and the margin is what a spending rule buys.
+ * Second, **no batch on the shipping breaker has ever triggered it**: the only
+ * `fc22622` batches recorded zero refusals, so the evidence above comes
+ * entirely from earlier breakers.
+ *
+ * Scope, because the counter's name overpromises: `acceptedEdits` is
+ * per-registration, never reset, so "in that turn" means "since this extension
+ * loaded" -- identical for a one-prompt attempt, not for a session. And it
+ * counts only Satyrn-mutator edits (`details.satyrn`), the same condition
+ * `noteChange` requires, so with the flag on in a plain Pi session that never
+ * routes edits through the mutator, **every refusal terminates**.
  */
 const REQUIRE_PROGRESS_ENV = "SATYRN_BREAKER_REQUIRE_PROGRESS";
 
