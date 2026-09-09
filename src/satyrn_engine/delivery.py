@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 from codecs import getincrementaldecoder
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum, StrEnum, auto
@@ -250,6 +251,8 @@ def deliver(
     contract_path: Path,
     command: tuple[str, ...],
     timeout: float = DEFAULT_TIMEOUT,
+    *,
+    base: str | None = None,
 ) -> DeliveryReceipt:
     """Run one command outside the caller checkout and publish one candidate."""
     repository = os.path.abspath(repo)
@@ -264,13 +267,37 @@ def deliver(
     if checked.contract is None:  # pragma: no cover - CheckResult invariant
         raise AssertionError("successful check has no contract")
 
-    prepared = _preflight(repository, checked.contract.id)
+    prepared = _preflight(repository, checked.contract.id, base)
     if isinstance(prepared, DeliveryReceipt):
         return prepared
     return _attempt(prepared, command, timeout)
 
 
-def _preflight(repository: str, contract_id: str) -> _DeliveryContext | DeliveryReceipt:
+def base_is_wellformed(base: str) -> bool:
+    """Whether a caller-supplied base is usable as a commit-ish.
+
+    Blank is **not** absent. Mapping it to ``HEAD`` would silently base a
+    chained phase on the caller's head instead of its predecessor's commit,
+    which is the one failure HP3 exists to prevent and the one that looks
+    like success.
+    """
+    return bool(base.strip())
+
+
+def _base_argv(base: str | None) -> tuple[str, ...]:
+    """The argv that resolves a delivery's base commit.
+
+    ``None`` reproduces today's behaviour exactly, so every existing caller
+    and every recorded receipt is unaffected. A supplied base is peeled with
+    ``^{commit}`` for the same reason ``HEAD`` is: branching from a tag object
+    rather than its commit fails later, far from the cause.
+    """
+    return ("rev-parse", "--verify", f"{base or 'HEAD'}^{{commit}}")
+
+
+def _preflight(
+    repository: str, contract_id: str, base: str | None = None
+) -> _DeliveryContext | DeliveryReceipt:
     environment_result = _sanitized_environment(repository)
     if isinstance(environment_result, str):
         return _receipt(repository, DeliveryCode.GIT_FAILED, environment_result, contract_id=contract_id)
@@ -297,12 +324,24 @@ def _preflight(repository: str, contract_id: str) -> _DeliveryContext | Delivery
             contract_id=contract_id,
         )
 
-    head_result = _git(root, environment, "rev-parse", "--verify", "HEAD^{commit}")
+    if base is not None and not base_is_wellformed(base):
+        return _receipt(
+            repository,
+            DeliveryCode.REPO_NOT_GIT,
+            f"base is blank: {base!r}",
+            contract_id=contract_id,
+        )
+    head_result = _git(root, environment, *_base_argv(base))
     if head_result.returncode != 0:
         return _receipt(
             repository,
             DeliveryCode.REPO_NOT_GIT,
-            _git_message("repository has no commit at HEAD", head_result),
+            _git_message(
+                "repository has no commit at HEAD"
+                if base is None
+                else f"cannot resolve base {base!r}",
+                head_result,
+            ),
             contract_id=contract_id,
         )
     base_commit = head_result.stdout.strip().decode("ascii")
@@ -965,4 +1004,73 @@ def _receipt(
         changed_paths=changed_paths,
         command_exit=command_exit,
         worktree_path=worktree_path,
+    )
+
+
+type PhaseSpec = tuple[Path, tuple[str, ...]]
+type Deliver = Callable[..., DeliveryReceipt]
+
+
+@dataclass(frozen=True, slots=True)
+class ChainReceipt:
+    """One multi-phase effort, ending in one candidate or in none.
+
+    ``candidate_ref`` is ``None`` whenever any phase refused. The
+    no-partial-chain rule lives in the type rather than in a convention, so a
+    caller cannot read a usable ref off a broken chain by accident.
+
+    ``accepted_refs`` keeps every accepted intermediate. SwiftStar's
+    transaction discards its intermediate worktrees and keeps only the last;
+    this repository grades from retained evidence, so the refs stay even
+    though the worktrees do not -- discarding them would make a mid-chain
+    regression unreproducible without re-running.
+    """
+
+    phases: tuple[DeliveryReceipt, ...]
+    candidate_ref: str | None
+    accepted_refs: tuple[str, ...]
+    code: DeliveryCode
+
+
+def deliver_chain(
+    repo: Path,
+    phases: Sequence[PhaseSpec],
+    *,
+    timeout: float = DEFAULT_TIMEOUT,
+    deliver: Deliver = deliver,
+) -> ChainReceipt:
+    """Deliver ordered phases, each based on the previous phase's commit.
+
+    Phase 1 uses the repository ``HEAD``; phase N uses the commit that phase
+    N-1's candidate points at. **Code folds forward through the checkout while
+    context folds forward through the packet** -- the property borrowed from
+    SwiftStar's ``WorktreeTransaction`` and re-earned here.
+
+    A refused phase stops the chain: later phases do not run, and no
+    candidate ref is reported. The chain's code is the stopping phase's own;
+    inventing a chain-level code would hide which phase failed behind a
+    label, and every way a chain can fail is a way a phase can fail.
+
+    ``deliver`` is the test seam, and therefore the extension seam: there is
+    no second injection mechanism.
+    """
+    if not phases:
+        raise ValueError(
+            "deliver_chain needs at least one phase; an empty chain reports "
+            "no result, and OK over zero phases is a verdict computed over "
+            "no cells"
+        )
+    receipts: list[DeliveryReceipt] = []
+    accepted: list[str] = []
+    base: str | None = None
+    for contract_path, command in phases:
+        receipt = deliver(repo, contract_path, command, timeout, base=base)
+        receipts.append(receipt)
+        if receipt.code is not DeliveryCode.OK:
+            return ChainReceipt(tuple(receipts), None, tuple(accepted), receipt.code)
+        if (ref := receipt.candidate_ref) is not None:
+            accepted.append(ref)
+        base = receipt.candidate_commit
+    return ChainReceipt(
+        tuple(receipts), receipts[-1].candidate_ref, tuple(accepted), DeliveryCode.OK
     )
