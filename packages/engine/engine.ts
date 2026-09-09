@@ -235,61 +235,34 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const SHA256 = /^[0-9a-f]{64}$/;
 
 /**
- * Opt-in: terminate a turn when the breaker refuses a call and no edit has yet
- * been accepted in that turn.
+ * **Retired 2026-09-09: the progress rule is not shipped.**
  *
- * A spending rule, off unless a batch asks for it, exactly like the attempt
- * path's repeated-call limit -- a rule that ends turns changes what can be
- * observed, so enabling it is a recorded condition rather than a default.
+ * A cycle measured that, at the moment of a breaker refusal, the cell's
+ * eventual pass-rate is 0.09 when no edit has yet been accepted, against 0.74
+ * and 0.42 once one or more have. That separation is real and the measurement
+ * stands; the rule built on it does not, for three reasons found in review:
  *
- * Measured over 236 retained Engine-cell transcripts (2026-09-09). At the
- * moment of a refusal, using only what precedes it, the cell's eventual
- * pass-rate is:
+ * 1. **Its margin is not what it appeared.** `CONSECUTIVE_BLOCK_LIMIT` already
+ *    ends most of what it would end -- 22 of the 26 produced-nothing cells
+ *    finished two calls later anyway. The incremental saving was 4 cells and
+ *    162 calls, 149 of them a single timed-out cell, against 5 passes doing 65
+ *    calls of real repair.
+ * 2. **It never fired on the breaker it shipped in.** The only batches on this
+ *    breaker recorded zero refusals, so every supporting number came from
+ *    earlier ones.
+ * 3. **Its counter could not mean what its name said.** `acceptedEdits`
+ *    recognised only Satyrn-mutator edits, so with the flag on in a plain Pi
+ *    session -- where edits never route through the mutator -- *every* refusal
+ *    would terminate the turn.
  *
- *   no accepted edit yet   103 refusals   pass-rate 0.09  (80 produced nothing)
- *   1-2 accepted edits     100 refusals   pass-rate 0.74
- *   3 or more              329 refusals   pass-rate 0.42
- *
- * Per cell, the rule would end 38 of 236: 26 that produced no patch at all, 7
- * that failed, and **5 that passed** -- and all 5 landed an edit after the
- * trigger, so those 5 are a real loss, not a byte-identical patch. The trade is
- * 76% of the produced-nothing population against 3% of the passes.
- *
- * It is deliberately NOT the per-key rule tried and refuted in cycle 1: that
- * one fired on cells whose pass-rate was ordinary. This fires only where
- * nothing has worked yet.
- *
- * **Two limits on that trade, found in review and stated here rather than in a
- * commit message.** First, `CONSECUTIVE_BLOCK_LIMIT` already ends most of what
- * this would end: of the 26 produced-nothing cells, 22 ended two calls later
- * anyway on three consecutive refusals. The rule's *incremental* saving is
- * **4 cells and 162 calls** -- 149 of them a single timed-out cell -- against
- * 5 passes that did 65 calls of real repair after the trigger. "76% of the
- * produced-nothing population against 3% of the passes" describes the
- * population, not the margin, and the margin is what a spending rule buys.
- * Second, **no batch on the shipping breaker has ever triggered it**: the only
- * `fc22622` batches recorded zero refusals, so the evidence above comes
- * entirely from earlier breakers.
- *
- * Scope, because the counter's name overpromises: `acceptedEdits` is
- * per-registration, never reset, so "in that turn" means "since this extension
- * loaded" -- identical for a one-prompt attempt, not for a session. And it
- * counts only Satyrn-mutator edits (`details.satyrn`), the same condition
- * `noteChange` requires, so with the flag on in a plain Pi session that never
- * routes edits through the mutator, **every refusal terminates**.
+ * Off by default prevented ordinary exposure; it did not make the rule useful,
+ * and an exposed switch invites enabling. The experiment is preserved in
+ * `tests/test_loop_breaker.mjs`, which pins the behaviour this rule would have
+ * changed, so reintroducing it fails a named row rather than being
+ * rediscovered.
  */
-const REQUIRE_PROGRESS_ENV = "SATYRN_BREAKER_REQUIRE_PROGRESS";
-
-export function requireProgressEnabled(
-	environment: { readonly [key: string]: string | undefined } = process.env,
-): boolean {
-	return environment[REQUIRE_PROGRESS_ENV] === "1";
-}
-
 export default function registerLoopBreaker(pi: ExtensionAPI): void {
 	const breaker = createLoopBreaker();
-	const requireProgress = requireProgressEnabled();
-	let acceptedEdits = 0;
 	let consecutiveBlocks = 0;
 	pi.on("tool_call", async (event) => {
 		let decision: BlockDecision | undefined;
@@ -310,8 +283,7 @@ export default function registerLoopBreaker(pi: ExtensionAPI): void {
 		} catch {
 			// Telemetry is evidence, not permission to run an already-refused call.
 		}
-		const noProgressYet = requireProgress && acceptedEdits === 0;
-		return consecutiveBlocks >= CONSECUTIVE_BLOCK_LIMIT || noProgressYet
+		return consecutiveBlocks >= CONSECUTIVE_BLOCK_LIMIT
 			? { block: true, reason: decision.reason, terminate: true }
 			: { block: true, reason: decision.reason };
 	});
@@ -331,7 +303,6 @@ export default function registerLoopBreaker(pi: ExtensionAPI): void {
 				// absent or malformed digest leaves the window standing.
 				if (typeof path === "string" && typeof sha256 === "string" && SHA256.test(sha256)) {
 					breaker.noteChange(path, sha256);
-					acceptedEdits += 1;
 				}
 			}
 		} catch {

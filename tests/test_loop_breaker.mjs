@@ -7,7 +7,6 @@ import registerLoopBreaker, {
 	CONSECUTIVE_BLOCK_LIMIT,
 	WINDOW,
 	createLoopBreaker,
-	requireProgressEnabled,
 } from "../packages/engine/engine.ts";
 
 const repeated = (toolName = "bash", input = { command: "ls -R" }) => ({
@@ -714,6 +713,52 @@ test("a repeatedly refused call does not terminate a turn that keeps progressing
 // no patch, 7 that failed, 5 that passed -- so it is a spending rule with a
 // real cost, and it is OFF unless a batch asks for it.
 
+// The three rows that exercised the opt-in progress rule are removed with it
+// (2026-09-09). What they asserted -- that a refusal without progress
+// terminates when the flag is set -- describes behaviour the engine no longer
+// has. The measurement that motivated the rule, and the reason it was retired,
+// are recorded at its former definition in engine.ts; the row below still pins
+// the behaviour the rule would have changed.
+
+test("a repeatedly refused call does not terminate a turn that keeps progressing", () => {
+	// The behaviour the refuted remedy would have changed, pinned as it is.
+	// The remedy was: in registerLoopBreaker, terminate when
+	// decision.entry.data.blockedSoFar >= CONSECUTIVE_BLOCK_LIMIT as well as on
+	// consecutive blocks. Under it, `terminate` becomes true at the second
+	// refusal below, so this row is what fails if it is ever reapplied.
+	const { call: onToolCall } = registeredExtension();
+	const looped = repeated("read", { path: "app.py" });
+	const other = repeated("read", { path: "models.py" });
+	const send = (c) => onToolCall({ toolName: c.toolName, input: c.input });
+
+	return (async () => {
+		for (let i = 0; i < THRESHOLD; i += 1) await send(looped);
+		// Two rounds only: the interleaved call accumulates toward THRESHOLD as
+		// well, so a longer alternation refuses `other` too and then terminates
+		// -- which is why "indefinitely" above is withdrawn.
+		for (let i = 0; i < 2; i += 1) {
+			const decision = await send(looped);
+			assert.equal(decision?.block, true, "the repeated call stays refused");
+			assert.equal(
+				decision?.terminate,
+				undefined,
+				"a turn still admitting other calls is refused, not terminated",
+			);
+			const interleaved = await send(other);
+			assert.equal(interleaved, undefined, "the interleaved call is still admitted");
+		}
+	})();
+});
+
+// --- 2026-09-09: the opt-in progress rule, and its default ---
+//
+// Terminate on a refusal only when nothing has been accepted yet in the turn.
+// Measured over 236 retained transcripts: a refusal arriving with no accepted
+// edit sits in a cell whose eventual pass-rate is 0.09, against 0.74 and 0.42
+// once edits have landed. Per cell the rule ends 38 of 236 -- 26 that produced
+// no patch, 7 that failed, 5 that passed -- so it is a spending rule with a
+// real cost, and it is OFF unless a batch asks for it.
+
 test("with the progress rule off, a refusal without progress does not terminate", () => {
 	// The default, and the row that fails if the rule is ever made default-on.
 	const { call } = registeredExtension();
@@ -726,64 +771,3 @@ test("with the progress rule off, a refusal without progress does not terminate"
 	})();
 });
 
-test("requireProgressEnabled reads only the exact opt-in value", () => {
-	assert.equal(requireProgressEnabled({ SATYRN_BREAKER_REQUIRE_PROGRESS: "1" }), true);
-	// The refusal direction: anything else is off, so a stray or truthy-looking
-	// value cannot silently enable a rule that ends turns.
-	for (const value of ["0", "true", "yes", "", undefined]) {
-		assert.equal(
-			requireProgressEnabled({ SATYRN_BREAKER_REQUIRE_PROGRESS: value }),
-			false,
-			`value ${JSON.stringify(value)} must not enable the rule`,
-		);
-	}
-	assert.equal(requireProgressEnabled({}), false);
-});
-
-test("with the progress rule on, a refusal before any accepted edit terminates", () => {
-	// The rule's whole point: a refusal arriving when nothing has landed sits
-	// in a cell whose measured pass-rate is 0.09.
-	const previous = process.env.SATYRN_BREAKER_REQUIRE_PROGRESS;
-	process.env.SATYRN_BREAKER_REQUIRE_PROGRESS = "1";
-	try {
-		const { call } = registeredExtension();
-		const looped = repeated("read", { path: "app.py" });
-		return (async () => {
-			for (let i = 0; i < THRESHOLD; i += 1) {
-				await call({ toolName: looped.toolName, input: looped.input });
-			}
-			const decision = await call({ toolName: looped.toolName, input: looped.input });
-			assert.equal(decision?.block, true);
-			assert.equal(decision?.terminate, true, "nothing has landed; end the turn");
-		})();
-	} finally {
-		if (previous === undefined) delete process.env.SATYRN_BREAKER_REQUIRE_PROGRESS;
-		else process.env.SATYRN_BREAKER_REQUIRE_PROGRESS = previous;
-	}
-});
-
-test("with the progress rule on, an accepted edit spares the turn", () => {
-	// The sibling that stops the rule being a disguised always-terminate: once
-	// an edit has landed, a refusal is a refusal again. Without this row a rule
-	// that ended every refused turn would pass the row above.
-	const previous = process.env.SATYRN_BREAKER_REQUIRE_PROGRESS;
-	process.env.SATYRN_BREAKER_REQUIRE_PROGRESS = "1";
-	try {
-		const { call, result } = registeredExtension();
-		const looped = repeated("read", { path: "app.py" });
-		return (async () => {
-			await result(landedEdit("models.py", "one"));
-			for (let i = 0; i < THRESHOLD; i += 1) {
-				await call({ toolName: looped.toolName, input: looped.input });
-			}
-			const decision = await call({ toolName: looped.toolName, input: looped.input });
-			assert.equal(decision?.block, true);
-			assert.equal(decision?.terminate, undefined, "progress spares the turn");
-		})();
-	} finally {
-		if (previous === undefined) delete process.env.SATYRN_BREAKER_REQUIRE_PROGRESS;
-		else process.env.SATYRN_BREAKER_REQUIRE_PROGRESS = previous;
-	}
-});
-
-// --- 2026-09-09: the runner's prose, and the guideline it must counteract ---
