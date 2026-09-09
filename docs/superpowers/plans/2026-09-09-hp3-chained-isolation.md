@@ -30,7 +30,9 @@ test but one would pass.
 ## Slice 1 — `deliver(..., base=None)`
 
 **Files:** `src/satyrn_engine/delivery.py`; `tests/test_delivery_base.py`;
-`tests/integration/test_delivery_base.py`.
+`tests/test_integration_delivery_chain.py`. *(Corrected after review: this
+plan first named `tests/integration/...` paths, a layout this repository does
+not use -- its integration tier is `tests/test_integration_*.py`.)*
 
 `_preflight` takes the base and resolves it with
 `rev-parse --verify <base>^{commit}`, in place of today's unconditional
@@ -82,7 +84,7 @@ from one whose second phase refuses, in ref count as well as in code.
 
 ## Slice 3 — the chain, for real
 
-**Files:** `tests/integration/test_delivery_chain.py`.
+**Files:** `tests/test_integration_delivery_chain.py`.
 
 Marked `integration`: real Git, real refs, excluded from the default run and
 from CI.
@@ -109,5 +111,5 @@ integration tier, so this cycle is not done until the following has been run
 by hand and its exit code read:
 
 ```
-uv run pytest -q -m integration tests/integration/test_delivery_chain.py tests/integration/test_delivery_base.py
+uv run pytest -q -m integration tests/test_integration_delivery_chain.py
 ```

@@ -113,6 +113,11 @@ def test_re_running_the_same_chain_refuses_and_keeps_the_first_run(
     assert second.code is DeliveryCode.CANDIDATE_EXISTS
     assert second.candidate_ref is None
     assert _tree(repo, first.phases[-1].candidate_commit or "") == before
+    # Reading the tree is not enough: an unreachable object survives a deleted
+    # ref, so a tree check passes over evidence nothing can find any more.
+    # Resolve every ref the first run published.
+    for ref in first.accepted_refs:
+        assert git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").returncode == 0
 
 
 def test_an_unresolvable_base_refuses_rather_than_using_head(
@@ -140,3 +145,42 @@ def test_a_real_base_is_accepted(tmp_path: Path) -> None:
     receipt = deliver(repo, contract, command, 60.0, base=head)
     assert receipt.code is DeliveryCode.OK
     assert receipt.base_commit == head
+
+
+def test_a_mid_chain_refusal_stops_the_chain_and_keeps_what_was_accepted(
+    tmp_path: Path,
+) -> None:
+    """The real rejection witness the plan called for and the suite lacked.
+
+    Phase 2's command exits non-zero, so delivery refuses it. Phase 3 must not
+    run, no final ref may exist, phase 1's ref must still resolve -- that is
+    what makes a mid-chain regression reproducible without re-running -- and
+    the caller's own checkout must be untouched throughout.
+    """
+    repo = make_repo(tmp_path / "repo")
+    phases = list(_phases(tmp_path))
+    failing = tmp_path / "phase-2.yaml"
+    phases[1] = (failing, (sys.executable, "-c", "raise SystemExit(3)"))
+
+    chain = deliver_chain(repo, tuple(phases), timeout=60.0)
+
+    assert chain.code is not DeliveryCode.OK
+    assert len(chain.phases) == 2, "phase 3 must not run after phase 2 refused"
+    assert chain.candidate_ref is None
+    assert len(chain.accepted_refs) == 1
+    assert git(repo, "rev-parse", "--verify",
+               f"{chain.accepted_refs[0]}^{{commit}}").returncode == 0
+    status = subprocess.run(
+        ("git", "status", "--porcelain"), cwd=repo, capture_output=True, check=True
+    )
+    assert status.stdout == b"", "the caller checkout must be untouched"
+
+
+def test_a_chain_of_one_phase_still_publishes_its_candidate(tmp_path: Path) -> None:
+    """The sibling for the refusal above: the stopping logic refuses failures,
+    not chains in general."""
+    repo = make_repo(tmp_path / "repo")
+    chain = deliver_chain(repo, _phases(tmp_path, 1), timeout=60.0)
+    assert chain.code is DeliveryCode.OK
+    assert chain.candidate_ref is not None
+    assert len(chain.accepted_refs) == 1

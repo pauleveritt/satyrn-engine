@@ -1068,8 +1068,17 @@ def deliver_chain(
         receipts.append(receipt)
         if receipt.code is not DeliveryCode.OK:
             return ChainReceipt(tuple(receipts), None, tuple(accepted), receipt.code)
-        if (ref := receipt.candidate_ref) is not None:
-            accepted.append(ref)
+        # An OK receipt missing its candidate is inconsistent, and tolerating
+        # it is worse than failing on it: `base` would fall to None and the
+        # next phase would silently restart from HEAD, producing a chain that
+        # reports OK while carrying none of its predecessors' work. Review
+        # reproduced exactly that through this seam.
+        if receipt.candidate_ref is None or receipt.candidate_commit is None:
+            raise ValueError(
+                "delivery reported OK without a candidate ref and commit; a "
+                "chain cannot advance from a success that produced nothing"
+            )
+        accepted.append(receipt.candidate_ref)
         base = receipt.candidate_commit
     return ChainReceipt(
         tuple(receipts), receipts[-1].candidate_ref, tuple(accepted), DeliveryCode.OK

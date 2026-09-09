@@ -132,3 +132,46 @@ def test_a_successful_chain_differs_observably_from_a_stopped_one() -> None:
     assert (good.code, len(good.accepted_refs), good.candidate_ref is None) != (
         stopped.code, len(stopped.accepted_refs), stopped.candidate_ref is None
     )
+
+
+# --- review finding 3: a malformed success must not restart from HEAD -------
+
+
+class _MalformedOK(_Scripted):
+    """OK receipts that carry no candidate. Reproduced by review through this
+    same seam: two phases with bases `[None, None]`, ending OK with nothing."""
+
+    def __call__(self, repo, contract_path, command, timeout=None, *, base=None):
+        self.bases.append(base)
+        self.calls += 1
+        return _receipt(DeliveryCode.OK, None, None)
+
+
+def test_an_ok_receipt_without_a_candidate_is_refused() -> None:
+    """Tolerating it is worse than failing: `base` falls to None and the next
+    phase restarts from HEAD, so the chain reports OK while carrying none of
+    its predecessors' work."""
+    with pytest.raises(ValueError, match="without a candidate"):
+        deliver_chain(REPO, PHASES, timeout=1.0, deliver=_MalformedOK([]))
+
+
+class _RefWithoutCommit(_Scripted):
+    def __call__(self, repo, contract_path, command, timeout=None, *, base=None):
+        self.bases.append(base)
+        self.calls += 1
+        return _receipt(DeliveryCode.OK, "refs/satyrn/candidates/p/head", None)
+
+
+def test_an_ok_receipt_with_a_ref_but_no_commit_is_refused() -> None:
+    """The half that would otherwise slip through: a ref is enough to be
+    recorded as accepted, while the missing commit is what resets the base."""
+    with pytest.raises(ValueError, match="without a candidate"):
+        deliver_chain(REPO, PHASES, timeout=1.0, deliver=_RefWithoutCommit([]))
+
+
+def test_a_consistent_success_still_advances() -> None:
+    """The sibling: the check above refuses malformed successes, not all of
+    them."""
+    chain, scripted = _run([DeliveryCode.OK] * 3)
+    assert chain.code is DeliveryCode.OK
+    assert scripted.bases == [None, "commit1", "commit2"]
