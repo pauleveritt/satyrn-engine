@@ -629,3 +629,50 @@ test("a repeated state reported straight to the breaker clears nothing", () => {
 
 	assert.equal(breaker.inspect(call)?.block, true);
 });
+
+
+// --- 2026-09-08: why an alternating loop is NOT terminated, on evidence ---
+//
+// Mining 236 retained Engine-cell transcripts showed that the same call key is
+// often refused far more often than CONSECUTIVE_BLOCK_LIMIT: in 49 of the 100
+// cells that broke a loop at all, one key was blocked more than three times,
+// and one cell blocked the same key 30 times. `consecutiveBlocks` resets on any
+// admitted call, so interleaving one different call between re-sends keeps the
+// turn alive indefinitely.
+//
+// That looked like a defect and a remedy was written -- terminate on the
+// per-key `blockedSoFar` the breaker already tracks. The evidence refutes it.
+// Of those 49 cells, **27 passed and 17 failed**: terminating them would have
+// destroyed a majority of successful attempts. A model that keeps re-sending
+// one call while otherwise making progress is not in a loop worth killing, and
+// the two tests above -- that an admitted call, or a fail-open inspection
+// error, resets the count -- are load-bearing rather than incidental.
+//
+// The row below pins the behaviour as intended, so the next reader who notices
+// blockedSoFar climbing to 30 finds the measurement rather than repeating it.
+// What remains open is narrower: whether a call refused many times while the
+// turn makes NO other progress can be told apart from this. That needs a
+// discriminator neither count currently provides.
+
+test("a repeatedly refused call does not terminate a turn that keeps progressing", () => {
+	const { call: onToolCall } = registeredExtension();
+	const looped = repeated("read", { path: "app.py" });
+	const other = repeated("read", { path: "models.py" });
+	const send = (c) => onToolCall({ toolName: c.toolName, input: c.input });
+
+	return (async () => {
+		for (let i = 0; i < THRESHOLD; i += 1) await send(looped);
+		let last;
+		for (let i = 0; i < CONSECUTIVE_BLOCK_LIMIT + 3; i += 1) {
+			last = await send(looped);
+			assert.equal(last?.block, true, "the repeated call stays refused");
+			assert.equal(
+				last?.terminate,
+				undefined,
+				"a turn that is otherwise progressing is not terminated: 27 of the " +
+					"49 cells this pattern appears in passed",
+			);
+			await send(other);
+		}
+	})();
+});
