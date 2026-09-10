@@ -208,7 +208,7 @@ Defined terms: **contract**, with E1's working terms; **adapter** and
 | E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | **done** |
 | E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | **done** |
 | E6 | Packaged | The same `/implement` works outside either source checkout, on POSIX and Windows | **current** |
-| HP3 | Chained isolation | Phase N of a multi-request workload runs in a worktree branched from phase N-1's **accepted commit**, not `HEAD`, so committed code folds forward through the checkout while context folds forward through the packet; a refused phase stops the chain with no candidate ref and no partial chain | **implemented, awaiting acceptance** (`7221982`, `d7946c3`); externally reachable as of 2026-09-10 (`deliver --base`, `337` default-tier tests, `99` integration) — **still not yet re-earned by this repository's own acceptance review**, and `satyrn-evals` has not yet wired its route to call it — see "Composing HP3 into `satyrn-evals`" below |
+| HP3 | Chained isolation | Phase N of a multi-request workload runs in a worktree branched from phase N-1's **accepted commit**, not `HEAD`, so committed code folds forward through the checkout while context folds forward through the packet; a refused phase stops the chain with no candidate ref and no partial chain | **accepted 2026-09-10** (`7221982`, `d7946c3`, `c0f4801`) — independent review confirmed the fold-forward property both in-process and through two real `deliver --base` subprocess calls, no-partial-chain both offline and against real Git, `d7946c3`'s ref-survival fix genuine, `--base` wiring correct end to end, scope discipline held (only `delivery.py`/`cli.py` touched). `337` default-tier + `99` integration tests. `satyrn-evals` has not yet wired its route to call it — see "Composing HP3 into `satyrn-evals`" below |
 
 Done-when criteria are restated in each phase's plan — for E1, the Goal
 of `docs/superpowers/plans/2026-08-16-e1-check.md` — not in this file,
@@ -317,7 +317,12 @@ is not later mistaken for coverage this repository already provides.
 can be sized against it rather than left open-ended:**
 
 1. ~~An external way to drive `deliver_chain`~~ **Done 2026-09-10** —
-   `deliver --base`, above.
+   `deliver --base`, above. Process note, named rather than smoothed over:
+   `c0f4801` asserted the subcommand-vs-flag choice as settled in the same
+   commit that made it, ahead of the acceptance review this item itself
+   said the choice needed. That review has since run and found the choice
+   correct on the merits — this closes the gap, but the sign-off arrived
+   after the assertion, not before it.
 2. A documented mapping from a rendered task description (whatever
    `satyrn-evals` sends as `task`) plus `writable_paths`/`test_command` to
    one `Contract` per phase — this repository's format, `satyrn-evals`'
