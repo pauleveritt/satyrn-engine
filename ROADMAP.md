@@ -277,9 +277,9 @@ the time retention runs). Independently accepted there 2026-09-10
 (`satyrn-evals@9115608`..`141f3bb`): no import of this repository's
 internals, fold-forward proven via a real two-subprocess/real-Git test,
 `orchestrator_mutations` structurally `()` never `None`, and one disclosed
-gap carried forward, not hidden — no per-phase persistence, unlike HP6's
-`run_and_record_chain`. HP7 itself still needs a real Pi process and
-separate spending authorization, neither granted yet.
+gap (no per-phase persistence, unlike HP6's `run_and_record_chain`)
+**closed the same day** (`satyrn-evals@b8ca71a`). HP7 itself still needs a
+real Pi process and spending authorization, neither granted yet.
 
 **`deliver_chain` had no external interface — resolved 2026-09-10.**
 `deliver`'s CLI now takes `--base COMMIT_ISH` (`src/satyrn_engine/cli.py`,
