@@ -208,7 +208,7 @@ Defined terms: **contract**, with E1's working terms; **adapter** and
 | E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | **done** |
 | E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | **done** |
 | E6 | Packaged | The same `/implement` works outside either source checkout, on POSIX and Windows | **current** |
-| HP3 | Chained isolation | Phase N of a multi-request workload runs in a worktree branched from phase N-1's **accepted commit**, not `HEAD`, so committed code folds forward through the checkout while context folds forward through the packet; a refused phase stops the chain with no candidate ref and no partial chain | **accepted 2026-09-10** (`7221982`, `d7946c3`, `c0f4801`) — independent review confirmed the fold-forward property both in-process and through two real `deliver --base` subprocess calls, no-partial-chain both offline and against real Git, `d7946c3`'s ref-survival fix genuine, `--base` wiring correct end to end, scope discipline held (only `delivery.py`/`cli.py` touched). `337` default-tier + `99` integration tests. `satyrn-evals` has not yet wired its route to call it — see "Composing HP3 into `satyrn-evals`" below |
+| HP3 | Chained isolation | Phase N of a multi-request workload runs in a worktree branched from phase N-1's **accepted commit**, not `HEAD`, so committed code folds forward through the checkout while context folds forward through the packet; a refused phase stops the chain with no candidate ref and no partial chain | **accepted 2026-09-10** (`7221982`, `d7946c3`, `c0f4801`) — independent review confirmed the fold-forward property both in-process and through two real `deliver --base` subprocess calls, no-partial-chain both offline and against real Git, `d7946c3`'s ref-survival fix genuine, `--base` wiring correct end to end, scope discipline held (only `delivery.py`/`cli.py` touched). `337` default-tier + `99` integration tests. **`satyrn-evals` has now wired its own packet route to call it and independently accepted that composition, same day** (`satyrn-evals@9115608`..`141f3bb`) — see "Composing HP3 into `satyrn-evals`" below |
 
 Done-when criteria are restated in each phase's plan — for E1, the Goal
 of `docs/superpowers/plans/2026-08-16-e1-check.md` — not in this file,
@@ -263,16 +263,23 @@ than merging the stale branch. That branch also carries the recorded
 deferral of a `facts` field in the handoff contract (`7b847eb`), which Phase
 HP's packet now specifies; read it before re-deciding anything about facts.
 
-### Composing HP3 into `satyrn-evals` — the concrete gap, named 2026-09-10
+### Composing HP3 into `satyrn-evals` — closed 2026-09-10
 
-`satyrn-evals`' HP7 (live route proof) is blocked on this, by explicit
-maintainer decision: it will not run without chained isolation, rather than
-running a narrower operability-only proof
-(`satyrn-evals/docs/current/hp7-live-route-proof-pre-run-record.md`). HP7's
-other blocking gap — the implementer having no way to run its own declared
-test command — is already closed on that side (`command_implementer` now
-runs it and retains the outcome, evidence only, never gating). This one is
-what remains, and it lives here, per the ownership split above.
+`satyrn-evals`' HP7 (live route proof) was blocked on this, by explicit
+maintainer decision, rather than a narrower operability-only proof
+(`satyrn-evals/docs/current/hp7-live-route-proof-pre-run-record.md`). Both
+disclosed blocking gaps are now closed: the implementer running its own
+declared test command, and this one — chained isolation is composed into
+`satyrn-evals`' packet route via `engine_command_implementer` (drives real
+`deliver --base` per phase) and `run_and_record_engine_chain` (git-backed
+retention, since the isolated worktree each phase ran in is already gone by
+the time retention runs). Independently accepted there 2026-09-10
+(`satyrn-evals@9115608`..`141f3bb`): no import of this repository's
+internals, fold-forward proven via a real two-subprocess/real-Git test,
+`orchestrator_mutations` structurally `()` never `None`, and one disclosed
+gap carried forward, not hidden — no per-phase persistence, unlike HP6's
+`run_and_record_chain`. HP7 itself still needs a real Pi process and
+separate spending authorization, neither granted yet.
 
 **`deliver_chain` had no external interface — resolved 2026-09-10.**
 `deliver`'s CLI now takes `--base COMMIT_ISH` (`src/satyrn_engine/cli.py`,
@@ -292,26 +299,22 @@ temporarily forced `base=None` in `main()`, watched this exact test fail,
 then restored the fix. `satyrn-evals` can now drive a chain as an external
 process, respecting its own "does not import engine internals" line.
 
-**The contract and the packet do not carry the same fields.** `Contract`
-(`src/satyrn_engine/contract.py:23-29`) is `id`, `task`, `writable_paths`,
-`test_command` — a YAML file per phase. `satyrn-evals`' `HandoffPacket`
-carries `objective`, `facts`, `preserve`, `self_test_command`,
-`writable_paths`, `redacts`, budgets and a role. `writable_paths` maps
-directly; `self_test_command` maps to `test_command`; `objective`/`facts`/
-`preserve` have no structured home here and would need to fold into
-`task`'s rendered text, the way `satyrn-evals.packet.render_projection`
-already folds them into one prompt string for its own implementer. `redacts`
-and the two budgets have no contract field at all and are not this
-repository's concern to carry.
+**The contract and the packet did not carry the same fields — resolved via
+folding, not a schema change.** `Contract` (`src/satyrn_engine/contract.py:
+23-29`) is `id`, `task`, `writable_paths`, `test_command`; `HandoffPacket`
+carries more (`objective`, `facts`, `preserve`, `redacts`, budgets, a role).
+`writable_paths` maps directly, `self_test_command` maps to `test_command`,
+and the rest folds into `task`'s rendered text via `render_packet` — the
+same text `satyrn-evals`' own implementer already reads, not a second
+rendering. `redacts` and the budgets have no contract field and are not
+this repository's concern (item 2, below).
 
-**`Contract.test_command` is itself declared and never applied here** —
-`delivery.py` never reads it (verified: no reference to `test_command`
-anywhere in that module). This is the same "declared, not applied" shape
-`satyrn-evals`' `self_test_command` had before its 2026-09-10 fix, now
-visible on this side of the same field. Not blocking HP3 composition, since
-`satyrn-evals` already runs its own self-test after the implementer's turn
-regardless of what this repository does with the field — named here so it
-is not later mistaken for coverage this repository already provides.
+**`Contract.test_command` is declared and never applied here** — `delivery.py`
+never reads it. The same "declared, not applied" shape `satyrn-evals`'
+`self_test_command` had before its own fix, now visible on this field.
+Not blocking, since `satyrn-evals` already runs its own self-test after the
+implementer's turn regardless — named so it isn't later mistaken for
+coverage this repository provides.
 
 **What HP3 acceptance and composition need, concretely, stated so a cycle
 can be sized against it rather than left open-ended:**
@@ -323,16 +326,16 @@ can be sized against it rather than left open-ended:**
    said the choice needed. That review has since run and found the choice
    correct on the merits — this closes the gap, but the sign-off arrived
    after the assertion, not before it.
-2. A documented mapping from a rendered task description (whatever
-   `satyrn-evals` sends as `task`) plus `writable_paths`/`test_command` to
-   one `Contract` per phase — this repository's format, `satyrn-evals`'
-   responsibility to render into it, matching the ownership split.
-3. HP3's own Astra-style acceptance review in this repository, independent
-   of implementation — not yet done (see the Phases table above).
+2. ~~A documented mapping from a rendered task description...to one
+   `Contract` per phase~~ **Done 2026-09-10** — `satyrn-evals.packet.
+   contract_yaml`, reusing `render_packet`'s own text for `task`, never
+   leaking `redacts`/role/budgets (`satyrn-evals@9115608`).
+3. ~~HP3's own Astra-style acceptance review~~ **Done 2026-09-10**
+   (`54a6b4a`, Phases table above).
 
-None of this is attempted here. It is named so the next cycle in this
-repository has a stated target instead of a status line reading "proposed"
-against work that already exists.
+All three are done as of 2026-09-10. What remains is outside this
+repository: `satyrn-evals`' HP7 live route proof still needs a real Pi
+process and separate spending authorization before it can run.
 
 ## Backlog
 
