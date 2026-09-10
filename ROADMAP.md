@@ -208,7 +208,7 @@ Defined terms: **contract**, with E1's working terms; **adapter** and
 | E4 | One bounded replacement | A single file replacement runs Pi → TypeScript → Python with revision checking | **done** |
 | E5 | One real attempt | `attempt` and `/implement` complete one named task end to end from a source checkout | **done** |
 | E6 | Packaged | The same `/implement` works outside either source checkout, on POSIX and Windows | **current** |
-| HP3 | Chained isolation | Phase N of a multi-request workload runs in a worktree branched from phase N-1's **accepted commit**, not `HEAD`, so committed code folds forward through the checkout while context folds forward through the packet; a refused phase stops the chain with no candidate ref and no partial chain | **implemented, awaiting acceptance** (`7221982`, `d7946c3`) — `deliver_chain` exists and is tested (332 tests pass); **not yet re-earned by this repository's own acceptance review**, and not yet reachable from outside this repository — see "Composing HP3 into `satyrn-evals`" below |
+| HP3 | Chained isolation | Phase N of a multi-request workload runs in a worktree branched from phase N-1's **accepted commit**, not `HEAD`, so committed code folds forward through the checkout while context folds forward through the packet; a refused phase stops the chain with no candidate ref and no partial chain | **implemented, awaiting acceptance** (`7221982`, `d7946c3`); externally reachable as of 2026-09-10 (`deliver --base`, `337` default-tier tests, `99` integration) — **still not yet re-earned by this repository's own acceptance review**, and `satyrn-evals` has not yet wired its route to call it — see "Composing HP3 into `satyrn-evals`" below |
 
 Done-when criteria are restated in each phase's plan — for E1, the Goal
 of `docs/superpowers/plans/2026-08-16-e1-check.md` — not in this file,
@@ -274,14 +274,23 @@ test command — is already closed on that side (`command_implementer` now
 runs it and retains the outcome, evidence only, never gating). This one is
 what remains, and it lives here, per the ownership split above.
 
-**`deliver_chain` has no external interface.** It is a Python function
-(`src/satyrn_engine/delivery.py:1035`), exercised only by this repository's
-own tests. The CLI's `deliver` subcommand (`src/satyrn_engine/cli.py:80-105,
-162-176`) calls the single-phase `deliver()` with no `base` argument at
-all — not even exposed as a flag — so nothing outside a Python import of
-this package's internals can drive a chain. `satyrn-evals` does not import
-engine internals (the line this repository itself draws, above); as things
-stand today it has no way to call this that respects that line.
+**`deliver_chain` had no external interface — resolved 2026-09-10.**
+`deliver`'s CLI now takes `--base COMMIT_ISH` (`src/satyrn_engine/cli.py`,
+`_nonblank_base`), threading straight through to `deliver(..., base=...)`.
+This completes the HP3 design doc's own intent
+(`docs/superpowers/specs/2026-09-09-hp3-chained-isolation-design.md`
+§2-3: "the fix is a parameter and a loop rather than a new subsystem";
+"No new subcommand") rather than reopening it — the parameter existed on
+`deliver()` already, only the CLI flag exposing it to an external caller
+was missing. Proven against real Git, through the real CLI subprocess, not
+`deliver_chain`'s own in-process loop: two real `satyrn-engine deliver`
+calls, the second's `--base` set to the first's real `candidate_commit`,
+phase 2's tree checked to contain both phases' files
+(`tests/test_integration_delivery.py::test_base_composes_two_real_cli_deliveries_into_one_fold_forward`).
+Verified the test actually catches a regression, not just an addition:
+temporarily forced `base=None` in `main()`, watched this exact test fail,
+then restored the fix. `satyrn-evals` can now drive a chain as an external
+process, respecting its own "does not import engine internals" line.
 
 **The contract and the packet do not carry the same fields.** `Contract`
 (`src/satyrn_engine/contract.py:23-29`) is `id`, `task`, `writable_paths`,
@@ -307,10 +316,8 @@ is not later mistaken for coverage this repository already provides.
 **What HP3 acceptance and composition need, concretely, stated so a cycle
 can be sized against it rather than left open-ended:**
 
-1. An external way to drive `deliver_chain` — a CLI subcommand, or `deliver`
-   gaining a `--base` flag a caller can loop over itself. Either closes the
-   internals-import problem; which one is this repository's call, made with
-   its own acceptance review, not asserted from `satyrn-evals`.
+1. ~~An external way to drive `deliver_chain`~~ **Done 2026-09-10** —
+   `deliver --base`, above.
 2. A documented mapping from a rendered task description (whatever
    `satyrn-evals` sends as `task`) plus `writable_paths`/`test_command` to
    one `Contract` per phase — this repository's format, `satyrn-evals`'

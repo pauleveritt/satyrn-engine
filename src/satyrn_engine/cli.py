@@ -12,7 +12,7 @@ from types import FrameType
 
 from .attempt import MODEL_ENV, AttemptCode, SubprocessPiRunner, attempt
 from .check import check
-from .delivery import DEFAULT_TIMEOUT, deliver
+from .delivery import DEFAULT_TIMEOUT, base_is_wellformed, deliver
 from .exits import ExitCode
 from .protocol import run_protocol
 
@@ -90,6 +90,21 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help=f"command timeout in seconds (default: {DEFAULT_TIMEOUT:g})",
     )
+    deliver_parser.add_argument(
+        "--base",
+        type=_nonblank_base,
+        default=None,
+        metavar="COMMIT_ISH",
+        help=(
+            "base commit-ish to branch delivery from, resolved with "
+            "rev-parse --verify (default: the caller's HEAD). An external "
+            "caller loops this flag across an ordered sequence of "
+            "deliveries -- phase 1 from HEAD, phase N from phase N-1's own "
+            "candidate commit -- to compose HP3's chained isolation without "
+            "importing this package (see delivery.deliver_chain for the "
+            "same loop run in-process)."
+        ),
+    )
 
     attempt_parser = subparsers.add_parser(
         "attempt",
@@ -117,6 +132,17 @@ def _positive_finite_timeout(value: str) -> float:
     if not math.isfinite(timeout) or timeout <= 0:
         raise argparse.ArgumentTypeError("timeout must be a finite number greater than zero")
     return timeout
+
+
+def _nonblank_base(value: str) -> str:
+    """CLI-level sibling of ``delivery.base_is_wellformed``: refuse a blank
+    ``--base`` at the parser, before it can reach ``deliver`` and be
+    resolved against ``HEAD`` by a caller who forgot to check it -- blank is
+    not absent, and mapping it to ``HEAD`` would silently base a chained
+    phase on the caller's head instead of its predecessor's commit."""
+    if not base_is_wellformed(value):
+        raise argparse.ArgumentTypeError("base must not be blank")
+    return value
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -167,6 +193,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     Path(args.contract),
                     args.attempt_command,
                     args.timeout,
+                    base=args.base,
                 )
         except _DeliveryTerminationRequested:
             return 128 + signal.SIGTERM

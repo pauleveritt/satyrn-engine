@@ -25,6 +25,8 @@ def delivery_argv(
     contract: Path,
     command: Sequence[str],
     timeout: float,
+    *,
+    base: str | None = None,
 ) -> tuple[str, ...]:
     return (
         os.fspath(Path(sys.executable).with_name("satyrn-engine")),
@@ -33,6 +35,7 @@ def delivery_argv(
         str(repo),
         "--timeout",
         str(timeout),
+        *(("--base", base) if base is not None else ()),
         str(contract),
         "--",
         *command,
@@ -73,9 +76,10 @@ def run_delivery(
     *,
     timeout: float = 30.0,
     environment: dict[str, str] | None = None,
+    base: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
     proc = subprocess.run(
-        delivery_argv(repo, contract, command, timeout),
+        delivery_argv(repo, contract, command, timeout, base=base),
         cwd=ROOT,
         env=environment,
         capture_output=True,
@@ -122,6 +126,45 @@ def test_clean_root_reaches_no_changes_without_touching_source(tmp_path: Path) -
         "worktree_path": None,
     }
     assert_source_unchanged(repo, before)
+
+
+def test_base_composes_two_real_cli_deliveries_into_one_fold_forward(
+    tmp_path: Path,
+) -> None:
+    """The CLI-level sibling of `test_integration_delivery_chain.py`'s own
+    fold-forward proof -- that test drives `deliver_chain` in process; this
+    one drives two real `satyrn-engine deliver` subprocess calls, `--base`
+    threaded by hand the way an external caller (never importing this
+    package) has to. Against a build that parses `--base` but ignores it,
+    phase 2's tree holds only `phase2.txt` and this assertion fails."""
+    repo = make_repo(tmp_path / "repo")
+    contract_one = tmp_path / "phase-1.yaml"
+    contract_one.write_text("id: 'phase-1'\ntask: 'add phase 1'\n", encoding="utf-8")
+    contract_two = tmp_path / "phase-2.yaml"
+    contract_two.write_text("id: 'phase-2'\ntask: 'add phase 2'\n", encoding="utf-8")
+
+    _, receipt_one = run_delivery(
+        repo,
+        contract_one,
+        (sys.executable, "-c", "open('phase1.txt', 'w').write('1')"),
+    )
+    assert receipt_one["code"] == "OK", receipt_one
+    base = receipt_one["candidate_commit"]
+    assert isinstance(base, str) and base
+
+    _, receipt_two = run_delivery(
+        repo,
+        contract_two,
+        (sys.executable, "-c", "open('phase2.txt', 'w').write('2')"),
+        base=base,
+    )
+    assert receipt_two["code"] == "OK", receipt_two
+
+    tree = subprocess.run(
+        ("git", "ls-tree", "-r", "--name-only", receipt_two["candidate_commit"]),
+        cwd=repo, capture_output=True, check=True, text=True,
+    ).stdout.split()
+    assert {"phase1.txt", "phase2.txt"} <= set(tree)
 
 
 @pytest.mark.parametrize(

@@ -225,6 +225,63 @@ def test_deliver_cli_refuses_non_positive_or_non_finite_timeout(timeout: str) ->
     assert excinfo.value.code == int(ExitCode.USAGE)
 
 
+def test_deliver_cli_defaults_base_to_none() -> None:
+    """`None` must reach `deliver` unchanged -- it is what keeps today's
+    HEAD-derived behaviour exactly as it was for every caller that never
+    passes --base (HP3 design doc, section 3)."""
+    args = parse_args(["deliver", "--repo", ".", "contract.yaml", "--", "tool"])
+    assert args.base is None
+
+
+def test_deliver_cli_accepts_a_base_commit_ish() -> None:
+    args = parse_args(
+        ["deliver", "--repo", ".", "--base", "abc1234", "contract.yaml", "--", "tool"]
+    )
+    assert args.base == "abc1234"
+
+
+def test_deliver_cli_refuses_a_blank_base() -> None:
+    """Blank is not absent (`delivery.base_is_wellformed`'s own docstring):
+    mapping it to HEAD would silently base a chained phase on the caller's
+    head instead of its predecessor's commit, the one failure HP3 exists to
+    prevent and the one that looks like success."""
+    with pytest.raises(SystemExit) as excinfo:
+        parse_args(["deliver", "--repo", ".", "--base", "  ", "contract.yaml", "--", "tool"])
+    assert excinfo.value.code == int(ExitCode.USAGE)
+
+
+def test_deliver_cli_passes_base_through_to_deliver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_deliver(repo: Path, contract: Path, command: tuple[str, ...], timeout: float, *, base: str | None = None) -> DeliveryReceipt:
+        captured["base"] = base
+        return _receipt(DeliveryCode.OK)
+
+    monkeypatch.setattr(cli, "deliver", fake_deliver)
+    code = cli.main(
+        ["deliver", "--repo", ".", "--base", "abc1234", "contract.yaml", "--", "tool"]
+    )
+    assert code == 0
+    assert captured["base"] == "abc1234"
+
+
+def test_deliver_cli_passes_none_through_when_base_is_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_deliver(repo: Path, contract: Path, command: tuple[str, ...], timeout: float, *, base: str | None = None) -> DeliveryReceipt:
+        captured["base"] = base
+        return _receipt(DeliveryCode.OK)
+
+    monkeypatch.setattr(cli, "deliver", fake_deliver)
+    code = cli.main(["deliver", "--repo", ".", "contract.yaml", "--", "tool"])
+    assert code == 0
+    assert captured["base"] is None
+
+
 def test_deliver_cli_requires_literal_separator() -> None:
     with pytest.raises(SystemExit) as excinfo:
         parse_args(["deliver", "--repo", ".", "contract.yaml", "tool"])
@@ -294,7 +351,7 @@ def test_deliver_help_without_separator_remains_available(
 def test_deliver_cli_supports_an_embedded_text_only_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
     stdout = io.StringIO()
     monkeypatch.setattr(cli.sys, "stdout", stdout)
-    monkeypatch.setattr(cli, "deliver", lambda *args: _receipt(DeliveryCode.OK))
+    monkeypatch.setattr(cli, "deliver", lambda *args, **kwargs: _receipt(DeliveryCode.OK))
     code = cli.main(["deliver", "--repo", ".", "contract.yaml", "--", "tool"])
     assert code == 0
     assert stdout.getvalue() == _receipt(DeliveryCode.OK).render()
@@ -304,7 +361,7 @@ def test_deliver_cli_reserves_exit_one_when_receipt_stdout_is_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(cli.sys, "stdout", _BrokenStdout())
-    monkeypatch.setattr(cli, "deliver", lambda *args: _receipt(DeliveryCode.OK))
+    monkeypatch.setattr(cli, "deliver", lambda *args, **kwargs: _receipt(DeliveryCode.OK))
 
     assert cli.main(["deliver", "--repo", ".", "contract.yaml", "--", "tool"]) == 1
 
@@ -314,8 +371,8 @@ def test_deliver_cli_unwinds_on_sigterm_and_restores_the_handler(
 ) -> None:
     previous = signal.getsignal(signal.SIGTERM)
 
-    def terminate(*args: object) -> DeliveryReceipt:
-        del args
+    def terminate(*args: object, **kwargs: object) -> DeliveryReceipt:
+        del args, kwargs
         os.kill(os.getpid(), signal.SIGTERM)
         raise AssertionError("SIGTERM handler did not unwind delivery")
 
