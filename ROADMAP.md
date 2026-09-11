@@ -20,10 +20,11 @@ when what's in flight changes; do not grow it back into prose.
 - **Accepted, standing:** HP3 (chained isolation) — see the HP3 row and
   its own section below. `satyrn-evals`' own HP7 live-route proof still
   needs its own spending authorization there, not owned by this repository.
-- **Proposed, not started:** Phase V — verified, bounded delivery. Direction
-  and cycle sketch in the Phases table below; **no cycle has a confirmed
-  design yet** (`CLAUDE.md`'s gate). V1 is next: an analysis cycle over
-  `satyrn-evals`' Phase TE evidence, before V2–V4's shape is locked in.
+- **Track A closed, Track B proposed:** Phase V — verified, bounded delivery.
+  `satyrn-evals`' Track A (V1–V3) is closed (`satyrn-evals@2d20aac`) and
+  published its Track B gate and an exploratory engine gap register; this
+  repository owns Track B (V4–V6), which needs a design proposal per
+  `CLAUDE.md`'s gate before any code.
 
 ## Concept budget
 
@@ -44,12 +45,13 @@ defined until a cycle's design actually needs it.
 |---|-------|--------------------------|--------|
 | E | The walking skeleton, then evidence-driven refinement (E1–E10) | Contract to refused/delivered candidate, through a real model attempt, packaged | **closed 2026-09-11** — archived in [`docs/superpowers/phase-history.md`](docs/superpowers/phase-history.md); E6 (packaging outside a checkout) was never separately verified and is carried forward as backlog, not resumed as E work |
 | HP3 | Chained isolation | Phase N of a multi-request workload runs in a worktree branched from phase N-1's **accepted commit**, not `HEAD`, so committed code folds forward through the checkout while context folds forward through the packet; a refused phase stops the chain with no candidate ref and no partial chain | **accepted 2026-09-10** (`7221982`, `d7946c3`, `c0f4801`) — independent review confirmed the fold-forward property both in-process and through two real `deliver --base` subprocess calls, no-partial-chain both offline and against real Git, `d7946c3`'s ref-survival fix genuine, `--base` wiring correct end to end, scope discipline held (only `delivery.py`/`cli.py` touched). `337` default-tier + `99` integration tests. **`satyrn-evals` has now wired its own packet route to call it and independently accepted that composition, same day** (`satyrn-evals@9115608`..`141f3bb`) — see "Composing HP3 into `satyrn-evals`" below |
-| V | Verified, bounded delivery — **proposed, no cycle confirmed** | A model attempt returns a candidate whose validation status is authoritative (not the model's own prose) and cannot spend past a declared turn/deadline budget without retaining evidence — then one bounded live proof | **proposed 2026-09-11**, sketch only: **V1** analyze `satyrn-evals`' Phase TE transcripts for what the evidence actually names as the next-highest-value engine gap, before locking V2–V4's design; **V2** make `Contract.test_command`'s result authoritative on `AttemptResult`, independent of model-generated text; **V3** enforce a real whole-attempt turn limit and wall-clock deadline, retaining partial work on exhaustion; **V4** one separately authorized live proof of the composed route. A gated follow-on (one bounded repair handoff, at most one fresh implementer retry with the real public failure) is named, not started, and waits for V2–V4 to be accepted first |
+| V | Verified, bounded delivery — **Track A closed; Track B proposed** | A model attempt returns a candidate whose validation status is authoritative (not the model's own prose) and cannot spend past a declared turn/deadline budget without retaining evidence — then one bounded live proof | **Track A closed 2026-09-11 in `satyrn-evals`** — design `docs/current/phase-v-design.md` at revision `2d20aac`, superseding this sketch. **Track A (analysis, closed):** V1 claim inventory + per-phase ledger; V2 claim-level measures + census/pathology repair; V3 close-out + exploratory engine gap register. **Track B (this repository, proposed):** V4 make `Contract.test_command`'s result authoritative on `AttemptResult`, independent of model-generated text; V5 a real whole-attempt turn limit and wall-clock deadline, retaining partial work on exhaustion; V6 one separately authorized live proof, `n` frozen at 1. Track B starts only after Track A's gate, which is published; the register names the candidates Track B acts on. A gated follow-on (one bounded repair handoff, at most one fresh implementer retry with the real public failure) is named, not started, and waits for V4–V6 to be accepted first |
 
 Done-when criteria are restated in each phase's plan — for E1, the Goal
 of `docs/superpowers/plans/2026-08-16-e1-check.md` — not in this file,
-to avoid drift between two copies. Phase V has no plan yet; V1 is a
-design proposal away from one.
+to avoid drift between two copies. Phase V has no plan yet in this
+repository; Track B's first cycle (V4) is a design proposal away from one,
+and Track A's plan lives in `satyrn-evals`.
 
 ### HP3, and why a cycle from another repository appears here
 
