@@ -11,6 +11,13 @@ brief — and the current phase live in `ROADMAP.md` in this checkout.
 ```{toctree}
 :maxdepth: 1
 :caption: Design record
+
+phase-history
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: Design record
 :glob:
 
 specs/*

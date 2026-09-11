@@ -55,7 +55,9 @@ Phases completed, each with its design spec and implementation plan:
   <superpowers/specs/2026-08-20-e5-real-attempt-design>`, {doc}`plan
   <superpowers/plans/2026-08-20-e5-real-attempt>`)
 
-The roadmap and the next phase (E6 — Packaged) live in
+Phase E (E1–E10) is closed and archived —
+[`docs/superpowers/phase-history.md`](superpowers/phase-history). The
+roadmap and the active phase live in
 [`ROADMAP.md`](https://github.com/pauleveritt/satyrn-engine/blob/main/ROADMAP.md).
 
 ## What is Satyrn Engine?
@@ -101,7 +103,8 @@ One phase at a time, each shipping one user-visible behavior:
 - **E5 — One real attempt.** `attempt` and `/implement` complete one named
   task end to end. *Complete.*
 - **E6 — Packaged.** The same `/implement` works outside either source
-  checkout. *Current.*
+  checkout. *Never separately verified; Phase E closed 2026-09-11 without
+  it — see `docs/superpowers/phase-history.md`. Carried forward as backlog.*
 
 The roadmap, concept budget, and backlog live in `ROADMAP.md` at the
 repository root; the mission and status live in the README.
