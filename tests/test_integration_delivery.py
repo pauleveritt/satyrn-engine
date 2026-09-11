@@ -12,6 +12,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
+import yaml
 
 import satyrn_engine.delivery as delivery
 
@@ -69,6 +70,24 @@ def write_contract(path: Path, candidate_id: str = "greeting") -> Path:
     return path
 
 
+def write_test_contract(
+    path: Path, candidate_id: str, test_command: Sequence[str]
+) -> Path:
+    """Write a contract whose declared test command the engine must run."""
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "id": candidate_id,
+                "task": "make a bounded change",
+                "test_command": list(test_command),
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def run_delivery(
     repo: Path,
     contract: Path,
@@ -123,6 +142,9 @@ def test_clean_root_reaches_no_changes_without_touching_source(tmp_path: Path) -
         "candidate_commit": None,
         "changed_paths": [],
         "command_exit": 0,
+        "validation": "not_applicable",
+        "validation_exit": None,
+        "validation_output": None,
         "worktree_path": None,
     }
     assert_source_unchanged(repo, before)
@@ -361,6 +383,9 @@ def test_success_creates_candidate_with_exact_parent_and_paths(tmp_path: Path) -
         "candidate_commit": candidate_commit,
         "changed_paths": ["added.txt", "deleted.txt", "kept.txt"],
         "command_exit": 0,
+        "validation": "not_requested",
+        "validation_exit": None,
+        "validation_output": None,
         "worktree_path": None,
     }
     assert git(repo, "rev-parse", candidate_ref).stdout.strip().decode() == candidate_commit
@@ -620,6 +645,9 @@ def test_failed_attempt_is_discarded_without_candidate(
         "candidate_commit": None,
         "changed_paths": None,
         "command_exit": command_exit,
+        "validation": "not_applicable",
+        "validation_exit": None,
+        "validation_output": None,
         "worktree_path": None,
     }
     assert git(repo, "show-ref", "--verify", str(receipt["candidate_ref"])).returncode != 0
@@ -649,6 +677,9 @@ def test_timeout_kills_same_process_group_descendant(tmp_path: Path) -> None:
         "candidate_commit": None,
         "changed_paths": None,
         "command_exit": None,
+        "validation": "not_applicable",
+        "validation_exit": None,
+        "validation_output": None,
         "worktree_path": None,
     }
     time.sleep(1.0)
@@ -884,4 +915,184 @@ def test_non_utf8_path_refuses_publication_and_utf8_sibling_succeeds(tmp_path: P
     valid_script = "from pathlib import Path; Path('valid.txt').write_text('valid')"
     _, accepted = run_delivery(repo, valid, (sys.executable, "-c", valid_script))
     assert accepted["code"] == "OK", accepted
+    assert_source_unchanged(repo, before)
+
+
+# --- V4: engine-owned validation against the exact candidate commit --------
+
+
+def test_validation_failure_retains_candidate_and_evidence(
+    tmp_path: Path,
+) -> None:
+    """The register's key finding, re-earned through the composed route.
+
+    The implementer process exits successfully while its change fails the
+    contract's own tests, and it never invokes the tests itself -- the engine
+    runs them against the final candidate. The candidate and the failure
+    evidence survive cleanup; only the coarse code differs from a clean pass.
+    """
+    repo = make_repo(tmp_path / "repo")
+    contract = write_test_contract(
+        tmp_path / "contract.yaml",
+        "breaking-edit",
+        (
+            sys.executable,
+            "-c",
+            "from pathlib import Path; assert Path('app.py').read_text() == 'good'",
+        ),
+    )
+    implementer = (
+        "from pathlib import Path; "
+        "Path('app.py').write_text('good'); "  # a later breaking edit
+        "Path('app.py').write_text('bad')"
+    )
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", implementer))
+
+    assert proc.returncode == 13
+    assert receipt["outcome"] == "candidate-created"
+    assert receipt["code"] == "TESTS_FAILED"
+    assert receipt["validation"] == "failed"
+    assert receipt["validation_exit"] == 1
+    assert receipt["candidate_commit"] is not None
+    assert receipt["changed_paths"] == ["app.py"]
+    assert "AssertionError" in str(receipt["validation_output"])
+    assert git(repo, "show", f"{receipt['candidate_commit']}:app.py").stdout == b"bad"
+    assert_source_unchanged(repo, before)
+
+
+def test_validation_passes_when_the_final_candidate_passes(
+    tmp_path: Path,
+) -> None:
+    """The sibling success test: a candidate that passes its own suite keeps
+    code OK and records PASSED."""
+    repo = make_repo(tmp_path / "repo")
+    contract = write_test_contract(
+        tmp_path / "contract.yaml",
+        "passing",
+        (
+            sys.executable,
+            "-c",
+            "from pathlib import Path; assert Path('app.py').read_text() == 'good'",
+        ),
+    )
+    implementer = "from pathlib import Path; Path('app.py').write_text('good')"
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", implementer))
+
+    assert proc.returncode == 0
+    assert receipt["code"] == "OK"
+    assert receipt["validation"] == "passed"
+    assert receipt["validation_exit"] == 0
+    assert receipt["candidate_commit"] is not None
+    assert git(repo, "show", f"{receipt['candidate_commit']}:app.py").stdout == b"good"
+    assert_source_unchanged(repo, before)
+
+
+def test_validation_timeout_records_timed_out_and_keeps_candidate(
+    tmp_path: Path,
+) -> None:
+    repo = make_repo(tmp_path / "repo")
+    contract = write_test_contract(
+        tmp_path / "contract.yaml",
+        "timed-out",
+        (sys.executable, "-c", "import time; time.sleep(2)"),
+    )
+    implementer = "from pathlib import Path; Path('app.py').write_text('x')"
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(
+        repo,
+        contract,
+        (sys.executable, "-c", implementer),
+        timeout=0.5,
+    )
+
+    assert proc.returncode == 0
+    assert receipt["code"] == "OK"
+    assert receipt["validation"] == "timed_out"
+    assert receipt["validation_exit"] is None
+    assert receipt["candidate_commit"] is not None
+    assert_source_unchanged(repo, before)
+
+
+def test_validation_timeout_kills_same_process_group_descendant(
+    tmp_path: Path,
+) -> None:
+    """A timing-out test command tears down its whole process group, so a
+    descendant it spawned cannot orphan into the worktree and block removal."""
+    repo = make_repo(tmp_path / "repo")
+    sentinel = tmp_path / "late-write"
+    child = (
+        "import time, pathlib; "
+        f"time.sleep(0.8); pathlib.Path({str(sentinel)!r}).write_text('late')"
+    )
+    parent = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {child!r}]); time.sleep(10)"
+    )
+    contract = write_test_contract(
+        tmp_path / "contract.yaml",
+        "validation-timeout-descendant",
+        (sys.executable, "-c", parent),
+    )
+    implementer = "from pathlib import Path; Path('app.py').write_text('x')"
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(
+        repo,
+        contract,
+        (sys.executable, "-c", implementer),
+        timeout=0.1,
+    )
+
+    assert proc.returncode == 0
+    assert receipt["code"] == "OK"
+    assert receipt["validation"] == "timed_out"
+    assert receipt["candidate_commit"] is not None
+    time.sleep(1.0)
+    assert not sentinel.exists()
+    assert_source_unchanged(repo, before)
+
+
+def test_validation_unavailable_records_unavailable_and_keeps_candidate(
+    tmp_path: Path,
+) -> None:
+    repo = make_repo(tmp_path / "repo")
+    contract = write_test_contract(
+        tmp_path / "contract.yaml",
+        "unavailable",
+        ("definitely-not-a-real-v4-test-command",),
+    )
+    implementer = "from pathlib import Path; Path('app.py').write_text('x')"
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", implementer))
+
+    assert proc.returncode == 0
+    assert receipt["code"] == "OK"
+    assert receipt["validation"] == "unavailable"
+    assert receipt["validation_exit"] is None
+    assert "cannot run test command" in str(receipt["validation_output"])
+    assert receipt["candidate_commit"] is not None
+    assert_source_unchanged(repo, before)
+
+
+def test_no_test_command_records_not_requested(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path / "repo")
+    contract = write_contract(tmp_path / "contract.yaml", "no-tests")
+    before = source_snapshot(repo)
+
+    _, receipt = run_delivery(
+        repo,
+        contract,
+        (sys.executable, "-c", "from pathlib import Path; Path('app.py').write_text('x')"),
+    )
+
+    assert receipt["code"] == "OK"
+    assert receipt["validation"] == "not_requested"
+    assert receipt["validation_exit"] is None
+    assert receipt["validation_output"] is None
     assert_source_unchanged(repo, before)

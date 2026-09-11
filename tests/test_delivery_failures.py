@@ -785,3 +785,130 @@ def test_cleanup_diagnostic_never_masks_the_original_error(monkeypatch: pytest.M
 
     monkeypatch.setattr(delivery.sys, "stderr", BrokenStderr())
     delivery._write_cleanup_diagnostic("ignored")
+
+
+def test_cleanup_failure_preserves_pending_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CLEANUP_FAILED early return reports the pending result's own
+    validation fields instead of reverting to the non-candidate default."""
+    parent = tmp_path / "owned"
+    parent.mkdir()
+    monkeypatch.setattr(delivery, "_temporary_parent", lambda ctx: parent)
+    monkeypatch.setattr(delivery, "_git", lambda *args, **kwargs: git_result())
+    monkeypatch.setattr(delivery, "_worktree_registered", lambda *args: True)
+
+    def failing_tests(
+        ctx: delivery._DeliveryContext,
+        state: delivery._AttemptState,
+        command: tuple[str, ...],
+        timeout: float,
+    ) -> delivery.DeliveryReceipt:
+        del command, timeout
+        state.cleanup_gate = delivery._CleanupGate.CLOSED
+        state.process_detail = "direct child did not exit after SIGKILL"
+        return delivery._context_receipt(
+            ctx,
+            delivery.DeliveryCode.TESTS_FAILED,
+            "candidate created; contract test_command failed with exit 1",
+            candidate_commit="c" * 40,
+            changed_paths=("app.py",),
+            command_exit=0,
+            validation=delivery.ValidationOutcome.FAILED,
+            validation_exit=1,
+            validation_output="1 failed",
+        )
+
+    monkeypatch.setattr(delivery, "_run_and_commit", failing_tests)
+    monkeypatch.setattr(delivery, "_remove_worktree", lambda *args: None)
+
+    receipt = delivery._attempt(context(tmp_path), ("unused",), 1.0)
+
+    assert receipt.code is delivery.DeliveryCode.CLEANUP_FAILED
+    assert "pending result TESTS_FAILED" in receipt.message
+    assert receipt.validation is delivery.ValidationOutcome.FAILED
+    assert receipt.validation_exit == 1
+    assert receipt.validation_output == "1 failed"
+    assert parent.exists()
+    shutil.rmtree(parent)
+
+
+@pytest.mark.parametrize("existing", [True, False])
+def test_publish_failure_preserves_pending_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    existing: bool,
+) -> None:
+    """A failed candidate-ref update still reports the validation that ran
+    against the candidate commit, not NOT_APPLICABLE (which means no candidate)."""
+    ctx = context(tmp_path)
+    pending = delivery._context_receipt(
+        ctx,
+        delivery.DeliveryCode.TESTS_FAILED,
+        "candidate created; contract test_command failed with exit 1",
+        candidate_commit="c" * 40,
+        changed_paths=("app.py",),
+        command_exit=0,
+        validation=delivery.ValidationOutcome.FAILED,
+        validation_exit=1,
+        validation_output="1 failed",
+    )
+    monkeypatch.setattr(
+        delivery,
+        "_git",
+        lambda *args, **kwargs: git_result(128, stderr=b"update-ref failed"),
+    )
+    monkeypatch.setattr(delivery, "_ref_exists", lambda root, environment, ref: existing)
+
+    receipt = delivery._publish(ctx, pending)
+
+    assert receipt.code == ("CANDIDATE_EXISTS" if existing else "GIT_FAILED")
+    assert receipt.candidate_commit == "c" * 40
+    assert receipt.changed_paths == ("app.py",)
+    assert receipt.command_exit == 0
+    assert receipt.validation is delivery.ValidationOutcome.FAILED
+    assert receipt.validation_exit == 1
+    assert receipt.validation_output == "1 failed"
+
+
+def test_test_command_timeout_tears_down_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timing-out test command must not orphan descendants: the run starts
+    its own process group and tears the whole group down before returning
+    TIMED_OUT."""
+
+    class TimingOutProcess:
+        pid = 123
+        returncode = None
+
+        def __init__(self) -> None:
+            self.communications = 0
+
+        def communicate(self, timeout: float | None = None):
+            self.communications += 1
+            if self.communications == 1:
+                raise subprocess.TimeoutExpired("test-command", timeout)
+            return (b"partial", None)
+
+    started: dict[str, object] = {}
+
+    def fake_popen(command, cwd, env, stdin, stdout, stderr, start_new_session):
+        started["command"] = command
+        started["start_new_session"] = start_new_session
+        return TimingOutProcess()
+
+    teardowns: list[object] = []
+
+    monkeypatch.setattr(delivery.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        delivery, "_teardown_process_group", lambda process: teardowns.append(process)
+    )
+
+    result = delivery._run_test_command(("pytest",), Path("/tmp"), {}, 30.0)
+
+    assert result.timed_out
+    assert result.output == b"partial"
+    assert started["start_new_session"] is True
+    assert len(teardowns) == 1

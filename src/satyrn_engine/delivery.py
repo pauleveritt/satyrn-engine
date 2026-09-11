@@ -11,13 +11,14 @@ import time
 from codecs import getincrementaldecoder
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum, StrEnum, auto
 from pathlib import Path
 from typing import BinaryIO, Literal, Protocol, TypedDict
 
 from .check import check
 from .exits import ExitCode
+from .runner import tail_output
 
 DEFAULT_TIMEOUT = 30.0
 RECEIPT_VERSION: Literal[1] = 1
@@ -31,10 +32,29 @@ class DeliveryOutcome(StrEnum):
     REFUSED = "refused"
 
 
+class ValidationOutcome(StrEnum):
+    """What the engine's own run of the contract's test command established.
+
+    ``None`` never stands in for a missing verdict. ``NOT_REQUESTED`` means
+    "no ``test_command`` declared", ``UNAVAILABLE`` means "declared but not
+    runnable", and ``NOT_APPLICABLE`` means "no candidate was created, so
+    there is nothing to validate". The three are distinct so a reader never
+    has to guess which absence a value is standing in for.
+    """
+
+    PASSED = "passed"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    UNAVAILABLE = "unavailable"        # declared, but not runnable
+    NOT_REQUESTED = "not_requested"    # no test_command declared
+    NOT_APPLICABLE = "not_applicable"  # no candidate was created
+
+
 class DeliveryCode(StrEnum):
     """Closed vocabulary for the authoritative delivery result."""
 
     OK = "OK"
+    TESTS_FAILED = "TESTS_FAILED"
     CONTRACT_UNREADABLE = "CONTRACT_UNREADABLE"
     CONTRACT_INVALID_YAML = "CONTRACT_INVALID_YAML"
     CONTRACT_MISSING_FIELD = "CONTRACT_MISSING_FIELD"
@@ -54,6 +74,7 @@ class DeliveryCode(StrEnum):
 
 _CODE_TO_OUTCOME: dict[DeliveryCode, DeliveryOutcome] = {
     DeliveryCode.OK: DeliveryOutcome.CANDIDATE_CREATED,
+    DeliveryCode.TESTS_FAILED: DeliveryOutcome.CANDIDATE_CREATED,
     DeliveryCode.CONTRACT_UNREADABLE: DeliveryOutcome.REFUSED,
     DeliveryCode.CONTRACT_INVALID_YAML: DeliveryOutcome.REFUSED,
     DeliveryCode.CONTRACT_MISSING_FIELD: DeliveryOutcome.REFUSED,
@@ -73,6 +94,7 @@ _CODE_TO_OUTCOME: dict[DeliveryCode, DeliveryOutcome] = {
 
 _CODE_TO_EXIT: dict[DeliveryCode, ExitCode] = {
     DeliveryCode.OK: ExitCode.OK,
+    DeliveryCode.TESTS_FAILED: ExitCode.TESTS_FAILED,
     DeliveryCode.CONTRACT_UNREADABLE: ExitCode.CONTRACT_UNREADABLE,
     DeliveryCode.CONTRACT_INVALID_YAML: ExitCode.CONTRACT_INVALID_YAML,
     DeliveryCode.CONTRACT_MISSING_FIELD: ExitCode.CONTRACT_MISSING_FIELD,
@@ -112,6 +134,9 @@ class DeliveryPayload(TypedDict):
     candidate_commit: str | None
     changed_paths: list[str] | None
     command_exit: int | None
+    validation: ValidationOutcome
+    validation_exit: int | None
+    validation_output: str | None
     worktree_path: str | None
 
 
@@ -158,6 +183,7 @@ class _DeliveryContext:
     contract_id: str
     base_commit: str
     candidate_ref: str
+    test_command: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -208,11 +234,16 @@ class DeliveryReceipt:
     changed_paths: tuple[str, ...] | None
     command_exit: int | None
     worktree_path: str | None
+    validation: ValidationOutcome = ValidationOutcome.NOT_APPLICABLE
+    validation_exit: int | None = None
+    validation_output: str | None = None
     version: Literal[1] = RECEIPT_VERSION
 
     def __post_init__(self) -> None:
         if not isinstance(self.code, DeliveryCode):
             raise TypeError("code must be a DeliveryCode")
+        if not isinstance(self.validation, ValidationOutcome):
+            raise TypeError("validation must be a ValidationOutcome")
 
     @property
     def outcome(self) -> DeliveryOutcome:
@@ -238,6 +269,9 @@ class DeliveryReceipt:
             "candidate_commit": self.candidate_commit,
             "changed_paths": None if self.changed_paths is None else list(self.changed_paths),
             "command_exit": self.command_exit,
+            "validation": self.validation,
+            "validation_exit": self.validation_exit,
+            "validation_output": self.validation_output,
             "worktree_path": self.worktree_path,
         }
 
@@ -267,7 +301,9 @@ def deliver(
     if checked.contract is None:  # pragma: no cover - CheckResult invariant
         raise AssertionError("successful check has no contract")
 
-    prepared = _preflight(repository, checked.contract.id, base)
+    prepared = _preflight(
+        repository, checked.contract.id, base, test_command=checked.contract.test_command
+    )
     if isinstance(prepared, DeliveryReceipt):
         return prepared
     return _attempt(prepared, command, timeout)
@@ -296,7 +332,11 @@ def _base_argv(base: str | None) -> tuple[str, ...]:
 
 
 def _preflight(
-    repository: str, contract_id: str, base: str | None = None
+    repository: str,
+    contract_id: str,
+    base: str | None = None,
+    *,
+    test_command: tuple[str, ...] = (),
 ) -> _DeliveryContext | DeliveryReceipt:
     environment_result = _sanitized_environment(repository)
     if isinstance(environment_result, str):
@@ -422,6 +462,7 @@ def _preflight(
         contract_id=contract_id,
         base_commit=base_commit,
         candidate_ref=candidate_ref,
+        test_command=test_command,
     )
 
 
@@ -460,6 +501,8 @@ def _attempt(context: _DeliveryContext, command: tuple[str, ...], timeout: float
             )
         else:
             pending = _run_and_commit(context, state, command, timeout)
+            if pending.code is DeliveryCode.OK:
+                pending = _validate_candidate(context, state, pending, timeout)
         if (cleanup := _cleanup_attempt(context, state)) is not None:
             if pending is None:  # pragma: no cover - lifecycle invariant
                 raise AssertionError("cleanup ran before delivery produced a result")
@@ -473,14 +516,17 @@ def _attempt(context: _DeliveryContext, command: tuple[str, ...], timeout: float
                 changed_paths=pending.changed_paths,
                 command_exit=pending.command_exit,
                 worktree_path=os.fspath(retained_path),
+                validation=pending.validation,
+                validation_exit=pending.validation_exit,
+                validation_output=pending.validation_output,
             )
 
         if pending is None:  # pragma: no cover - lifecycle invariant
             raise AssertionError("delivery attempt produced no result")
-        if pending.code is not DeliveryCode.OK:
+        if pending.code is not DeliveryCode.OK and pending.code is not DeliveryCode.TESTS_FAILED:
             return pending
         if pending.candidate_commit is None:  # pragma: no cover - receipt invariant
-            raise AssertionError("successful pending result has no commit")
+            raise AssertionError("candidate-created pending result has no commit")
         return _publish(context, pending)
     finally:
         if not retain_failed_cleanup and state.needs_cleanup:
@@ -706,6 +752,9 @@ def _publish(context: _DeliveryContext, pending: DeliveryReceipt) -> DeliveryRec
             candidate_commit=pending.candidate_commit,
             changed_paths=pending.changed_paths,
             command_exit=pending.command_exit,
+            validation=pending.validation,
+            validation_exit=pending.validation_exit,
+            validation_output=pending.validation_output,
         )
     return _context_receipt(
         context,
@@ -714,7 +763,190 @@ def _publish(context: _DeliveryContext, pending: DeliveryReceipt) -> DeliveryRec
         candidate_commit=pending.candidate_commit,
         changed_paths=pending.changed_paths,
         command_exit=pending.command_exit,
+        validation=pending.validation,
+        validation_exit=pending.validation_exit,
+        validation_output=pending.validation_output,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _TestRunResult:
+    """One shell-free run of the contract's declared test command.
+
+    Exactly one of ``returncode``, ``timed_out``, or ``unavailable`` carries
+    the outcome; the default tier monkeypatches ``_run_test_command`` to
+    return this instead of spawning (binding rule 3).
+    """
+
+    returncode: int | None = None
+    output: bytes = b""
+    timed_out: bool = False
+    unavailable: str | None = None
+
+
+def _run_test_command(
+    command: tuple[str, ...],
+    cwd: Path,
+    environment: dict[str, str],
+    timeout: float,
+) -> _TestRunResult:
+    """Run the contract's own command verbatim and shell-free, once.
+
+    The command starts in its own process group (``start_new_session=True``)
+    for the same reason the implementer run does: a timing-out test command
+    must not orphan descendants into the isolated worktree, which would block
+    its removal. On timeout the whole group is torn down with
+    ``_teardown_process_group`` before the partial output is returned.
+
+    This module-level function is the test seam (and therefore the extension
+    seam): the default tier monkeypatches it exactly as it does ``_git``.
+    The real subprocess behaviour belongs to the integration tier.
+    """
+    try:
+        process = subprocess.Popen(
+            list(command),
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return _TestRunResult(
+            unavailable=f"cannot run test command {list(command)!r}: {exc}",
+        )
+
+    try:
+        stdout, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _teardown_process_group(process)
+        stdout, _ = process.communicate()
+        return _TestRunResult(output=stdout, timed_out=True)
+    except BaseException:
+        with suppress(BaseException):
+            _teardown_process_group(process)
+        raise
+    return _TestRunResult(returncode=process.returncode, output=stdout)
+
+
+def _checkout_candidate(
+    worktree: Path,
+    environment: dict[str, str],
+    candidate_commit: str,
+) -> str | None:
+    """Check the exact candidate commit out in the isolated worktree.
+
+    Returns ``None`` on success and a message on failure, so the validator can
+    distinguish "declared but not runnable" from a completed test run.
+    """
+    checked_out = _git(
+        worktree, environment, "checkout", "--quiet", "--detach", candidate_commit
+    )
+    if checked_out.returncode != 0:
+        return _git_message(
+            "cannot check out candidate commit for validation", checked_out
+        )
+    return None
+
+
+def _validated(
+    receipt: DeliveryReceipt,
+    *,
+    validation: ValidationOutcome,
+    validation_exit: int | None,
+    validation_output: str | None,
+    code: DeliveryCode | None = None,
+    message: str | None = None,
+) -> DeliveryReceipt:
+    """Return ``receipt`` with the engine-owned validation fields set."""
+    return replace(
+        receipt,
+        code=receipt.code if code is None else code,
+        message=receipt.message if message is None else message,
+        validation=validation,
+        validation_exit=validation_exit,
+        validation_output=validation_output,
+    )
+
+
+def _validate_candidate(
+    context: _DeliveryContext,
+    state: _AttemptState,
+    pending: DeliveryReceipt,
+    timeout: float,
+) -> DeliveryReceipt:
+    """Run the contract's ``test_command`` against the exact candidate commit.
+
+    A ``FAILED`` validation keeps the candidate and its evidence; it changes
+    only the coarse ``code`` to ``TESTS_FAILED``. Every other validation
+    outcome leaves ``code`` as ``OK`` and records the truth in the
+    ``validation`` fields. ``command_exit`` is untouched either way.
+
+    The validation run reuses the caller's single ``deliver --timeout``
+    (default 30s) rather than ``runner.run_tests``' 120s budget. That keeps
+    one knob for the whole delivery operation: the engine-owned validation
+    is part of the deliver call, not a separate model-invoked operation, and
+    a second default would make the worst-case bound depend on which command
+    happened to be declared.
+    """
+    test_command = context.test_command
+    if not test_command:
+        return _validated(
+            pending,
+            validation=ValidationOutcome.NOT_REQUESTED,
+            validation_exit=None,
+            validation_output=None,
+        )
+
+    candidate_commit = pending.candidate_commit
+    assert candidate_commit is not None
+
+    if (checkout_error := _checkout_candidate(
+        state.worktree, context.environment, candidate_commit
+    )) is not None:
+        return _validated(
+            pending,
+            validation=ValidationOutcome.UNAVAILABLE,
+            validation_exit=None,
+            validation_output=checkout_error,
+        )
+
+    result = _run_test_command(test_command, state.worktree, context.environment, timeout)
+    if result.unavailable is not None:
+        return _validated(
+            pending,
+            validation=ValidationOutcome.UNAVAILABLE,
+            validation_exit=None,
+            validation_output=result.unavailable,
+        )
+    if result.timed_out:
+        output, _ = tail_output(result.output)
+        return _validated(
+            pending,
+            validation=ValidationOutcome.TIMED_OUT,
+            validation_exit=None,
+            validation_output=output,
+        )
+
+    output, _ = tail_output(result.output)
+    match result.returncode:
+        case 0:
+            return _validated(
+                pending,
+                validation=ValidationOutcome.PASSED,
+                validation_exit=0,
+                validation_output=output,
+            )
+        case exit_code:
+            return _validated(
+                pending,
+                validation=ValidationOutcome.FAILED,
+                validation_exit=exit_code,
+                validation_output=output,
+                code=DeliveryCode.TESTS_FAILED,
+                message=f"candidate created; contract test_command failed with exit {exit_code}",
+            )
 
 
 def _remove_worktree(context: _DeliveryContext, worktree: Path) -> str | None:
@@ -965,6 +1197,9 @@ def _context_receipt(
     changed_paths: tuple[str, ...] | None = None,
     command_exit: int | None = None,
     worktree_path: str | None = None,
+    validation: ValidationOutcome = ValidationOutcome.NOT_APPLICABLE,
+    validation_exit: int | None = None,
+    validation_output: str | None = None,
 ) -> DeliveryReceipt:
     return _receipt(
         context.repository,
@@ -977,6 +1212,9 @@ def _context_receipt(
         changed_paths=changed_paths,
         command_exit=command_exit,
         worktree_path=worktree_path,
+        validation=validation,
+        validation_exit=validation_exit,
+        validation_output=validation_output,
     )
 
 
@@ -992,6 +1230,9 @@ def _receipt(
     changed_paths: tuple[str, ...] | None = None,
     command_exit: int | None = None,
     worktree_path: str | None = None,
+    validation: ValidationOutcome = ValidationOutcome.NOT_APPLICABLE,
+    validation_exit: int | None = None,
+    validation_output: str | None = None,
 ) -> DeliveryReceipt:
     return DeliveryReceipt(
         code=code,
@@ -1004,6 +1245,9 @@ def _receipt(
         changed_paths=changed_paths,
         command_exit=command_exit,
         worktree_path=worktree_path,
+        validation=validation,
+        validation_exit=validation_exit,
+        validation_output=validation_output,
     )
 
 
@@ -1015,9 +1259,13 @@ type Deliver = Callable[..., DeliveryReceipt]
 class ChainReceipt:
     """One multi-phase effort, ending in one candidate or in none.
 
-    ``candidate_ref`` is ``None`` whenever any phase refused. The
-    no-partial-chain rule lives in the type rather than in a convention, so a
-    caller cannot read a usable ref off a broken chain by accident.
+    ``candidate_ref`` is ``None`` whenever the chain stopped at a phase that
+    produced no candidate (a refusal or discard). A ``TESTS_FAILED`` phase has
+    produced and published its candidate, so its ref is retained here even
+    though the chain stops at it -- that candidate is retained evidence, not
+    garbage. The no-partial-chain rule lives in the type rather than in a
+    convention, so a caller cannot read a usable ref off a broken chain by
+    accident.
 
     ``accepted_refs`` keeps every accepted intermediate. SwiftStar's
     transaction discards its intermediate worktrees and keeps only the last;
@@ -1046,9 +1294,13 @@ def deliver_chain(
     context folds forward through the packet** -- the property borrowed from
     SwiftStar's ``WorktreeTransaction`` and re-earned here.
 
-    A refused phase stops the chain: later phases do not run, and no
-    candidate ref is reported. The chain's code is the stopping phase's own;
-    inventing a chain-level code would hide which phase failed behind a
+    A phase that produced no candidate (a refusal or discard) stops the
+    chain: later phases do not run, and no candidate ref is reported. A
+    ``TESTS_FAILED`` phase has published its candidate, so it also stops the
+    chain -- folding forward from failing tests would carry broken work into
+    the next phase -- but its ref is retained in ``accepted_refs`` and
+    reported as ``candidate_ref``. The chain's code is the stopping phase's
+    own; inventing a chain-level code would hide which phase failed behind a
     label, and every way a chain can fail is a way a phase can fail.
 
     ``deliver`` is the test seam, and therefore the extension seam: there is
@@ -1063,22 +1315,34 @@ def deliver_chain(
     receipts: list[DeliveryReceipt] = []
     accepted: list[str] = []
     base: str | None = None
+    candidate_codes = (DeliveryCode.OK, DeliveryCode.TESTS_FAILED)
     for contract_path, command in phases:
         receipt = deliver(repo, contract_path, command, timeout, base=base)
         receipts.append(receipt)
-        if receipt.code is not DeliveryCode.OK:
+        if receipt.code not in candidate_codes:
             return ChainReceipt(tuple(receipts), None, tuple(accepted), receipt.code)
-        # An OK receipt missing its candidate is inconsistent, and tolerating
-        # it is worse than failing on it: `base` would fall to None and the
-        # next phase would silently restart from HEAD, producing a chain that
-        # reports OK while carrying none of its predecessors' work. Review
-        # reproduced exactly that through this seam.
+        # A candidate-created receipt missing its candidate is inconsistent,
+        # and tolerating it is worse than failing on it: `base` would fall to
+        # None and the next phase would silently restart from HEAD, producing
+        # a chain that reports a candidate while carrying none of its
+        # predecessors' work. Review reproduced exactly that through this
+        # seam.
         if receipt.candidate_ref is None or receipt.candidate_commit is None:
             raise ValueError(
-                "delivery reported OK without a candidate ref and commit; a "
-                "chain cannot advance from a success that produced nothing"
+                "delivery reported a candidate-created result without a "
+                "candidate ref and commit; a chain cannot advance from a "
+                "success that produced nothing"
             )
         accepted.append(receipt.candidate_ref)
+        if receipt.code is DeliveryCode.TESTS_FAILED:
+            # Stop the chain here, but keep the failing phase's published ref:
+            # its candidate is retained evidence, and dropping it would make
+            # the regression unreproducible without re-running. Folding
+            # forward from a failing-tests phase would silently carry broken
+            # work into the next phase, so the chain still stops.
+            return ChainReceipt(
+                tuple(receipts), receipt.candidate_ref, tuple(accepted), receipt.code
+            )
         base = receipt.candidate_commit
     return ChainReceipt(
         tuple(receipts), receipts[-1].candidate_ref, tuple(accepted), DeliveryCode.OK

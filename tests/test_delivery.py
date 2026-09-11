@@ -18,6 +18,7 @@ from satyrn_engine.delivery import (
     DeliveryCode,
     DeliveryOutcome,
     DeliveryReceipt,
+    ValidationOutcome,
 )
 from satyrn_engine.exits import ExitCode
 
@@ -54,6 +55,7 @@ def _receipt(code: DeliveryCode) -> DeliveryReceipt:
                 changed_paths=("greeting.py",),
                 command_exit=0,
                 worktree_path=None,
+                validation=ValidationOutcome.NOT_REQUESTED,
             )
         case DeliveryCode.REPO_DIRTY:
             return DeliveryReceipt(
@@ -106,6 +108,7 @@ def _receipt(code: DeliveryCode) -> DeliveryReceipt:
                 changed_paths=("greeting.py",),
                 command_exit=0,
                 worktree_path="/tmp/satyrn-engine-abc/worktree",
+                validation=ValidationOutcome.NOT_REQUESTED,
             )
         case _:
             raise AssertionError(f"unknown fixture code: {code}")
@@ -136,6 +139,9 @@ def test_receipt_matches_committed_fixture(code: DeliveryCode, fixture: str) -> 
         "candidate_commit",
         "changed_paths",
         "command_exit",
+        "validation",
+        "validation_exit",
+        "validation_output",
         "worktree_path",
     ]
 
@@ -149,6 +155,7 @@ def test_receipt_uses_binary_shell_exit_codes() -> None:
 def test_receipt_code_closes_outcome_and_exit_vocabulary() -> None:
     expected = {
         DeliveryCode.OK: (DeliveryOutcome.CANDIDATE_CREATED, ExitCode.OK),
+        DeliveryCode.TESTS_FAILED: (DeliveryOutcome.CANDIDATE_CREATED, ExitCode.TESTS_FAILED),
         DeliveryCode.CONTRACT_UNREADABLE: (DeliveryOutcome.REFUSED, ExitCode.CONTRACT_UNREADABLE),
         DeliveryCode.CONTRACT_INVALID_YAML: (DeliveryOutcome.REFUSED, ExitCode.CONTRACT_INVALID_YAML),
         DeliveryCode.CONTRACT_MISSING_FIELD: (DeliveryOutcome.REFUSED, ExitCode.CONTRACT_MISSING_FIELD),
@@ -188,6 +195,221 @@ def test_receipt_escapes_surrogate_paths_for_utf8_output() -> None:
     rendered = replace(_receipt(DeliveryCode.OK), repository="bad\udcff").render()
     assert "bad\\udcff" in rendered
     rendered.encode("utf-8")
+
+
+def test_validation_outcome_has_exactly_six_members() -> None:
+    assert {member.value for member in ValidationOutcome} == {
+        "passed",
+        "failed",
+        "timed_out",
+        "unavailable",
+        "not_requested",
+        "not_applicable",
+    }
+
+
+def test_delivery_payload_always_carries_a_validation_outcome() -> None:
+    """`validation` is never an ambiguous None. A candidate-created receipt
+    with no declared test records NOT_REQUESTED; a refused receipt (no
+    candidate) records NOT_APPLICABLE."""
+    created = _receipt(DeliveryCode.OK).payload()
+    assert created["validation"] is ValidationOutcome.NOT_REQUESTED
+    assert created["validation_exit"] is None
+    assert created["validation_output"] is None
+    refused = _receipt(DeliveryCode.REPO_DIRTY).payload()
+    assert refused["validation"] is ValidationOutcome.NOT_APPLICABLE
+
+
+def test_non_candidate_receipt_records_not_applicable() -> None:
+    """A refused/discarded receipt has no candidate to validate, so its
+    validation is NOT_APPLICABLE -- not NOT_REQUESTED, which is reserved for
+    "no test_command declared"."""
+    assert _receipt(DeliveryCode.REPO_DIRTY).validation is ValidationOutcome.NOT_APPLICABLE
+    assert _receipt(DeliveryCode.COMMAND_FAILED).validation is ValidationOutcome.NOT_APPLICABLE
+    assert _receipt(DeliveryCode.CANDIDATE_EXISTS).validation is ValidationOutcome.NOT_APPLICABLE
+
+
+def test_receipt_rejects_a_non_validation_outcome() -> None:
+    with pytest.raises(TypeError, match="ValidationOutcome"):
+        replace(_receipt(DeliveryCode.OK), validation="passed")  # type: ignore[arg-type]
+
+
+def _validation_context(
+    tmp_path: Path, test_command: tuple[str, ...]
+) -> delivery._DeliveryContext:
+    return delivery._DeliveryContext(
+        repository=str(tmp_path),
+        root=tmp_path,
+        environment={},
+        contract_id="validation",
+        base_commit="a" * 40,
+        candidate_ref="refs/satyrn/candidates/validation/head",
+        test_command=test_command,
+    )
+
+
+def _validation_pending(context: delivery._DeliveryContext) -> DeliveryReceipt:
+    return delivery._context_receipt(
+        context,
+        DeliveryCode.OK,
+        "candidate created",
+        candidate_commit="c" * 40,
+        changed_paths=("app.py",),
+        command_exit=0,
+    )
+
+
+def _validation_state(tmp_path: Path) -> delivery._AttemptState:
+    return delivery._AttemptState(tmp_path, tmp_path / "worktree", parent_exists=False)
+
+
+def _stub_validation_run(
+    monkeypatch: pytest.MonkeyPatch, result: delivery._TestRunResult
+) -> None:
+    monkeypatch.setattr(delivery, "_checkout_candidate", lambda *args: None)
+    monkeypatch.setattr(delivery, "_run_test_command", lambda *args, **kwargs: result)
+
+
+def test_validation_records_passed_and_leaves_code_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The success sibling of the FAILED test below: passing tests keep the
+    coarse status OK and record PASSED on the payload."""
+    context = _validation_context(tmp_path, ("pytest",))
+    _stub_validation_run(
+        monkeypatch, delivery._TestRunResult(returncode=0, output=b"2 passed\n")
+    )
+
+    receipt = delivery._validate_candidate(
+        context, _validation_state(tmp_path), _validation_pending(context), 30.0
+    )
+
+    assert receipt.code is DeliveryCode.OK
+    assert receipt.validation is ValidationOutcome.PASSED
+    assert receipt.validation_exit == 0
+    assert receipt.validation_output == "2 passed\n"
+    assert receipt.candidate_commit == "c" * 40
+    assert receipt.command_exit == 0
+
+
+def test_validation_records_failed_and_retains_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = _validation_context(tmp_path, ("pytest",))
+    _stub_validation_run(
+        monkeypatch, delivery._TestRunResult(returncode=1, output=b"1 failed\n")
+    )
+
+    receipt = delivery._validate_candidate(
+        context, _validation_state(tmp_path), _validation_pending(context), 30.0
+    )
+
+    assert receipt.code is DeliveryCode.TESTS_FAILED
+    assert receipt.outcome is DeliveryOutcome.CANDIDATE_CREATED
+    assert receipt.exit_code is ExitCode.TESTS_FAILED
+    assert receipt.validation is ValidationOutcome.FAILED
+    assert receipt.validation_exit == 1
+    assert receipt.validation_output == "1 failed\n"
+    assert receipt.candidate_commit == "c" * 40
+    assert receipt.changed_paths == ("app.py",)
+    assert receipt.command_exit == 0
+
+
+def test_validation_records_timed_out_and_keeps_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = _validation_context(tmp_path, ("pytest",))
+    _stub_validation_run(
+        monkeypatch, delivery._TestRunResult(output=b"partial", timed_out=True)
+    )
+
+    receipt = delivery._validate_candidate(
+        context, _validation_state(tmp_path), _validation_pending(context), 30.0
+    )
+
+    assert receipt.code is DeliveryCode.OK
+    assert receipt.validation is ValidationOutcome.TIMED_OUT
+    assert receipt.validation_exit is None
+    assert receipt.validation_output == "partial"
+    assert receipt.candidate_commit == "c" * 40
+
+
+def test_validation_records_unavailable_and_keeps_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = _validation_context(tmp_path, ("pytest",))
+    _stub_validation_run(
+        monkeypatch,
+        delivery._TestRunResult(
+            unavailable="cannot run test command ['pytest']: No such file"
+        ),
+    )
+
+    receipt = delivery._validate_candidate(
+        context, _validation_state(tmp_path), _validation_pending(context), 30.0
+    )
+
+    assert receipt.code is DeliveryCode.OK
+    assert receipt.validation is ValidationOutcome.UNAVAILABLE
+    assert receipt.validation_exit is None
+    assert receipt.validation_output == "cannot run test command ['pytest']: No such file"
+    assert receipt.candidate_commit == "c" * 40
+
+
+def test_validation_records_not_requested_without_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sibling of every declared-command test: an empty test_command never
+    reaches the runner, so a build that always runs the suite fails here."""
+    context = _validation_context(tmp_path, ())
+    ran = False
+
+    def unexpected_run(*args: object, **kwargs: object) -> delivery._TestRunResult:
+        nonlocal ran
+        ran = True
+        raise AssertionError("no test_command must not run a test")
+
+    monkeypatch.setattr(delivery, "_run_test_command", unexpected_run)
+
+    receipt = delivery._validate_candidate(
+        context, _validation_state(tmp_path), _validation_pending(context), 30.0
+    )
+
+    assert receipt.code is DeliveryCode.OK
+    assert receipt.validation is ValidationOutcome.NOT_REQUESTED
+    assert receipt.validation_exit is None
+    assert receipt.validation_output is None
+    assert not ran
+    assert receipt.candidate_commit == "c" * 40
+
+
+def test_validation_checkout_failure_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A declared command whose candidate cannot be checked out records
+    UNAVAILABLE (declared but not runnable), not a false PASSED or FAILED."""
+    context = _validation_context(tmp_path, ("pytest",))
+    monkeypatch.setattr(
+        delivery, "_checkout_candidate", lambda *args: "cannot check out candidate commit for validation: boom"
+    )
+    ran = False
+
+    def unexpected_run(*args: object, **kwargs: object) -> delivery._TestRunResult:
+        nonlocal ran
+        ran = True
+        raise AssertionError("an unavailable candidate must not reach the runner")
+
+    monkeypatch.setattr(delivery, "_run_test_command", unexpected_run)
+
+    receipt = delivery._validate_candidate(
+        context, _validation_state(tmp_path), _validation_pending(context), 30.0
+    )
+
+    assert receipt.validation is ValidationOutcome.UNAVAILABLE
+    assert receipt.validation_exit is None
+    assert receipt.validation_output == "cannot check out candidate commit for validation: boom"
+    assert not ran
+    assert receipt.candidate_commit == "c" * 40
 
 
 def test_deliver_cli_preserves_command_argv_after_literal_separator() -> None:

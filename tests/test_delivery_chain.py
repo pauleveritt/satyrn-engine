@@ -54,11 +54,11 @@ class _Scripted:
         self.bases.append(base)
         code = self.codes[self.calls]
         self.calls += 1
-        ok = code is DeliveryCode.OK
+        produced = code in (DeliveryCode.OK, DeliveryCode.TESTS_FAILED)
         return _receipt(
             code,
-            f"refs/satyrn/candidates/p{self.calls}/head" if ok else None,
-            f"commit{self.calls}" if ok else None,
+            f"refs/satyrn/candidates/p{self.calls}/head" if produced else None,
+            f"commit{self.calls}" if produced else None,
         )
 
 
@@ -100,6 +100,22 @@ def test_a_refusal_at_phase_two_stops_the_chain() -> None:
     assert len(chain.phases) == 2
     assert chain.candidate_ref is None
     assert chain.accepted_refs == ("refs/satyrn/candidates/p1/head",)
+
+
+def test_a_tests_failed_phase_stops_but_retains_its_candidate() -> None:
+    """A TESTS_FAILED phase has published its candidate, so stopping the
+    chain there must still keep the ref: the candidate is retained evidence,
+    and dropping it would make the regression unreproducible without
+    re-running."""
+    chain, scripted = _run([DeliveryCode.OK, DeliveryCode.TESTS_FAILED, DeliveryCode.OK])
+    assert scripted.calls == 2, "phase 3 must not run after a failing-tests phase"
+    assert len(chain.phases) == 2
+    assert chain.code is DeliveryCode.TESTS_FAILED
+    assert chain.candidate_ref == "refs/satyrn/candidates/p2/head"
+    assert chain.accepted_refs == (
+        "refs/satyrn/candidates/p1/head",
+        "refs/satyrn/candidates/p2/head",
+    )
 
 
 def test_a_refusal_at_phase_one_retains_nothing() -> None:

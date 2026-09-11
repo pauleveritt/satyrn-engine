@@ -2,7 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use `- [ ]`.
 
-**Status: proposed, not confirmed.** `CLAUDE.md` gates a new phase behind a design proposal and explicit confirmation. This plan is that proposal's execution shape; the one open decision is named at the end.
+**Status: confirmed 2026-09-11.** `CLAUDE.md`'s gate is satisfied; implementation
+authorized. The result-code decision is resolved above.
 
 **Goal:** make the contract's own test result authoritative on the delivered candidate, independent of model text and of any model-invoked test call, and carry it into the delivery payload.
 
@@ -33,8 +34,9 @@ class ValidationOutcome(StrEnum):
     PASSED = "passed"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
-    UNAVAILABLE = "unavailable"      # declared, but not runnable
-    NOT_REQUESTED = "not_requested"  # no test_command declared
+    UNAVAILABLE = "unavailable"        # declared, but not runnable
+    NOT_REQUESTED = "not_requested"    # no test_command declared
+    NOT_APPLICABLE = "not_applicable"  # no candidate was created
 
 class DeliveryPayload(TypedDict):
     ...
@@ -44,8 +46,10 @@ class DeliveryPayload(TypedDict):
     validation_output: str | None      # NEW; tail, bounded
 ```
 
-`None` must never mean both "no requirement" and "required verification missing":
-`NOT_REQUESTED` is the first, `UNAVAILABLE` the second.
+`None` must never stand in for a missing verdict. `NOT_REQUESTED` means "no
+`test_command` declared", `UNAVAILABLE` means "declared but not runnable", and
+`NOT_APPLICABLE` means "no candidate was created, so there is nothing to
+validate".
 
 ## Behaviour
 
@@ -61,8 +65,8 @@ class DeliveryPayload(TypedDict):
 
 **Files:** `src/satyrn_engine/delivery.py`, `tests/test_delivery.py` (default tier)
 
-- [ ] **Step 1:** failing tests asserting `ValidationOutcome` has exactly the five members and that `DeliveryPayload` requires `validation`.
-- [ ] **Step 2:** add `ValidationOutcome` and the three payload keys; every existing payload constructor sets `validation=NOT_REQUESTED` until Task 2 wires the real run. Run `uv run pytest -q`.
+- [ ] **Step 1:** failing tests asserting `ValidationOutcome` has exactly the six members and that `DeliveryPayload` requires `validation`.
+- [ ] **Step 2:** add `ValidationOutcome` and the three payload keys; every existing payload constructor sets `validation=NOT_APPLICABLE` (no candidate yet) until Task 2 wires the real run, and a candidate-created receipt with no declared test records `NOT_REQUESTED`. Run `uv run pytest -q`.
 - [ ] **Step 3:** commit.
 
 ### Task 2: engine-owned run against the candidate commit
@@ -88,11 +92,14 @@ class DeliveryPayload(TypedDict):
 
 - [ ] **Step 1:** the adapter stops being the only validator: it reads `validation` from the engine payload and carries it into the packet result, instead of running its own self-test as the sole authority.
 - [ ] **Step 2:** the existing "runs an independent self-test and returns delivered regardless" behaviour is reconciled: the engine's outcome becomes the recorded authority; the adapter's run is removed or becomes a cross-check, with the reason recorded.
-- [ ] **Step 3:** two-way revision recording, per the satyrn-evals design's cross-repo rule.
+- [ ] **Step 3:** two-way revision recording, per the satyrn-evals design's cross-repo rule: the forward leg records `satyrn-engine@fe63d8b` in `satyrn-evals`; the reverse leg records in this repository's `ROADMAP.md` Phase V row that V4's propagation landed in `satyrn-evals` (`uncommitted working tree, hash to be recorded at commit`).
 
-## Open decision (needs your confirmation)
+## Resolved decision (confirmed 2026-09-11)
 
-**Is `TESTS_FAILED` a new `DeliveryCode`/exit, or `OK` plus `validation=failed`?** The user's shape says a failing candidate is produced-but-failing, not a refusal, and that successful delivery must not imply passing tests. My recommendation: add `DeliveryCode.TESTS_FAILED` → `DeliveryOutcome.CANDIDATE_CREATED` → a distinct exit code, so no caller can read `OK` and infer passing tests. Confirm before Task 3 is written.
+**`DeliveryCode.TESTS_FAILED`** → `DeliveryOutcome.CANDIDATE_CREATED` → a distinct
+`ExitCode.TESTS_FAILED`, so no caller can read `OK` and infer passing tests. The
+candidate is still created and retained; only the coarse status differs from a
+clean pass. `validation` on the payload is the same truth either way.
 
 ## Self-review
 
