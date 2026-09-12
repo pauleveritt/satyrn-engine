@@ -1,6 +1,8 @@
 # V5 design proposal — a real whole-attempt turn and wall-clock budget
 
-**Status: proposed, not confirmed.** `CLAUDE.md` gates a new phase behind a proposal and explicit confirmation. This is that proposal; no code is written until you confirm.
+**Status: confirmed 2026-09-11.** `CLAUDE.md`'s gate is satisfied; the two
+attachments below are now decided, and a V5 plan follows this proposal. No code
+until that plan is written.
 
 **Narrow issue.** A delivered candidate has no whole-attempt spend bound that is engine-owned. `turn_budget` / `tool_call_budget` are packet declarations (route-side), and `deliver --timeout` bounds one command, not the attempt. V5 adds an engine-owned whole-attempt turn limit and wall-clock deadline that retain partial work on exhaustion.
 
@@ -10,7 +12,7 @@
 
 1. **The `route.run_phases` validation-stop gap.** The composed route stops on a `FAILED` validation only at the grader, not in `run_phases` itself. V5 must not silently depend on the grader to halt an over-budget or failing phase; name whether V5's exhaustion stop is engine-side (`deliver`/`deliver_chain`) or route-side, and make the two agree or record the divergence.
 2. **V4 validates the model against the model's own tests.** The contract's `test_command` runs the packet's self-test command, and on this task family those tests are model-authored and model-edited. A weakened or deleted test passes. V4 is "the candidate agrees with itself," not "the candidate is correct." V5 records its budget outcome independently of that suite.
-3. **A pre-declared reading for phase-4 budget exhaustion.** The recurring redirect-trap failure and the phase-4 destructive edit are the two concrete candidates explaining the 23-vs-6/8 cost; both remain unclassified. Decide *now* what a phase-4 exhaustion means for V6 — an ordinary failed repair (counted observation) versus an infrastructure stop — and write it into V6's pre-run record so a lower completion rate is not misread as regression.
+3. **A pre-declared reading for phase-4 budget exhaustion.** The recurring redirect-trap failure and the phase-4 destructive edit are the two concrete candidates explaining the 23-vs-6/8 cost; both remain unclassified. **Decided at confirmation, 2026-09-11: a phase-4 exhaustion is an ordinary failed repair — a counted observation, not an infrastructure stop.** Infrastructure stops are reserved for the harness failing, not for the model spending. V6's pre-run record must state this, and must also state that **a passed validation on an exhausted attempt is not a completion**: exhaustion runs V4's validation on the partial candidate, whose tests are model-authored, so a passing suite there establishes only that the partial candidate agrees with itself.
 
 ## Shape
 
