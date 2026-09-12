@@ -54,7 +54,11 @@ class _Scripted:
         self.bases.append(base)
         code = self.codes[self.calls]
         self.calls += 1
-        produced = code in (DeliveryCode.OK, DeliveryCode.TESTS_FAILED)
+        produced = code in (
+            DeliveryCode.OK,
+            DeliveryCode.TESTS_FAILED,
+            DeliveryCode.BUDGET_EXHAUSTED,
+        )
         return _receipt(
             code,
             f"refs/satyrn/candidates/p{self.calls}/head" if produced else None,
@@ -111,6 +115,23 @@ def test_a_tests_failed_phase_stops_but_retains_its_candidate() -> None:
     assert scripted.calls == 2, "phase 3 must not run after a failing-tests phase"
     assert len(chain.phases) == 2
     assert chain.code is DeliveryCode.TESTS_FAILED
+    assert chain.candidate_ref == "refs/satyrn/candidates/p2/head"
+    assert chain.accepted_refs == (
+        "refs/satyrn/candidates/p1/head",
+        "refs/satyrn/candidates/p2/head",
+    )
+
+
+def test_a_budget_exhausted_phase_stops_but_retains_its_candidate() -> None:
+    """A BUDGET_EXHAUSTED phase has published its partial candidate, so the
+    chain stops at it and keeps the ref -- exactly as TESTS_FAILED does --
+    because that partial candidate is retained evidence."""
+    chain, scripted = _run(
+        [DeliveryCode.OK, DeliveryCode.BUDGET_EXHAUSTED, DeliveryCode.OK]
+    )
+    assert scripted.calls == 2, "phase 3 must not run after a budget-spent phase"
+    assert len(chain.phases) == 2
+    assert chain.code is DeliveryCode.BUDGET_EXHAUSTED
     assert chain.candidate_ref == "refs/satyrn/candidates/p2/head"
     assert chain.accepted_refs == (
         "refs/satyrn/candidates/p1/head",

@@ -143,6 +143,7 @@ def test_receipt_matches_committed_fixture(code: DeliveryCode, fixture: str) -> 
         "validation_exit",
         "validation_output",
         "worktree_path",
+        "budget",
     ]
 
 
@@ -156,6 +157,7 @@ def test_receipt_code_closes_outcome_and_exit_vocabulary() -> None:
     expected = {
         DeliveryCode.OK: (DeliveryOutcome.CANDIDATE_CREATED, ExitCode.OK),
         DeliveryCode.TESTS_FAILED: (DeliveryOutcome.CANDIDATE_CREATED, ExitCode.TESTS_FAILED),
+        DeliveryCode.BUDGET_EXHAUSTED: (DeliveryOutcome.CANDIDATE_CREATED, ExitCode.BUDGET_EXHAUSTED),
         DeliveryCode.CONTRACT_UNREADABLE: (DeliveryOutcome.REFUSED, ExitCode.CONTRACT_UNREADABLE),
         DeliveryCode.CONTRACT_INVALID_YAML: (DeliveryOutcome.REFUSED, ExitCode.CONTRACT_INVALID_YAML),
         DeliveryCode.CONTRACT_MISSING_FIELD: (DeliveryOutcome.REFUSED, ExitCode.CONTRACT_MISSING_FIELD),
@@ -477,7 +479,16 @@ def test_deliver_cli_passes_base_through_to_deliver(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_deliver(repo: Path, contract: Path, command: tuple[str, ...], timeout: float, *, base: str | None = None) -> DeliveryReceipt:
+    def fake_deliver(
+        repo: Path,
+        contract: Path,
+        command: tuple[str, ...],
+        timeout: float,
+        *,
+        base: str | None = None,
+        turn_limit: int | None = None,
+        deadline_seconds: float | None = None,
+    ) -> DeliveryReceipt:
         captured["base"] = base
         return _receipt(DeliveryCode.OK)
 
@@ -494,7 +505,16 @@ def test_deliver_cli_passes_none_through_when_base_is_omitted(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_deliver(repo: Path, contract: Path, command: tuple[str, ...], timeout: float, *, base: str | None = None) -> DeliveryReceipt:
+    def fake_deliver(
+        repo: Path,
+        contract: Path,
+        command: tuple[str, ...],
+        timeout: float,
+        *,
+        base: str | None = None,
+        turn_limit: int | None = None,
+        deadline_seconds: float | None = None,
+    ) -> DeliveryReceipt:
         captured["base"] = base
         return _receipt(DeliveryCode.OK)
 
@@ -502,6 +522,90 @@ def test_deliver_cli_passes_none_through_when_base_is_omitted(
     code = cli.main(["deliver", "--repo", ".", "contract.yaml", "--", "tool"])
     assert code == 0
     assert captured["base"] is None
+
+
+def test_deliver_cli_parses_budget_flags() -> None:
+    args = parse_args(
+        [
+            "deliver",
+            "--repo",
+            ".",
+            "--turn-limit",
+            "3",
+            "--deadline-seconds",
+            "2.5",
+            "contract.yaml",
+            "--",
+            "tool",
+        ]
+    )
+    assert args.turn_limit == 3
+    assert args.deadline_seconds == 2.5
+
+
+def test_deliver_cli_budget_flags_default_to_none() -> None:
+    """Omitted flags reach `deliver` as None, which means "not overridden" so
+    the contract's own budget (or no budget) applies -- never a default 0."""
+    args = parse_args(["deliver", "--repo", ".", "contract.yaml", "--", "tool"])
+    assert args.turn_limit is None
+    assert args.deadline_seconds is None
+
+
+@pytest.mark.parametrize("turn_limit", ["0", "-1", "1.5", "nan", "not-a-number"])
+def test_deliver_cli_refuses_invalid_turn_limit(turn_limit: str) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        parse_args(
+            ["deliver", "--repo", ".", "--turn-limit", turn_limit, "contract.yaml", "--", "tool"]
+        )
+    assert excinfo.value.code == int(ExitCode.USAGE)
+
+
+@pytest.mark.parametrize("deadline", ["0", "-1", "nan", "inf", "-inf", "not-a-number"])
+def test_deliver_cli_refuses_invalid_deadline_seconds(deadline: str) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        parse_args(
+            ["deliver", "--repo", ".", "--deadline-seconds", deadline, "contract.yaml", "--", "tool"]
+        )
+    assert excinfo.value.code == int(ExitCode.USAGE)
+
+
+def test_deliver_cli_passes_budget_flags_through_to_deliver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_deliver(
+        repo: Path,
+        contract: Path,
+        command: tuple[str, ...],
+        timeout: float,
+        *,
+        base: str | None = None,
+        turn_limit: int | None = None,
+        deadline_seconds: float | None = None,
+    ) -> DeliveryReceipt:
+        captured["turn_limit"] = turn_limit
+        captured["deadline_seconds"] = deadline_seconds
+        return _receipt(DeliveryCode.OK)
+
+    monkeypatch.setattr(cli, "deliver", fake_deliver)
+    code = cli.main(
+        [
+            "deliver",
+            "--repo",
+            ".",
+            "--turn-limit",
+            "4",
+            "--deadline-seconds",
+            "1.5",
+            "contract.yaml",
+            "--",
+            "tool",
+        ]
+    )
+    assert code == 0
+    assert captured["turn_limit"] == 4
+    assert captured["deadline_seconds"] == 1.5
 
 
 def test_deliver_cli_requires_literal_separator() -> None:

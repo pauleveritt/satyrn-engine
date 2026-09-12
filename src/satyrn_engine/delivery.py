@@ -2,6 +2,7 @@
 
 import json
 import os
+import selectors
 import shutil
 import signal
 import subprocess
@@ -16,12 +17,15 @@ from enum import Enum, StrEnum, auto
 from pathlib import Path
 from typing import BinaryIO, Literal, Protocol, TypedDict
 
+from .budget import Budget, BudgetState, BudgetUsage, TurnCounter, evaluate
 from .check import check
 from .exits import ExitCode
 from .runner import tail_output
 
 DEFAULT_TIMEOUT = 30.0
 RECEIPT_VERSION: Literal[1] = 1
+_STREAM_POLL_SECONDS = 0.05
+_NO_BUDGET = Budget()
 
 
 class DeliveryOutcome(StrEnum):
@@ -55,6 +59,7 @@ class DeliveryCode(StrEnum):
 
     OK = "OK"
     TESTS_FAILED = "TESTS_FAILED"
+    BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
     CONTRACT_UNREADABLE = "CONTRACT_UNREADABLE"
     CONTRACT_INVALID_YAML = "CONTRACT_INVALID_YAML"
     CONTRACT_MISSING_FIELD = "CONTRACT_MISSING_FIELD"
@@ -75,6 +80,7 @@ class DeliveryCode(StrEnum):
 _CODE_TO_OUTCOME: dict[DeliveryCode, DeliveryOutcome] = {
     DeliveryCode.OK: DeliveryOutcome.CANDIDATE_CREATED,
     DeliveryCode.TESTS_FAILED: DeliveryOutcome.CANDIDATE_CREATED,
+    DeliveryCode.BUDGET_EXHAUSTED: DeliveryOutcome.CANDIDATE_CREATED,
     DeliveryCode.CONTRACT_UNREADABLE: DeliveryOutcome.REFUSED,
     DeliveryCode.CONTRACT_INVALID_YAML: DeliveryOutcome.REFUSED,
     DeliveryCode.CONTRACT_MISSING_FIELD: DeliveryOutcome.REFUSED,
@@ -95,6 +101,7 @@ _CODE_TO_OUTCOME: dict[DeliveryCode, DeliveryOutcome] = {
 _CODE_TO_EXIT: dict[DeliveryCode, ExitCode] = {
     DeliveryCode.OK: ExitCode.OK,
     DeliveryCode.TESTS_FAILED: ExitCode.TESTS_FAILED,
+    DeliveryCode.BUDGET_EXHAUSTED: ExitCode.BUDGET_EXHAUSTED,
     DeliveryCode.CONTRACT_UNREADABLE: ExitCode.CONTRACT_UNREADABLE,
     DeliveryCode.CONTRACT_INVALID_YAML: ExitCode.CONTRACT_INVALID_YAML,
     DeliveryCode.CONTRACT_MISSING_FIELD: ExitCode.CONTRACT_MISSING_FIELD,
@@ -138,6 +145,17 @@ class DeliveryPayload(TypedDict):
     validation_exit: int | None
     validation_output: str | None
     worktree_path: str | None
+    budget: BudgetPayload
+
+
+class BudgetPayload(TypedDict):
+    """The always-present budget accounting on every receipt payload."""
+
+    state: str
+    turns_used: int
+    seconds_used: float
+    turn_limit: int | None
+    deadline_seconds: float | None
 
 
 class _Registration(Enum):
@@ -184,6 +202,7 @@ class _DeliveryContext:
     base_commit: str
     candidate_ref: str
     test_command: tuple[str, ...] = ()
+    budget: Budget = Budget()
 
 
 @dataclass(slots=True)
@@ -238,12 +257,18 @@ class DeliveryReceipt:
     validation_exit: int | None = None
     validation_output: str | None = None
     version: Literal[1] = RECEIPT_VERSION
+    budget: Budget = Budget()
+    budget_usage: BudgetUsage = BudgetUsage(BudgetState.NOT_DECLARED, 0, 0.0)
 
     def __post_init__(self) -> None:
         if not isinstance(self.code, DeliveryCode):
             raise TypeError("code must be a DeliveryCode")
         if not isinstance(self.validation, ValidationOutcome):
             raise TypeError("validation must be a ValidationOutcome")
+        if not isinstance(self.budget, Budget):
+            raise TypeError("budget must be a Budget")
+        if not isinstance(self.budget_usage, BudgetUsage):
+            raise TypeError("budget_usage must be a BudgetUsage")
 
     @property
     def outcome(self) -> DeliveryOutcome:
@@ -273,6 +298,13 @@ class DeliveryReceipt:
             "validation_exit": self.validation_exit,
             "validation_output": self.validation_output,
             "worktree_path": self.worktree_path,
+            "budget": {
+                "state": self.budget_usage.state,
+                "turns_used": self.budget_usage.turns_used,
+                "seconds_used": self.budget_usage.seconds_used,
+                "turn_limit": self.budget.turn_limit,
+                "deadline_seconds": self.budget.deadline_seconds,
+            },
         }
 
     def render(self) -> str:
@@ -287,22 +319,43 @@ def deliver(
     timeout: float = DEFAULT_TIMEOUT,
     *,
     base: str | None = None,
+    turn_limit: int | None = None,
+    deadline_seconds: float | None = None,
 ) -> DeliveryReceipt:
-    """Run one command outside the caller checkout and publish one candidate."""
+    """Run one command outside the caller checkout and publish one candidate.
+
+    ``turn_limit`` and ``deadline_seconds`` override the contract's own
+    ``turn_budget``/``deadline_seconds``; ``None`` means "not overridden", so
+    the contract value (or no budget) applies.
+    """
     repository = os.path.abspath(repo)
     checked = check(repo, contract_path)
+    contract = checked.contract
+    budget = (
+        Budget(
+            turn_limit if turn_limit is not None else contract.turn_budget,
+            deadline_seconds if deadline_seconds is not None else contract.deadline_seconds,
+        )
+        if contract is not None
+        else Budget(turn_limit, deadline_seconds)
+    )
     if checked.code is not ExitCode.OK:
         return _receipt(
             repository,
             _CHECK_REFUSAL_TO_DELIVERY_CODE[checked.code],
             checked.message,
-            contract_id=None if checked.contract is None else checked.contract.id,
+            contract_id=contract.id if contract is not None else None,
+            budget=budget,
         )
-    if checked.contract is None:  # pragma: no cover - CheckResult invariant
+    if contract is None:  # pragma: no cover - CheckResult invariant
         raise AssertionError("successful check has no contract")
 
     prepared = _preflight(
-        repository, checked.contract.id, base, test_command=checked.contract.test_command
+        repository,
+        contract.id,
+        base,
+        test_command=contract.test_command,
+        budget=budget,
     )
     if isinstance(prepared, DeliveryReceipt):
         return prepared
@@ -337,10 +390,17 @@ def _preflight(
     base: str | None = None,
     *,
     test_command: tuple[str, ...] = (),
+    budget: Budget = _NO_BUDGET,
 ) -> _DeliveryContext | DeliveryReceipt:
     environment_result = _sanitized_environment(repository)
     if isinstance(environment_result, str):
-        return _receipt(repository, DeliveryCode.GIT_FAILED, environment_result, contract_id=contract_id)
+        return _receipt(
+            repository,
+            DeliveryCode.GIT_FAILED,
+            environment_result,
+            contract_id=contract_id,
+            budget=budget,
+        )
     environment = environment_result
 
     root_result = _git(Path(repository), environment, "rev-parse", "--show-toplevel")
@@ -350,6 +410,7 @@ def _preflight(
             DeliveryCode.REPO_NOT_GIT,
             _git_message("cannot resolve repository root", root_result),
             contract_id=contract_id,
+            budget=budget,
         )
     root = Path(os.fsdecode(root_result.stdout.removesuffix(b"\n")))
     try:
@@ -362,6 +423,7 @@ def _preflight(
             DeliveryCode.REPO_NOT_GIT,
             "repo must name the Git working-tree root",
             contract_id=contract_id,
+            budget=budget,
         )
 
     if base is not None and not base_is_wellformed(base):
@@ -370,6 +432,7 @@ def _preflight(
             DeliveryCode.REPO_NOT_GIT,
             f"base is blank: {base!r}",
             contract_id=contract_id,
+            budget=budget,
         )
     head_result = _git(root, environment, *_base_argv(base))
     if head_result.returncode != 0:
@@ -383,6 +446,7 @@ def _preflight(
                 head_result,
             ),
             contract_id=contract_id,
+            budget=budget,
         )
     base_commit = head_result.stdout.strip().decode("ascii")
 
@@ -403,6 +467,7 @@ def _preflight(
             _git_message("cannot inspect repository status", status_result),
             contract_id=contract_id,
             base_commit=base_commit,
+            budget=budget,
         )
     if status_result.stdout:
         return _receipt(
@@ -411,6 +476,7 @@ def _preflight(
             "repository has tracked or untracked changes",
             contract_id=contract_id,
             base_commit=base_commit,
+            budget=budget,
         )
 
     try:
@@ -424,6 +490,7 @@ def _preflight(
             "contract id must be exactly one Git ref component",
             contract_id=contract_id,
             base_commit=base_commit,
+            budget=budget,
         )
     candidate_ref = f"refs/satyrn/candidates/{contract_id}/head"
     ref_format = _git(root, environment, "check-ref-format", candidate_ref)
@@ -434,6 +501,7 @@ def _preflight(
             "contract id does not form a valid Git ref",
             contract_id=contract_id,
             base_commit=base_commit,
+            budget=budget,
         )
 
     existing = _ref_exists(root, environment, candidate_ref)
@@ -445,6 +513,7 @@ def _preflight(
             contract_id=contract_id,
             base_commit=base_commit,
             candidate_ref=candidate_ref,
+            budget=budget,
         )
     if existing:
         return _receipt(
@@ -454,6 +523,7 @@ def _preflight(
             contract_id=contract_id,
             base_commit=base_commit,
             candidate_ref=candidate_ref,
+            budget=budget,
         )
     return _DeliveryContext(
         repository=repository,
@@ -463,6 +533,7 @@ def _preflight(
         base_commit=base_commit,
         candidate_ref=candidate_ref,
         test_command=test_command,
+        budget=budget,
     )
 
 
@@ -501,7 +572,7 @@ def _attempt(context: _DeliveryContext, command: tuple[str, ...], timeout: float
             )
         else:
             pending = _run_and_commit(context, state, command, timeout)
-            if pending.code is DeliveryCode.OK:
+            if pending.code in (DeliveryCode.OK, DeliveryCode.BUDGET_EXHAUSTED):
                 pending = _validate_candidate(context, state, pending, timeout)
         if (cleanup := _cleanup_attempt(context, state)) is not None:
             if pending is None:  # pragma: no cover - lifecycle invariant
@@ -519,11 +590,13 @@ def _attempt(context: _DeliveryContext, command: tuple[str, ...], timeout: float
                 validation=pending.validation,
                 validation_exit=pending.validation_exit,
                 validation_output=pending.validation_output,
+                budget=pending.budget,
+                budget_usage=pending.budget_usage,
             )
 
         if pending is None:  # pragma: no cover - lifecycle invariant
             raise AssertionError("delivery attempt produced no result")
-        if pending.code is not DeliveryCode.OK and pending.code is not DeliveryCode.TESTS_FAILED:
+        if pending.outcome is not DeliveryOutcome.CANDIDATE_CREATED:
             return pending
         if pending.candidate_commit is None:  # pragma: no cover - receipt invariant
             raise AssertionError("candidate-created pending result has no commit")
@@ -559,13 +632,14 @@ def _run_and_commit(
     try:
         state.cleanup_gate = _CleanupGate.CLOSED
         state.process_detail = "command creation did not complete"
+        process: subprocess.Popen[bytes] | None = None
         try:
             process = subprocess.Popen(
                 command,
                 cwd=state.worktree,
                 env=context.environment,
                 stdin=subprocess.DEVNULL,
-                stdout=output,
+                stdout=subprocess.PIPE if context.budget.declared else output,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
@@ -578,16 +652,22 @@ def _run_and_commit(
                 f"cannot start command: {exc}",
             )
 
+        exhausted: BudgetState | None = None
+        timed_out = False
+        turns_used = 0
+        seconds_used = 0.0
         try:
-            process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _apply_teardown(state, _teardown_process_group(process))
-            _write_attempt_output(output)
-            return _context_receipt(
-                context,
-                DeliveryCode.COMMAND_TIMEOUT,
-                f"command exceeded timeout of {timeout:g} seconds",
-            )
+            if context.budget.declared:
+                stream = _stream_implementer(process, output, context.budget, timeout)
+                exhausted = stream.exhausted
+                timed_out = stream.command_timed_out
+                turns_used = stream.turns_used
+                seconds_used = stream.seconds_used
+            else:
+                try:
+                    process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
         except BaseException:
             try:
                 teardown = _teardown_process_group(process)
@@ -597,19 +677,46 @@ def _run_and_commit(
                 _apply_teardown(state, teardown)
             _write_attempt_output(output)
             raise
-        state.cleanup_gate = _CleanupGate.OPEN
-        state.process_detail = None
+
+        if timed_out or exhausted is not None:
+            _apply_teardown(state, _teardown_process_group(process))
+        else:
+            # No teardown ran, so the process exited on its own and cleanup is
+            # safe. When teardown did run, `_apply_teardown` owns the gate: a
+            # non-clean teardown must leave it CLOSED so `_cleanup_attempt`
+            # withholds `git worktree remove --force` against a live group.
+            state.cleanup_gate = _CleanupGate.OPEN
+            state.process_detail = None
+        if exhausted is not None:
+            usage = BudgetUsage(exhausted, turns_used, seconds_used)
+        elif context.budget.declared:
+            usage = BudgetUsage(BudgetState.WITHIN, turns_used, seconds_used)
+        else:
+            usage = BudgetUsage(BudgetState.NOT_DECLARED, turns_used, seconds_used)
         _write_attempt_output(output)
-        if process.returncode != 0:
+        if timed_out:
+            return _context_receipt(
+                context,
+                DeliveryCode.COMMAND_TIMEOUT,
+                f"command exceeded timeout of {timeout:g} seconds",
+                budget=context.budget,
+                budget_usage=usage,
+            )
+        if exhausted is None and process.returncode != 0:
             return _context_receipt(
                 context,
                 DeliveryCode.COMMAND_FAILED,
                 f"command exited with status {process.returncode}",
                 command_exit=process.returncode,
+                budget=context.budget,
+                budget_usage=usage,
             )
     finally:
         with suppress(OSError, ValueError):
             output.close()
+        if process is not None and (stdout := getattr(process, "stdout", None)) is not None:
+            with suppress(OSError, ValueError):
+                stdout.close()
 
     head = _git(state.worktree, context.environment, "rev-parse", "--verify", "HEAD^{commit}")
     if head.returncode != 0:
@@ -618,6 +725,8 @@ def _run_and_commit(
             DeliveryCode.GIT_FAILED,
             _git_message("cannot inspect isolated worktree HEAD", head),
             command_exit=0,
+            budget=context.budget,
+            budget_usage=usage,
         )
     symbolic_head = _git(state.worktree, context.environment, "symbolic-ref", "--quiet", "HEAD")
     if symbolic_head.returncode not in {0, 1}:
@@ -626,6 +735,8 @@ def _run_and_commit(
             DeliveryCode.GIT_FAILED,
             _git_message("cannot inspect isolated worktree HEAD attachment", symbolic_head),
             command_exit=0,
+            budget=context.budget,
+            budget_usage=usage,
         )
     if head.stdout.strip() != context.base_commit.encode("ascii") or symbolic_head.returncode == 0:
         return _context_receipt(
@@ -633,6 +744,8 @@ def _run_and_commit(
             DeliveryCode.COMMAND_CHANGED_HEAD,
             "command changed the isolated worktree HEAD",
             command_exit=0,
+            budget=context.budget,
+            budget_usage=usage,
         )
 
     added = _git(state.worktree, context.environment, "add", "-A")
@@ -642,6 +755,8 @@ def _run_and_commit(
             DeliveryCode.GIT_FAILED,
             _git_message("cannot stage candidate tree", added),
             command_exit=0,
+            budget=context.budget,
+            budget_usage=usage,
         )
     tree = _git(state.worktree, context.environment, "write-tree")
     base_tree = _git(state.worktree, context.environment, "rev-parse", f"{context.base_commit}^{{tree}}")
@@ -652,14 +767,23 @@ def _run_and_commit(
             DeliveryCode.GIT_FAILED,
             _git_message("cannot compare candidate tree", failed),
             command_exit=0,
+            budget=context.budget,
+            budget_usage=usage,
         )
     if tree.stdout.strip() == base_tree.stdout.strip():
+        # Decision (pinned): an exhausted attempt that produced no diff is
+        # reported NO_CHANGES (DISCARDED), not BUDGET_EXHAUSTED. There is no
+        # candidate to retain, and BUDGET_EXHAUSTED means
+        # candidate-created; the budget state still records the exhaustion on
+        # the receipt's `budget` field, so the spend is not lost.
         return _context_receipt(
             context,
             DeliveryCode.NO_CHANGES,
             "command produced no changes",
             changed_paths=(),
             command_exit=0,
+            budget=context.budget,
+            budget_usage=usage,
         )
 
     commit_environment = context.environment | {
@@ -686,6 +810,8 @@ def _run_and_commit(
             DeliveryCode.GIT_FAILED,
             _git_message("cannot create candidate commit", committed),
             command_exit=0,
+            budget=context.budget,
+            budget_usage=usage,
         )
     candidate_commit = committed.stdout.strip().decode("ascii")
     changed = _git(
@@ -708,6 +834,8 @@ def _run_and_commit(
             _git_message("cannot read candidate paths", changed),
             candidate_commit=candidate_commit,
             command_exit=0,
+            budget=context.budget,
+            budget_usage=usage,
         )
     raw_paths = [path for path in changed.stdout.split(b"\0") if path]
     try:
@@ -719,6 +847,29 @@ def _run_and_commit(
             "candidate contains a path that is not valid UTF-8",
             candidate_commit=candidate_commit,
             command_exit=0,
+            budget=context.budget,
+            budget_usage=usage,
+        )
+    if exhausted is not None:
+        detail = (
+            "turn limit"
+            if exhausted is BudgetState.TURN_EXHAUSTED
+            else "deadline"
+        )
+        message = (
+            f"candidate created; whole-attempt {detail} exhausted after "
+            f"{usage.turns_used} turns"
+            if exhausted is BudgetState.TURN_EXHAUSTED
+            else f"candidate created; whole-attempt deadline exhausted after {usage.seconds_used:g} seconds"
+        )
+        return _context_receipt(
+            context,
+            DeliveryCode.BUDGET_EXHAUSTED,
+            message,
+            candidate_commit=candidate_commit,
+            changed_paths=changed_paths,
+            budget=context.budget,
+            budget_usage=usage,
         )
     return _context_receipt(
         context,
@@ -727,7 +878,99 @@ def _run_and_commit(
         candidate_commit=candidate_commit,
         changed_paths=changed_paths,
         command_exit=0,
+        budget=context.budget,
+        budget_usage=usage,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _StreamOutcome:
+    """How the budget-enforced implementer stream ended."""
+
+    exhausted: BudgetState | None
+    command_timed_out: bool
+    turns_used: int
+    seconds_used: float
+
+
+def _stream_implementer(
+    process: subprocess.Popen[bytes],
+    spool: BinaryIO,
+    budget: Budget,
+    timeout: float,
+) -> _StreamOutcome:
+    """Stream the implementer's merged output while enforcing the budget.
+
+    The implementer writes to a pipe (``stdout=PIPE`` with stderr merged in),
+    not to the existing output file, so live enforcement needs a tee: every
+    byte is written to ``spool`` (the existing destination) and each complete
+    line is fed to a :class:`TurnCounter`. A turn limit trips as soon as a
+    ``turn_start`` line crosses it; a deadline trips on a monotonic clock, so
+    a quiet process is still stopped once its time is spent.
+    """
+    stdout = process.stdout
+    assert stdout is not None, "budget enforcement requires a captured stdout pipe"
+
+    counter = TurnCounter()
+    started = time.monotonic()
+    command_deadline = started + timeout
+    pending = b""
+    selector = selectors.DefaultSelector()
+    try:
+        selector.register(stdout, selectors.EVENT_READ)
+        while True:
+            now = time.monotonic()
+            elapsed = now - started
+            if budget.deadline_seconds is not None and elapsed > budget.deadline_seconds:
+                return _StreamOutcome(
+                    BudgetState.DEADLINE_EXHAUSTED, False, counter.turns, elapsed
+                )
+            if now >= command_deadline:
+                return _StreamOutcome(None, True, counter.turns, elapsed)
+
+            wait = min(_STREAM_POLL_SECONDS, max(0.0, command_deadline - now))
+            if budget.deadline_seconds is not None:
+                wait = min(wait, max(0.0, budget.deadline_seconds - elapsed))
+            events = selector.select(timeout=wait)
+            if not events:
+                if process.poll() is not None:
+                    break
+                continue
+
+            chunk = stdout.read1(64 * 1024)
+            if not chunk:
+                break
+            spool.write(chunk)
+            pending += chunk
+            while (newline := pending.find(b"\n")) != -1:
+                line = pending[:newline].decode("utf-8", errors="replace")
+                pending = pending[newline + 1 :]
+                counter.feed(line)
+                if budget.turn_limit is not None and counter.turns > budget.turn_limit:
+                    return _StreamOutcome(
+                        BudgetState.TURN_EXHAUSTED,
+                        False,
+                        counter.turns,
+                        time.monotonic() - started,
+                    )
+
+        if pending:
+            counter.feed(pending.decode("utf-8", errors="replace"))
+            if budget.turn_limit is not None and counter.turns > budget.turn_limit:
+                return _StreamOutcome(
+                    BudgetState.TURN_EXHAUSTED,
+                    False,
+                    counter.turns,
+                    time.monotonic() - started,
+                )
+
+        try:
+            process.wait(timeout=max(0.0, command_deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            return _StreamOutcome(None, True, counter.turns, time.monotonic() - started)
+        return _StreamOutcome(None, False, counter.turns, time.monotonic() - started)
+    finally:
+        selector.close()
 
 
 def _publish(context: _DeliveryContext, pending: DeliveryReceipt) -> DeliveryReceipt:
@@ -755,6 +998,8 @@ def _publish(context: _DeliveryContext, pending: DeliveryReceipt) -> DeliveryRec
             validation=pending.validation,
             validation_exit=pending.validation_exit,
             validation_output=pending.validation_output,
+            budget=pending.budget,
+            budget_usage=pending.budget_usage,
         )
     return _context_receipt(
         context,
@@ -766,6 +1011,8 @@ def _publish(context: _DeliveryContext, pending: DeliveryReceipt) -> DeliveryRec
         validation=pending.validation,
         validation_exit=pending.validation_exit,
         validation_output=pending.validation_output,
+        budget=pending.budget,
+        budget_usage=pending.budget_usage,
     )
 
 
@@ -881,7 +1128,10 @@ def _validate_candidate(
     A ``FAILED`` validation keeps the candidate and its evidence; it changes
     only the coarse ``code`` to ``TESTS_FAILED``. Every other validation
     outcome leaves ``code`` as ``OK`` and records the truth in the
-    ``validation`` fields. ``command_exit`` is untouched either way.
+    ``validation`` fields. A ``BUDGET_EXHAUSTED`` pending keeps that code
+    even when validation fails or passes -- the budget state is the
+    authoritative verdict and is not overwritten by V4's self-test.
+    ``command_exit`` is untouched either way.
 
     The validation run reuses the caller's single ``deliver --timeout``
     (default 30s) rather than ``runner.run_tests``' 120s budget. That keeps
@@ -939,6 +1189,17 @@ def _validate_candidate(
                 validation_output=output,
             )
         case exit_code:
+            if pending.code is DeliveryCode.BUDGET_EXHAUSTED:
+                return _validated(
+                    pending,
+                    validation=ValidationOutcome.FAILED,
+                    validation_exit=exit_code,
+                    validation_output=output,
+                    message=(
+                        "candidate created (budget exhausted); "
+                        f"contract test_command failed with exit {exit_code}"
+                    ),
+                )
             return _validated(
                 pending,
                 validation=ValidationOutcome.FAILED,
@@ -1200,6 +1461,8 @@ def _context_receipt(
     validation: ValidationOutcome = ValidationOutcome.NOT_APPLICABLE,
     validation_exit: int | None = None,
     validation_output: str | None = None,
+    budget: Budget | None = None,
+    budget_usage: BudgetUsage | None = None,
 ) -> DeliveryReceipt:
     return _receipt(
         context.repository,
@@ -1215,6 +1478,8 @@ def _context_receipt(
         validation=validation,
         validation_exit=validation_exit,
         validation_output=validation_output,
+        budget=context.budget if budget is None else budget,
+        budget_usage=budget_usage,
     )
 
 
@@ -1233,7 +1498,11 @@ def _receipt(
     validation: ValidationOutcome = ValidationOutcome.NOT_APPLICABLE,
     validation_exit: int | None = None,
     validation_output: str | None = None,
+    budget: Budget | None = None,
+    budget_usage: BudgetUsage | None = None,
 ) -> DeliveryReceipt:
+    declared = budget if budget is not None else Budget()
+    usage = budget_usage if budget_usage is not None else evaluate(declared, 0, 0.0)
     return DeliveryReceipt(
         code=code,
         message=message,
@@ -1248,6 +1517,8 @@ def _receipt(
         validation=validation,
         validation_exit=validation_exit,
         validation_output=validation_output,
+        budget=declared,
+        budget_usage=usage,
     )
 
 
@@ -1260,12 +1531,12 @@ class ChainReceipt:
     """One multi-phase effort, ending in one candidate or in none.
 
     ``candidate_ref`` is ``None`` whenever the chain stopped at a phase that
-    produced no candidate (a refusal or discard). A ``TESTS_FAILED`` phase has
-    produced and published its candidate, so its ref is retained here even
-    though the chain stops at it -- that candidate is retained evidence, not
-    garbage. The no-partial-chain rule lives in the type rather than in a
-    convention, so a caller cannot read a usable ref off a broken chain by
-    accident.
+    produced no candidate (a refusal or discard). A ``TESTS_FAILED`` or
+    ``BUDGET_EXHAUSTED`` phase has produced and published its candidate, so
+    its ref is retained here even though the chain stops at it -- that
+    candidate is retained evidence, not garbage. The no-partial-chain rule
+    lives in the type rather than in a convention, so a caller cannot read a
+    usable ref off a broken chain by accident.
 
     ``accepted_refs`` keeps every accepted intermediate. SwiftStar's
     transaction discards its intermediate worktrees and keeps only the last;
@@ -1296,11 +1567,12 @@ def deliver_chain(
 
     A phase that produced no candidate (a refusal or discard) stops the
     chain: later phases do not run, and no candidate ref is reported. A
-    ``TESTS_FAILED`` phase has published its candidate, so it also stops the
-    chain -- folding forward from failing tests would carry broken work into
-    the next phase -- but its ref is retained in ``accepted_refs`` and
-    reported as ``candidate_ref``. The chain's code is the stopping phase's
-    own; inventing a chain-level code would hide which phase failed behind a
+    ``TESTS_FAILED`` or ``BUDGET_EXHAUSTED`` phase has published its
+    candidate, so it also stops the chain -- folding forward from a failed
+    or budget-spent phase would carry broken or partial work into the next
+    phase -- but its ref is retained in ``accepted_refs`` and reported as
+    ``candidate_ref``. The chain's code is the stopping phase's own;
+    inventing a chain-level code would hide which phase failed behind a
     label, and every way a chain can fail is a way a phase can fail.
 
     ``deliver`` is the test seam, and therefore the extension seam: there is
@@ -1315,7 +1587,12 @@ def deliver_chain(
     receipts: list[DeliveryReceipt] = []
     accepted: list[str] = []
     base: str | None = None
-    candidate_codes = (DeliveryCode.OK, DeliveryCode.TESTS_FAILED)
+    candidate_codes = (
+        DeliveryCode.OK,
+        DeliveryCode.TESTS_FAILED,
+        DeliveryCode.BUDGET_EXHAUSTED,
+    )
+    stopping_codes = (DeliveryCode.TESTS_FAILED, DeliveryCode.BUDGET_EXHAUSTED)
     for contract_path, command in phases:
         receipt = deliver(repo, contract_path, command, timeout, base=base)
         receipts.append(receipt)
@@ -1334,12 +1611,13 @@ def deliver_chain(
                 "success that produced nothing"
             )
         accepted.append(receipt.candidate_ref)
-        if receipt.code is DeliveryCode.TESTS_FAILED:
-            # Stop the chain here, but keep the failing phase's published ref:
+        if receipt.code in stopping_codes:
+            # Stop the chain here, but keep the stopping phase's published ref:
             # its candidate is retained evidence, and dropping it would make
             # the regression unreproducible without re-running. Folding
-            # forward from a failing-tests phase would silently carry broken
-            # work into the next phase, so the chain still stops.
+            # forward from a failed or budget-spent phase would silently carry
+            # broken or partial work into the next phase, so the chain still
+            # stops.
             return ChainReceipt(
                 tuple(receipts), receipt.candidate_ref, tuple(accepted), receipt.code
             )

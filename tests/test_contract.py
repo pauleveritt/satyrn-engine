@@ -118,3 +118,65 @@ def test_load_invalid_test_command_is_refused(tmp_path: Path, value: object) -> 
         load_contract(path)
     assert excinfo.value.code is ExitCode.CONTRACT_MISSING_FIELD
     assert "test_command" in excinfo.value.message
+
+
+def test_load_contract_with_budget_fields(tmp_path: Path) -> None:
+    path = tmp_path / "budget.yaml"
+    path.write_text(
+        "id: v5-budget\ntask: test\nturn_budget: 3\ndeadline_seconds: 4.5\n",
+        encoding="utf-8",
+    )
+    contract = load_contract(path)
+    assert contract.turn_budget == 3
+    assert contract.deadline_seconds == 4.5
+
+
+def test_load_contract_budget_defaults_to_absent_not_zero(tmp_path: Path) -> None:
+    """The sibling: absent is absent (None), never a hidden zero default that
+    would turn an undeclared budget into an immediate exhaustion."""
+    path = tmp_path / "no-budget.yaml"
+    path.write_text("id: v5-no-budget\ntask: test\n", encoding="utf-8")
+    contract = load_contract(path)
+    assert contract.turn_budget is None
+    assert contract.deadline_seconds is None
+
+
+def test_load_contract_deadline_seconds_as_integer_is_a_float(tmp_path: Path) -> None:
+    path = tmp_path / "int-deadline.yaml"
+    path.write_text("id: v5-int\ntask: test\ndeadline_seconds: 4\n", encoding="utf-8")
+    contract = load_contract(path)
+    assert contract.deadline_seconds == 4.0
+    assert isinstance(contract.deadline_seconds, float)
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, True, "3", None])
+def test_load_invalid_turn_budget_is_refused(tmp_path: Path, value: object) -> None:
+    path = tmp_path / "invalid-turn-budget.yaml"
+    rendered = "null" if value is None else repr(value)
+    path.write_text(
+        "id: v5-invalid\ntask: test\nturn_budget: " + rendered + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ContractError) as excinfo:
+        load_contract(path)
+    assert excinfo.value.code is ExitCode.CONTRACT_MISSING_FIELD
+    assert "turn_budget" in excinfo.value.message
+
+
+@pytest.mark.parametrize("value", [0, -1, "nan", "inf", True, None])
+def test_load_invalid_deadline_seconds_is_refused(tmp_path: Path, value: object) -> None:
+    path = tmp_path / "invalid-deadline.yaml"
+    if value is None:
+        rendered = "null"
+    elif isinstance(value, bool):
+        rendered = "true"
+    else:
+        rendered = repr(value)
+    path.write_text(
+        "id: v5-invalid\ntask: test\ndeadline_seconds: " + rendered + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ContractError) as excinfo:
+        load_contract(path)
+    assert excinfo.value.code is ExitCode.CONTRACT_MISSING_FIELD
+    assert "deadline_seconds" in excinfo.value.message

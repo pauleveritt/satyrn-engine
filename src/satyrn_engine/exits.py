@@ -28,3 +28,4 @@ class ExitCode(IntEnum):
     TEST_COMMAND_UNAVAILABLE = 11  # a declared test command could not be run at all
     TEST_COMMAND_NOT_ALLOWED = 12  # a model-supplied bash command did not match the contract's test_command
     TESTS_FAILED = 13  # the engine's own run of the contract's tests failed
+    BUDGET_EXHAUSTED = 14  # a whole-attempt turn/deadline budget was spent

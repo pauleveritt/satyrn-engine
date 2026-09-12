@@ -105,6 +105,26 @@ def build_parser() -> argparse.ArgumentParser:
             "same loop run in-process)."
         ),
     )
+    deliver_parser.add_argument(
+        "--turn-limit",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help=(
+            "whole-attempt turn limit, counted from the implementer's own "
+            "stream (default: the contract's turn_budget, or no limit)"
+        ),
+    )
+    deliver_parser.add_argument(
+        "--deadline-seconds",
+        type=_positive_finite_timeout,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "whole-attempt wall-clock deadline in seconds "
+            "(default: the contract's deadline_seconds, or no limit)"
+        ),
+    )
 
     attempt_parser = subparsers.add_parser(
         "attempt",
@@ -132,6 +152,16 @@ def _positive_finite_timeout(value: str) -> float:
     if not math.isfinite(timeout) or timeout <= 0:
         raise argparse.ArgumentTypeError("timeout must be a finite number greater than zero")
     return timeout
+
+
+def _positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("turn limit must be a positive integer") from exc
+    if number <= 0:
+        raise argparse.ArgumentTypeError("turn limit must be a positive integer")
+    return number
 
 
 def _nonblank_base(value: str) -> str:
@@ -194,6 +224,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.attempt_command,
                     args.timeout,
                     base=args.base,
+                    turn_limit=args.turn_limit,
+                    deadline_seconds=args.deadline_seconds,
                 )
         except _DeliveryTerminationRequested:
             return 128 + signal.SIGTERM

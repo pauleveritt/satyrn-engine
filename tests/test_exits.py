@@ -18,4 +18,5 @@ def test_exit_codes_are_distinct_and_stable() -> None:
         ("TEST_COMMAND_UNAVAILABLE", 11),
         ("TEST_COMMAND_NOT_ALLOWED", 12),
         ("TESTS_FAILED", 13),
+        ("BUDGET_EXHAUSTED", 14),
     ]

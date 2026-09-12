@@ -146,6 +146,13 @@ def test_clean_root_reaches_no_changes_without_touching_source(tmp_path: Path) -
         "validation_exit": None,
         "validation_output": None,
         "worktree_path": None,
+        "budget": {
+            "state": "not_declared",
+            "turns_used": 0,
+            "seconds_used": 0.0,
+            "turn_limit": None,
+            "deadline_seconds": None,
+        },
     }
     assert_source_unchanged(repo, before)
 
@@ -387,6 +394,13 @@ def test_success_creates_candidate_with_exact_parent_and_paths(tmp_path: Path) -
         "validation_exit": None,
         "validation_output": None,
         "worktree_path": None,
+        "budget": {
+            "state": "not_declared",
+            "turns_used": 0,
+            "seconds_used": 0.0,
+            "turn_limit": None,
+            "deadline_seconds": None,
+        },
     }
     assert git(repo, "rev-parse", candidate_ref).stdout.strip().decode() == candidate_commit
     assert git(repo, "rev-parse", f"{candidate_commit}^").stdout == before[0]
@@ -649,6 +663,13 @@ def test_failed_attempt_is_discarded_without_candidate(
         "validation_exit": None,
         "validation_output": None,
         "worktree_path": None,
+        "budget": {
+            "state": "not_declared",
+            "turns_used": 0,
+            "seconds_used": 0.0,
+            "turn_limit": None,
+            "deadline_seconds": None,
+        },
     }
     assert git(repo, "show-ref", "--verify", str(receipt["candidate_ref"])).returncode != 0
     assert_source_unchanged(repo, before)
@@ -681,6 +702,13 @@ def test_timeout_kills_same_process_group_descendant(tmp_path: Path) -> None:
         "validation_exit": None,
         "validation_output": None,
         "worktree_path": None,
+        "budget": {
+            "state": "not_declared",
+            "turns_used": 0,
+            "seconds_used": 0.0,
+            "turn_limit": None,
+            "deadline_seconds": None,
+        },
     }
     time.sleep(1.0)
     assert not sentinel.exists()

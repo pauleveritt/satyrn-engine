@@ -1,5 +1,6 @@
 """Contract loading and validation."""
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -28,6 +29,8 @@ class Contract:
     task: str
     writable_paths: tuple[str, ...] = ()
     test_command: tuple[str, ...] = ()
+    turn_budget: int | None = None
+    deadline_seconds: float | None = None
 
 
 def load_contract(path: Path) -> Contract:
@@ -65,11 +68,14 @@ def load_contract(path: Path) -> Contract:
 
     normalized_paths = tuple(cast(list[str], data.get("writable_paths", [])))
     normalized_command = tuple(cast(list[str], data.get("test_command", [])))
+    raw_deadline = data.get("deadline_seconds")
     return Contract(
         id=data["id"],
         task=data["task"],
         writable_paths=normalized_paths,
         test_command=normalized_command,
+        turn_budget=data.get("turn_budget"),
+        deadline_seconds=None if raw_deadline is None else float(raw_deadline),
     )
 
 
@@ -102,5 +108,25 @@ def _field_problems(data: dict[str, object]) -> list[str]:
                 )
             case _:
                 problems.append("optional field 'test_command' must be a list")
+
+    if "turn_budget" in data:
+        match data["turn_budget"]:
+            case int() if not isinstance(data["turn_budget"], bool) and data["turn_budget"] > 0:
+                pass
+            case _:
+                problems.append("optional field 'turn_budget' must be a positive integer")
+
+    if "deadline_seconds" in data:
+        match data["deadline_seconds"]:
+            case int() | float() if (
+                not isinstance(data["deadline_seconds"], bool)
+                and data["deadline_seconds"] > 0
+                and math.isfinite(data["deadline_seconds"])
+            ):
+                pass
+            case _:
+                problems.append(
+                    "optional field 'deadline_seconds' must be a positive finite number"
+                )
 
     return problems

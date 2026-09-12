@@ -912,3 +912,237 @@ def test_test_command_timeout_tears_down_process_group(
     assert result.output == b"partial"
     assert started["start_new_session"] is True
     assert len(teardowns) == 1
+
+
+def budget_context(root: Path, budget: delivery.Budget) -> delivery._DeliveryContext:
+    return delivery._DeliveryContext(
+        repository=str(root),
+        root=root,
+        environment=os.environ.copy(),
+        contract_id="failure",
+        base_commit="a" * 40,
+        candidate_ref="refs/satyrn/candidates/failure/head",
+        budget=budget,
+    )
+
+
+class _FinishedProcess:
+    pid = 123
+    returncode = 0
+
+    def poll(self) -> int:
+        return 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+    def kill(self) -> None:
+        raise AssertionError("teardown is stubbed")
+
+
+class _TimingOutProcess:
+    pid = 123
+    returncode = None
+
+    def wait(self, timeout: float | None = None) -> int:
+        raise subprocess.TimeoutExpired("command", timeout)
+
+    def kill(self) -> None:
+        raise AssertionError("teardown is stubbed")
+
+
+def _stub_exhausted_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    teardown: delivery._TeardownResult,
+) -> None:
+    monkeypatch.setattr(
+        delivery.subprocess, "Popen", lambda *args, **kwargs: _FinishedProcess()
+    )
+    monkeypatch.setattr(
+        delivery,
+        "_stream_implementer",
+        lambda process, spool, budget, timeout: delivery._StreamOutcome(
+            delivery.BudgetState.TURN_EXHAUSTED, False, 4, 2.0
+        ),
+    )
+    monkeypatch.setattr(
+        delivery, "_teardown_process_group", lambda process: teardown
+    )
+
+
+def test_budget_exhaustion_non_clean_teardown_leaves_gate_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Critical regression: a non-clean teardown on the budget-exhaustion
+    path must leave the cleanup gate CLOSED, not be clobbered back to OPEN."""
+    _stub_exhausted_stream(
+        monkeypatch,
+        teardown=delivery._TeardownResult(
+            delivery._GroupState.PRESENT, True, "process group still exists after SIGKILL"
+        ),
+    )
+    monkeypatch.setattr(
+        delivery, "_git", lambda *args, **kwargs: git_result(128, stderr=b"git unavailable")
+    )
+    state = delivery._AttemptState(tmp_path, tmp_path / "worktree", parent_exists=False)
+
+    receipt = delivery._run_and_commit(
+        budget_context(tmp_path, delivery.Budget(turn_limit=3)),
+        state,
+        ("unused",),
+        1.0,
+    )
+
+    assert receipt.budget_usage.state is delivery.BudgetState.TURN_EXHAUSTED
+    assert state.cleanup_gate is delivery._CleanupGate.CLOSED
+
+
+def test_budget_exhaustion_clean_teardown_opens_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The success sibling: a clean teardown opens the gate for cleanup."""
+    _stub_exhausted_stream(
+        monkeypatch,
+        teardown=delivery._TeardownResult(delivery._GroupState.GONE, True),
+    )
+    monkeypatch.setattr(
+        delivery, "_git", lambda *args, **kwargs: git_result(128, stderr=b"git unavailable")
+    )
+    state = delivery._AttemptState(tmp_path, tmp_path / "worktree", parent_exists=False)
+
+    receipt = delivery._run_and_commit(
+        budget_context(tmp_path, delivery.Budget(turn_limit=3)),
+        state,
+        ("unused",),
+        1.0,
+    )
+
+    assert receipt.budget_usage.state is delivery.BudgetState.TURN_EXHAUSTED
+    assert state.cleanup_gate is delivery._CleanupGate.OPEN
+
+
+def test_no_budget_timeout_non_clean_teardown_leaves_gate_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The no-budget COMMAND_TIMEOUT path regressed the same way: a non-clean
+    teardown must stay CLOSED."""
+    monkeypatch.setattr(
+        delivery.subprocess, "Popen", lambda *args, **kwargs: _TimingOutProcess()
+    )
+    monkeypatch.setattr(
+        delivery,
+        "_teardown_process_group",
+        lambda process: delivery._TeardownResult(
+            delivery._GroupState.UNKNOWN, True, "cannot signal process group"
+        ),
+    )
+    state = delivery._AttemptState(tmp_path, tmp_path / "worktree", parent_exists=False)
+
+    receipt = delivery._run_and_commit(context(tmp_path), state, ("unused",), 1.0)
+
+    assert receipt.code is delivery.DeliveryCode.COMMAND_TIMEOUT
+    assert state.cleanup_gate is delivery._CleanupGate.CLOSED
+
+
+def test_no_budget_timeout_clean_teardown_opens_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The success sibling: a clean teardown on the no-budget timeout path
+    opens the gate."""
+    monkeypatch.setattr(
+        delivery.subprocess, "Popen", lambda *args, **kwargs: _TimingOutProcess()
+    )
+    monkeypatch.setattr(
+        delivery,
+        "_teardown_process_group",
+        lambda process: delivery._TeardownResult(delivery._GroupState.GONE, True),
+    )
+    state = delivery._AttemptState(tmp_path, tmp_path / "worktree", parent_exists=False)
+
+    receipt = delivery._run_and_commit(context(tmp_path), state, ("unused",), 1.0)
+
+    assert receipt.code is delivery.DeliveryCode.COMMAND_TIMEOUT
+    assert state.cleanup_gate is delivery._CleanupGate.OPEN
+
+
+def test_exhausted_attempt_with_no_diff_reports_no_changes_with_exhausted_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pinned decision: an exhausted attempt that produced no tree diff is
+    NO_CHANGES (DISCARDED) -- there is no candidate to retain -- while the
+    budget field still records the exhaustion."""
+    _stub_exhausted_stream(
+        monkeypatch,
+        teardown=delivery._TeardownResult(delivery._GroupState.GONE, True),
+    )
+    ctx = budget_context(tmp_path, delivery.Budget(turn_limit=3))
+
+    def no_diff_git(cwd: Path, environment: dict[str, str], *args: str, input_bytes: bytes | None = None) -> delivery._GitResult:
+        del cwd, environment, input_bytes
+        match args:
+            case ("rev-parse", "--verify", "HEAD^{commit}"):
+                return git_result(stdout=ctx.base_commit.encode() + b"\n")
+            case ("symbolic-ref", "--quiet", "HEAD"):
+                return git_result(1)
+            case ("add", "-A"):
+                return git_result()
+            case ("write-tree",):
+                return git_result(stdout=b"a" * 40 + b"\n")
+            case ("rev-parse", _):
+                return git_result(stdout=b"a" * 40 + b"\n")
+            case _:
+                raise AssertionError(args)
+
+    monkeypatch.setattr(delivery, "_git", no_diff_git)
+    state = delivery._AttemptState(tmp_path, tmp_path / "worktree", parent_exists=False)
+
+    receipt = delivery._run_and_commit(ctx, state, ("unused",), 1.0)
+
+    assert receipt.code is delivery.DeliveryCode.NO_CHANGES
+    assert receipt.outcome is delivery.DeliveryOutcome.DISCARDED
+    assert receipt.candidate_commit is None
+    assert receipt.budget_usage.state is delivery.BudgetState.TURN_EXHAUSTED
+
+
+def test_exhausted_attempt_with_diff_retains_partial_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The success sibling of the no-diff case: an exhausted attempt with a
+    diff retains the partial candidate as BUDGET_EXHAUSTED."""
+    _stub_exhausted_stream(
+        monkeypatch,
+        teardown=delivery._TeardownResult(delivery._GroupState.GONE, True),
+    )
+    ctx = budget_context(tmp_path, delivery.Budget(turn_limit=3))
+
+    def diff_git(cwd: Path, environment: dict[str, str], *args: str, input_bytes: bytes | None = None) -> delivery._GitResult:
+        del cwd, environment, input_bytes
+        match args:
+            case ("rev-parse", "--verify", "HEAD^{commit}"):
+                return git_result(stdout=ctx.base_commit.encode() + b"\n")
+            case ("symbolic-ref", "--quiet", "HEAD"):
+                return git_result(1)
+            case ("add", "-A"):
+                return git_result()
+            case ("write-tree",):
+                return git_result(stdout=b"b" * 40 + b"\n")
+            case ("rev-parse", _):
+                return git_result(stdout=b"a" * 40 + b"\n")
+            case (_, _, "commit-tree", *_):
+                return git_result(stdout=b"c" * 40 + b"\n")
+            case ("diff-tree", *_):
+                return git_result(stdout=b"app.py\0")
+            case _:
+                raise AssertionError(args)
+
+    monkeypatch.setattr(delivery, "_git", diff_git)
+    state = delivery._AttemptState(tmp_path, tmp_path / "worktree", parent_exists=False)
+
+    receipt = delivery._run_and_commit(ctx, state, ("unused",), 1.0)
+
+    assert receipt.code is delivery.DeliveryCode.BUDGET_EXHAUSTED
+    assert receipt.outcome is delivery.DeliveryOutcome.CANDIDATE_CREATED
+    assert receipt.candidate_commit == "c" * 40
+    assert receipt.changed_paths == ("app.py",)
+    assert receipt.budget_usage.state is delivery.BudgetState.TURN_EXHAUSTED

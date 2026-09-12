@@ -16,7 +16,11 @@ from satyrn_engine.delivery import (
 )
 from satyrn_engine.exits import ExitCode
 
-CANDIDATE_CODES = {DeliveryCode.OK, DeliveryCode.TESTS_FAILED}
+CANDIDATE_CODES = {
+    DeliveryCode.OK,
+    DeliveryCode.TESTS_FAILED,
+    DeliveryCode.BUDGET_EXHAUSTED,
+}
 
 
 def _receipt(code: DeliveryCode) -> DeliveryReceipt:
@@ -45,6 +49,33 @@ def test_tests_failed_is_the_next_unused_exit_integer() -> None:
     first integer after TEST_COMMAND_NOT_ALLOWED (12)."""
     assert int(ExitCode.TESTS_FAILED) == 13
     assert [int(code) for code in ExitCode].count(13) == 1
+
+
+def test_budget_exhausted_is_the_next_unused_exit_integer() -> None:
+    """BUDGET_EXHAUSTED takes 14, the first integer after TESTS_FAILED (13)."""
+    assert int(ExitCode.BUDGET_EXHAUSTED) == 14
+    assert [int(code) for code in ExitCode].count(14) == 1
+
+
+def test_budget_exhausted_maps_to_candidate_created_and_a_distinct_exit() -> None:
+    assert (
+        delivery._CODE_TO_OUTCOME[DeliveryCode.BUDGET_EXHAUSTED]
+        is DeliveryOutcome.CANDIDATE_CREATED
+    )
+    assert (
+        delivery._CODE_TO_EXIT[DeliveryCode.BUDGET_EXHAUSTED]
+        is ExitCode.BUDGET_EXHAUSTED
+    )
+
+
+def test_budget_exhausted_is_produced_but_partial_not_refused() -> None:
+    """Exhaustion retains the partial candidate: it is a produced-but-partial
+    outcome, never a refusal or a discard."""
+    exhausted = _receipt(DeliveryCode.BUDGET_EXHAUSTED)
+    assert exhausted.outcome is DeliveryOutcome.CANDIDATE_CREATED
+    assert exhausted.exit_code is ExitCode.BUDGET_EXHAUSTED
+    assert exhausted.candidate_commit == "c" * 40
+    assert exhausted.changed_paths == ("app.py",)
 
 
 def test_tests_failed_maps_to_candidate_created_and_a_distinct_exit() -> None:
