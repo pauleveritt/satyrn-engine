@@ -88,6 +88,29 @@ def write_test_contract(
     return path
 
 
+def write_budget_contract(
+    path: Path,
+    candidate_id: str,
+    *,
+    turn_budget: int | None = None,
+    deadline_seconds: float | None = None,
+    test_command: Sequence[str] | None = None,
+) -> Path:
+    """Write a contract declaring a whole-attempt budget and optional tests."""
+    data: dict[str, object] = {
+        "id": candidate_id,
+        "task": "make a bounded change",
+    }
+    if turn_budget is not None:
+        data["turn_budget"] = turn_budget
+    if deadline_seconds is not None:
+        data["deadline_seconds"] = deadline_seconds
+    if test_command is not None:
+        data["test_command"] = list(test_command)
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return path
+
+
 def run_delivery(
     repo: Path,
     contract: Path,
@@ -1123,4 +1146,218 @@ def test_no_test_command_records_not_requested(tmp_path: Path) -> None:
     assert receipt["validation"] == "not_requested"
     assert receipt["validation_exit"] is None
     assert receipt["validation_output"] is None
+    assert_source_unchanged(repo, before)
+
+
+# --- V5: whole-attempt budget against real processes and real Git ----------
+
+
+def test_deadline_expiry_retains_a_real_partial_candidate(tmp_path: Path) -> None:
+    """A real wall-clock deadline stops a still-running implementer, commits
+    whatever file it already wrote, and retains that partial candidate.
+
+    The implementer writes ``app.py`` and then sleeps past a 2-second
+    deadline; the engine tears the process group down and publishes the
+    partial work as a BUDGET_EXHAUSTED candidate-created receipt (exit 14)."""
+    repo = make_repo(tmp_path / "repo")
+    contract = write_budget_contract(
+        tmp_path / "contract.yaml",
+        "deadline-partial",
+        deadline_seconds=2.0,
+    )
+    implementer = (
+        "from pathlib import Path; "
+        "Path('app.py').write_text('partial'); "
+        "import time; time.sleep(30)"
+    )
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", implementer))
+
+    assert proc.returncode == 14
+    assert receipt["outcome"] == "candidate-created"
+    assert receipt["code"] == "BUDGET_EXHAUSTED"
+    assert receipt["budget"]["state"] == "deadline_exhausted"
+    assert receipt["budget"]["turn_limit"] is None
+    assert receipt["budget"]["deadline_seconds"] == 2.0
+    assert receipt["budget"]["turns_used"] == 0
+    assert receipt["budget"]["seconds_used"] > 2.0
+    assert receipt["command_exit"] is None
+    assert receipt["candidate_commit"] is not None
+    assert receipt["changed_paths"] == ["app.py"]
+    assert git(repo, "show", f"{receipt['candidate_commit']}:app.py").stdout == b"partial"
+    assert_source_unchanged(repo, before)
+
+
+def test_within_deadline_succeeds(tmp_path: Path) -> None:
+    """The success sibling: a change that finishes before the deadline is a
+    clean OK, with the budget state WITHIN rather than exhausted."""
+    repo = make_repo(tmp_path / "repo")
+    contract = write_budget_contract(
+        tmp_path / "contract.yaml",
+        "deadline-ok",
+        deadline_seconds=10.0,
+    )
+    implementer = "from pathlib import Path; Path('app.py').write_text('done')"
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", implementer))
+
+    assert proc.returncode == 0
+    assert receipt["code"] == "OK"
+    assert receipt["budget"]["state"] == "within"
+    assert receipt["budget"]["deadline_seconds"] == 10.0
+    assert receipt["budget"]["seconds_used"] <= 10.0
+    assert receipt["candidate_commit"] is not None
+    assert git(repo, "show", f"{receipt['candidate_commit']}:app.py").stdout == b"done"
+    assert_source_unchanged(repo, before)
+
+
+def test_turn_limit_stops_a_streamed_implementer_retaining_partial(
+    tmp_path: Path,
+) -> None:
+    """A real turn limit trips on the implementer's own streamed
+    ``turn_start`` lines and stops the still-running process, retaining the
+    file it wrote before the 4th turn crossed a limit of 3."""
+    repo = make_repo(tmp_path / "repo")
+    contract = write_budget_contract(
+        tmp_path / "contract.yaml",
+        "turn-partial",
+        turn_budget=3,
+    )
+    implementer = (
+        "from pathlib import Path; "
+        "Path('app.py').write_text('partial'); "
+        "[print('{\"type\":\"turn_start\"}', flush=True) for _ in range(4)]; "
+        "import time; time.sleep(30)"
+    )
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", implementer))
+
+    assert proc.returncode == 14
+    assert receipt["outcome"] == "candidate-created"
+    assert receipt["code"] == "BUDGET_EXHAUSTED"
+    assert receipt["budget"]["state"] == "turn_exhausted"
+    assert receipt["budget"]["turn_limit"] == 3
+    assert receipt["budget"]["deadline_seconds"] is None
+    assert receipt["budget"]["turns_used"] == 4
+    assert receipt["command_exit"] is None
+    assert receipt["candidate_commit"] is not None
+    assert receipt["changed_paths"] == ["app.py"]
+    assert git(repo, "show", f"{receipt['candidate_commit']}:app.py").stdout == b"partial"
+    assert_source_unchanged(repo, before)
+
+
+def test_within_turn_limit_succeeds(tmp_path: Path) -> None:
+    """The success sibling: a streamed implementer that stays under the turn
+    limit is a clean OK with the budget state WITHIN."""
+    repo = make_repo(tmp_path / "repo")
+    contract = write_budget_contract(
+        tmp_path / "contract.yaml",
+        "turn-ok",
+        turn_budget=5,
+    )
+    implementer = (
+        "from pathlib import Path; "
+        "Path('app.py').write_text('done'); "
+        "[print('{\"type\":\"turn_start\"}', flush=True) for _ in range(3)]"
+    )
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", implementer))
+
+    assert proc.returncode == 0
+    assert receipt["code"] == "OK"
+    assert receipt["budget"]["state"] == "within"
+    assert receipt["budget"]["turn_limit"] == 5
+    assert receipt["budget"]["turns_used"] == 3
+    assert receipt["candidate_commit"] is not None
+    assert git(repo, "show", f"{receipt['candidate_commit']}:app.py").stdout == b"done"
+    assert_source_unchanged(repo, before)
+
+
+def test_exhausted_failed_validation_retains_partial_and_failure_evidence(
+    tmp_path: Path,
+) -> None:
+    """When a partial (turn-exhausted) candidate fails the contract's own
+    tests, both kinds of evidence survive the worktree cleanup: the partial
+    candidate commit/file content, and the failing validation output.
+
+    V5's confirmed reading holds at the process level: the coarse code stays
+    BUDGET_EXHAUSTED (not TESTS_FAILED), because an exhausted attempt is
+    authoritative regardless of its self-test."""
+    repo = make_repo(tmp_path / "repo")
+    contract = write_budget_contract(
+        tmp_path / "contract.yaml",
+        "exhausted-failing",
+        turn_budget=2,
+        test_command=(
+            sys.executable,
+            "-c",
+            "from pathlib import Path; assert Path('app.py').read_text() == 'good'",
+        ),
+    )
+    implementer = (
+        "from pathlib import Path; "
+        "Path('app.py').write_text('partial'); "
+        "[print('{\"type\":\"turn_start\"}', flush=True) for _ in range(3)]; "
+        "import time; time.sleep(30)"
+    )
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", implementer))
+
+    assert proc.returncode == 14
+    assert receipt["code"] == "BUDGET_EXHAUSTED"
+    assert receipt["validation"] == "failed"
+    assert receipt["validation_exit"] == 1
+    assert "AssertionError" in str(receipt["validation_output"])
+    assert receipt["candidate_commit"] is not None
+    assert git(repo, "show", f"{receipt['candidate_commit']}:app.py").stdout == b"partial"
+    # Evidence survives cleanup: the ref resolves, the partial file is
+    # readable from the object store, and the isolated worktree is gone.
+    assert git(
+        repo, "rev-parse", "--verify", f"{receipt['candidate_ref']}^{{commit}}"
+    ).returncode == 0
+    assert_source_unchanged(repo, before)
+
+
+def test_exhausted_passed_validation_stays_exhausted_with_evidence(
+    tmp_path: Path,
+) -> None:
+    """The success sibling for the failure case above: when the partial
+    candidate passes its self-test, the code is still BUDGET_EXHAUSTED (a
+    passed validation is not a completion) and the partial evidence still
+    survives cleanup."""
+    repo = make_repo(tmp_path / "repo")
+    contract = write_budget_contract(
+        tmp_path / "contract.yaml",
+        "exhausted-passing",
+        turn_budget=2,
+        test_command=(
+            sys.executable,
+            "-c",
+            "from pathlib import Path; assert Path('app.py').read_text() == 'partial'",
+        ),
+    )
+    implementer = (
+        "from pathlib import Path; "
+        "Path('app.py').write_text('partial'); "
+        "[print('{\"type\":\"turn_start\"}', flush=True) for _ in range(3)]; "
+        "import time; time.sleep(30)"
+    )
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", implementer))
+
+    assert proc.returncode == 14
+    assert receipt["code"] == "BUDGET_EXHAUSTED"
+    assert receipt["validation"] == "passed"
+    assert receipt["validation_exit"] == 0
+    assert receipt["candidate_commit"] is not None
+    assert git(repo, "show", f"{receipt['candidate_commit']}:app.py").stdout == b"partial"
+    assert git(
+        repo, "rev-parse", "--verify", f"{receipt['candidate_ref']}^{{commit}}"
+    ).returncode == 0
     assert_source_unchanged(repo, before)

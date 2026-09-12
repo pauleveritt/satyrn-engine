@@ -72,14 +72,30 @@ def test_a_declared_budget_receipt_reports_within_and_the_declaration() -> None:
     }
 
 
-def test_a_declared_budget_derives_within_usage_when_not_given() -> None:
-    """A declared budget with no explicit usage starts WITHIN at 0/0, not
-    NOT_DECLARED: the declaration and the state can never disagree."""
+def test_a_declared_budget_with_no_run_is_not_enforced() -> None:
+    """A declared budget with no explicit usage means the attempt never ran,
+    so the state is NOT_ENFORCED -- not WITHIN, which would claim a spend of
+    0/0 was measured."""
     receipt = delivery._receipt(
-        "/repo", DeliveryCode.OK, "candidate created", budget=Budget(turn_limit=3)
+        "/repo", DeliveryCode.REPO_DIRTY, "dirty", budget=Budget(turn_limit=3)
+    )
+    assert receipt.budget_usage.state is BudgetState.NOT_ENFORCED
+    assert receipt.payload()["budget"]["state"] == "not_enforced"
+    assert receipt.payload()["budget"]["turn_limit"] == 3
+
+
+def test_a_declared_budget_receipt_with_explicit_usage_stays_within() -> None:
+    """The sibling: once the attempt ran and usage is given, the state is
+    WITHIN -- NOT_ENFORCED is only for a budget whose attempt never ran."""
+    receipt = delivery._receipt(
+        "/repo",
+        DeliveryCode.OK,
+        "candidate created",
+        budget=Budget(turn_limit=3),
+        budget_usage=BudgetUsage(BudgetState.WITHIN, 1, 0.5),
     )
     assert receipt.budget_usage.state is BudgetState.WITHIN
-    assert receipt.payload()["budget"]["turn_limit"] == 3
+    assert receipt.payload()["budget"]["state"] == "within"
 
 
 def test_budget_exhausted_receipt_maps_to_candidate_created() -> None:

@@ -14,12 +14,21 @@ _TURN_START_TYPE = "turn_start"
 
 
 class BudgetState(StrEnum):
-    """Closed vocabulary for where an attempt stands against its budget."""
+    """Closed vocabulary for where an attempt stands against its budget.
+
+    ``WITHIN``, ``TURN_EXHAUSTED``, and ``DEADLINE_EXHAUSTED`` are spend
+    states :func:`evaluate` derives once an attempt actually ran.
+    ``NOT_DECLARED`` means no limit was declared. ``NOT_ENFORCED`` means a
+    limit was declared but the attempt never ran (a preflight refusal or an
+    unavailable command), so there is no spend to measure and no honest
+    ``WITHIN`` to report.
+    """
 
     WITHIN = "within"
     TURN_EXHAUSTED = "turn_exhausted"
     DEADLINE_EXHAUSTED = "deadline_exhausted"
     NOT_DECLARED = "not_declared"
+    NOT_ENFORCED = "not_enforced"
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +37,9 @@ class Budget:
 
     ``None`` means "no limit of this kind", and ``declared`` is the single
     place that turns two ``None`` values into one name. A declared-but-
-    unenforced budget is therefore its own state, never an ambiguous ``None``.
+    unenforced budget is therefore its own state (``NOT_ENFORCED``), distinct
+    from ``WITHIN`` (a declared budget whose attempt did run) and never an
+    ambiguous ``None``.
     """
 
     turn_limit: int | None = None
@@ -75,6 +86,10 @@ def evaluate(budget: Budget, turns_used: int, seconds_used: float) -> BudgetUsag
     the 4th ``turn_start``. A deadline trips when the elapsed monotonic
     seconds exceed it. With no declared budget the state is ``NOT_DECLARED``,
     never a ``None`` standing in for "no budget reached".
+
+    ``evaluate`` never returns ``NOT_ENFORCED``: that state is assigned by
+    the receipt layer for a declared budget whose attempt never ran, where
+    there is no spend to evaluate.
     """
     if budget.turn_limit is not None and turns_used > budget.turn_limit:
         return BudgetUsage(BudgetState.TURN_EXHAUSTED, turns_used, seconds_used)

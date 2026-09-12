@@ -22,7 +22,7 @@ until that plan is written.
 
 **Data shape.** `DeliveryPayload` gains `budget: {turns_used, turn_limit, seconds_used, deadline_seconds, exhausted: bool}`. `None` never means both "no budget declared" and "budget not reached"; a declared-but-unenforced budget is its own state, mirroring V4's `not_requested`/`unavailable` split.
 
-**Enforcement.** The whole-attempt turn count is engine-owned, not read from model prose; the deadline spans the attempt, not one command. On exhaustion the engine stops, commits/retains what exists, validates it if a `test_command` is declared (V4), and reports `BUDGET_EXHAUSTED` with the partial artifact.
+**Enforcement.** The whole-attempt turn count is engine-owned, not read from model prose; the deadline spans the attempt, not one command. On exhaustion the engine stops, commits/retains what exists, validates it if a `test_command` is declared (V4), and reports `BUDGET_EXHAUSTED` with the partial artifact. When a deadline is declared beyond the command timeout, the effective command deadline is `max(timeout, deadline_seconds)` so the budget deadline can fire and retain the partial candidate instead of the command timeout discarding it (recorded at final review, 2026-09-11).
 
 **Test layout.** Default tier drives the clock and turn counter through the existing single seam (no second plugin mechanism); refusal/success siblings for turn-exhaustion, deadline-exhaustion, within-budget, and no-budget-declared; integration tests for a real deadline and a real partial retain. The three decisive cases: turns exceeded with a passing suite; deadline exceeded with a partial patch; a model that under-reports its own turns.
 

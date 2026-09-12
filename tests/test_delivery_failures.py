@@ -955,6 +955,7 @@ def _stub_exhausted_stream(
     monkeypatch: pytest.MonkeyPatch,
     *,
     teardown: delivery._TeardownResult,
+    state: delivery.BudgetState = delivery.BudgetState.TURN_EXHAUSTED,
 ) -> None:
     monkeypatch.setattr(
         delivery.subprocess, "Popen", lambda *args, **kwargs: _FinishedProcess()
@@ -963,7 +964,7 @@ def _stub_exhausted_stream(
         delivery,
         "_stream_implementer",
         lambda process, spool, budget, timeout: delivery._StreamOutcome(
-            delivery.BudgetState.TURN_EXHAUSTED, False, 4, 2.0
+            state, False, 4, 2.0
         ),
     )
     monkeypatch.setattr(
@@ -1105,16 +1106,27 @@ def test_exhausted_attempt_with_no_diff_reports_no_changes_with_exhausted_state(
     assert receipt.budget_usage.state is delivery.BudgetState.TURN_EXHAUSTED
 
 
+@pytest.mark.parametrize(
+    ("budget", "state"),
+    [
+        (delivery.Budget(turn_limit=3), delivery.BudgetState.TURN_EXHAUSTED),
+        (delivery.Budget(deadline_seconds=60.0), delivery.BudgetState.DEADLINE_EXHAUSTED),
+    ],
+)
 def test_exhausted_attempt_with_diff_retains_partial_candidate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    budget: delivery.Budget,
+    state: delivery.BudgetState,
 ) -> None:
-    """The success sibling of the no-diff case: an exhausted attempt with a
-    diff retains the partial candidate as BUDGET_EXHAUSTED."""
+    """The success sibling of the no-diff case: a turn- or deadline-exhausted
+    attempt with a diff retains the partial candidate as BUDGET_EXHAUSTED."""
     _stub_exhausted_stream(
         monkeypatch,
         teardown=delivery._TeardownResult(delivery._GroupState.GONE, True),
+        state=state,
     )
-    ctx = budget_context(tmp_path, delivery.Budget(turn_limit=3))
+    ctx = budget_context(tmp_path, budget)
 
     def diff_git(cwd: Path, environment: dict[str, str], *args: str, input_bytes: bytes | None = None) -> delivery._GitResult:
         del cwd, environment, input_bytes
@@ -1137,12 +1149,12 @@ def test_exhausted_attempt_with_diff_retains_partial_candidate(
                 raise AssertionError(args)
 
     monkeypatch.setattr(delivery, "_git", diff_git)
-    state = delivery._AttemptState(tmp_path, tmp_path / "worktree", parent_exists=False)
+    state_ = delivery._AttemptState(tmp_path, tmp_path / "worktree", parent_exists=False)
 
-    receipt = delivery._run_and_commit(ctx, state, ("unused",), 1.0)
+    receipt = delivery._run_and_commit(ctx, state_, ("unused",), 1.0)
 
     assert receipt.code is delivery.DeliveryCode.BUDGET_EXHAUSTED
     assert receipt.outcome is delivery.DeliveryOutcome.CANDIDATE_CREATED
     assert receipt.candidate_commit == "c" * 40
     assert receipt.changed_paths == ("app.py",)
-    assert receipt.budget_usage.state is delivery.BudgetState.TURN_EXHAUSTED
+    assert receipt.budget_usage.state is state

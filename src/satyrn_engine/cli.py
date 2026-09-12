@@ -88,7 +88,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_finite_timeout,
         default=DEFAULT_TIMEOUT,
         metavar="SECONDS",
-        help=f"command timeout in seconds (default: {DEFAULT_TIMEOUT:g})",
+        help=(
+            f"command timeout in seconds (default: {DEFAULT_TIMEOUT:g}). "
+            "When --deadline-seconds is declared, the effective command "
+            "deadline is max(timeout, deadline) so the budget deadline can "
+            "fire and retain a partial candidate instead of the command "
+            "timeout discarding it."
+        ),
     )
     deliver_parser.add_argument(
         "--base",
@@ -122,7 +128,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help=(
             "whole-attempt wall-clock deadline in seconds "
-            "(default: the contract's deadline_seconds, or no limit)"
+            "(default: the contract's deadline_seconds, or no limit). "
+            "The effective command deadline is max(timeout, deadline), so a "
+            "deadline longer than --timeout still fires and retains the "
+            "partial candidate."
         ),
     )
 

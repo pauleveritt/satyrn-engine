@@ -893,6 +893,30 @@ class _StreamOutcome:
     seconds_used: float
 
 
+def _consume_chunk(
+    chunk: bytes,
+    spool: BinaryIO,
+    pending: bytes,
+    counter: TurnCounter,
+    budget: Budget,
+) -> tuple[bytes, BudgetState | None]:
+    """Write ``chunk`` to the spool and feed its complete lines to the counter.
+
+    Returns ``(pending, exhausted)``. ``pending`` is the still-unterminated
+    tail after every complete line has been fed; ``exhausted`` is
+    ``TURN_EXHAUSTED`` when the chunk crossed the turn limit, else ``None``.
+    """
+    spool.write(chunk)
+    pending += chunk
+    while (newline := pending.find(b"\n")) != -1:
+        line = pending[:newline].decode("utf-8", errors="replace")
+        pending = pending[newline + 1 :]
+        counter.feed(line)
+        if budget.turn_limit is not None and counter.turns > budget.turn_limit:
+            return pending, BudgetState.TURN_EXHAUSTED
+    return pending, None
+
+
 def _stream_implementer(
     process: subprocess.Popen[bytes],
     spool: BinaryIO,
@@ -907,13 +931,25 @@ def _stream_implementer(
     line is fed to a :class:`TurnCounter`. A turn limit trips as soon as a
     ``turn_start`` line crosses it; a deadline trips on a monotonic clock, so
     a quiet process is still stopped once its time is spent.
+
+    When a budget deadline is declared, the effective command deadline is
+    ``max(timeout, deadline_seconds)`` so a deadline beyond ``timeout`` is
+    allowed to fire and retain the partial candidate instead of the command
+    timeout discarding it. Before a deadline is declared, a child that has
+    already exited is drained to EOF and reported by its own exit, so a
+    process that finished just before the deadline is not misreported and its
+    spool tail is not lost.
     """
     stdout = process.stdout
     assert stdout is not None, "budget enforcement requires a captured stdout pipe"
 
     counter = TurnCounter()
     started = time.monotonic()
-    command_deadline = started + timeout
+    command_deadline = started + (
+        max(timeout, budget.deadline_seconds)
+        if budget.deadline_seconds is not None
+        else timeout
+    )
     pending = b""
     selector = selectors.DefaultSelector()
     try:
@@ -922,6 +958,22 @@ def _stream_implementer(
             now = time.monotonic()
             elapsed = now - started
             if budget.deadline_seconds is not None and elapsed > budget.deadline_seconds:
+                if process.poll() is not None:
+                    # The child finished before the deadline fired. Drain its
+                    # remaining output so the spool tail survives and its own
+                    # exit is reported, not a spurious DEADLINE_EXHAUSTED.
+                    while chunk := stdout.read1(64 * 1024):
+                        pending, turn_exhausted = _consume_chunk(
+                            chunk, spool, pending, counter, budget
+                        )
+                        if turn_exhausted is not None:
+                            return _StreamOutcome(
+                                turn_exhausted,
+                                False,
+                                counter.turns,
+                                time.monotonic() - started,
+                            )
+                    break
                 return _StreamOutcome(
                     BudgetState.DEADLINE_EXHAUSTED, False, counter.turns, elapsed
                 )
@@ -940,19 +992,13 @@ def _stream_implementer(
             chunk = stdout.read1(64 * 1024)
             if not chunk:
                 break
-            spool.write(chunk)
-            pending += chunk
-            while (newline := pending.find(b"\n")) != -1:
-                line = pending[:newline].decode("utf-8", errors="replace")
-                pending = pending[newline + 1 :]
-                counter.feed(line)
-                if budget.turn_limit is not None and counter.turns > budget.turn_limit:
-                    return _StreamOutcome(
-                        BudgetState.TURN_EXHAUSTED,
-                        False,
-                        counter.turns,
-                        time.monotonic() - started,
-                    )
+            pending, turn_exhausted = _consume_chunk(
+                chunk, spool, pending, counter, budget
+            )
+            if turn_exhausted is not None:
+                return _StreamOutcome(
+                    turn_exhausted, False, counter.turns, time.monotonic() - started
+                )
 
         if pending:
             counter.feed(pending.decode("utf-8", errors="replace"))
@@ -1502,7 +1548,12 @@ def _receipt(
     budget_usage: BudgetUsage | None = None,
 ) -> DeliveryReceipt:
     declared = budget if budget is not None else Budget()
-    usage = budget_usage if budget_usage is not None else evaluate(declared, 0, 0.0)
+    if budget_usage is not None:
+        usage = budget_usage
+    elif declared.declared:
+        usage = BudgetUsage(BudgetState.NOT_ENFORCED, 0, 0.0)
+    else:
+        usage = evaluate(declared, 0, 0.0)
     return DeliveryReceipt(
         code=code,
         message=message,
@@ -1577,6 +1628,11 @@ def deliver_chain(
 
     ``deliver`` is the test seam, and therefore the extension seam: there is
     no second injection mechanism.
+
+    ``deliver_chain`` does not forward budget flag overrides: each phase's
+    ``deliver`` call passes only ``base``, so a chain runs each phase against
+    that phase's contract-declared budget (or none), never CLI-style
+    ``--turn-limit``/``--deadline-seconds`` values.
     """
     if not phases:
         raise ValueError(
