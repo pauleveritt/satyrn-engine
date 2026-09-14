@@ -37,19 +37,22 @@ const landedEdit = (path, state) =>
 
 const refusedEdit = (code) => editResult({ satyrn: true, ok: false, code, result: null });
 
-function registeredExtension({ appendEntry = () => undefined } = {}) {
+function registeredExtension({ appendEntry = () => undefined, environment } = {}) {
 	const handlers = new Map();
-	registerLoopBreaker({
-		on(event, candidate) {
-			assert.ok(
-				event === "tool_call" || event === "tool_result",
-				`unexpected registered event ${event}`,
-			);
-			assert.equal(handlers.has(event), false, `event ${event} registered twice`);
-			handlers.set(event, candidate);
+	registerLoopBreaker(
+		{
+			on(event, candidate) {
+				assert.ok(
+					event === "tool_call" || event === "tool_result",
+					`unexpected registered event ${event}`,
+				);
+				assert.equal(handlers.has(event), false, `event ${event} registered twice`);
+				handlers.set(event, candidate);
+			},
+			appendEntry,
 		},
-		appendEntry,
-	});
+		environment,
+	);
 	assert.deepEqual([...handlers.keys()].sort(), ["tool_call", "tool_result"]);
 	assert.equal(typeof handlers.get("tool_call"), "function");
 	assert.equal(typeof handlers.get("tool_result"), "function");
@@ -577,6 +580,110 @@ test("editing a path permits reading it back and re-running the test command", a
 	// app.py's own revision, which that edit did not move.
 	assert.equal(await result(landedEdit("zz.py", "added")), undefined);
 	assert.equal(await call(retest), undefined);
+	assert.equal(await call(read), undefined);
+});
+
+test("a successful write result records the content digest as the path's revision", async () => {
+	const { call, result } = registeredExtension();
+	const read = repeated("read", { path: "app.py" });
+
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await call(read), undefined);
+	}
+	assert.equal((await call(read))?.block, true);
+
+	// A native `write` landing the same way a mutator `edit` does: the read
+	// of app.py carries app.py's new revision, so a sixth read is admitted.
+	assert.equal(
+		await result({ toolName: "write", input: { path: "app.py", content: "one" }, isError: false }),
+		undefined,
+	);
+
+	assert.equal(await call(read), undefined);
+});
+
+test("a malformed mutation context falls back to the identity resolver rather than throwing", async () => {
+	const { call, result } = registeredExtension({
+		environment: { SATYRN_MUTATION_CONTEXT: "not valid json" },
+	});
+	const read = repeated("read", { path: "app.py" });
+
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await call(read), undefined);
+	}
+	assert.equal((await call(read))?.block, true);
+
+	assert.equal(await result(landedEdit("app.py", "repaired")), undefined);
+	assert.equal(await call(read), undefined);
+});
+
+test("a write result missing shape information is a no-op, not a crash", async () => {
+	const { result } = registeredExtension();
+	assert.equal(
+		await result({ toolName: "write", input: { path: "app.py", content: "x" }, isError: true }),
+		undefined,
+	);
+	assert.equal(await result({ toolName: "write", input: undefined, isError: false }), undefined);
+	assert.equal(
+		await result({ toolName: "write", input: { path: 1, content: "x" }, isError: false }),
+		undefined,
+	);
+	assert.equal(
+		await result({ toolName: "write", input: { path: "app.py", content: 1 }, isError: false }),
+		undefined,
+	);
+});
+
+test("a write outside the known repo falls back to its raw path rather than crashing", async () => {
+	const context = {
+		version: 1,
+		repo: "/workspace",
+		contract: "/workspace/contract.yaml",
+		revisions: {},
+		writable_paths: [],
+		test_command: [],
+		symbols: {},
+		carried: [],
+		base_commit: "b".repeat(40),
+	};
+	const { result } = registeredExtension({
+		environment: { SATYRN_MUTATION_CONTEXT: JSON.stringify(context) },
+	});
+	assert.equal(
+		await result({ toolName: "write", input: { path: "/elsewhere/app.py", content: "x" }, isError: false }),
+		undefined,
+	);
+});
+
+test("a write by relative path and a read by absolute path meet at one revision, when the repo is known", async () => {
+	const context = {
+		version: 1,
+		repo: "/workspace",
+		contract: "/workspace/contract.yaml",
+		revisions: {},
+		writable_paths: ["app.py"],
+		test_command: [],
+		symbols: {},
+		carried: [],
+		base_commit: "b".repeat(40),
+	};
+	const { call, result } = registeredExtension({
+		environment: { SATYRN_MUTATION_CONTEXT: JSON.stringify(context) },
+	});
+	const read = repeated("read", { path: "/workspace/app.py" });
+
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await call(read), undefined);
+	}
+	assert.equal((await call(read))?.block, true);
+
+	// The write names the repo-relative path; the read names the absolute
+	// one. Both resolve to "app.py", so this write's revision frees the read.
+	assert.equal(
+		await result({ toolName: "write", input: { path: "app.py", content: "one" }, isError: false }),
+		undefined,
+	);
+
 	assert.equal(await call(read), undefined);
 });
 

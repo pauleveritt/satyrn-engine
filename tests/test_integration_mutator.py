@@ -84,6 +84,11 @@ def _fixture(
                     if include_revision
                     else {}
                 ),
+                "writable_paths": [writable],
+                "test_command": [],
+                "symbols": {},
+                "carried": [],
+                "base_commit": "0" * 40,
             }
         ),
         encoding="utf-8",

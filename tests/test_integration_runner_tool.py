@@ -72,11 +72,44 @@ def _fixture(
         lines.append(f"preserve:\n{rendered}")
     contract.write_text("\n".join(lines) + "\n", encoding="utf-8")
     context = tmp_path / "context.json"
-    context.write_text(
-        json.dumps({"version": 1, "repo": str(repo), "contract": str(contract), "revisions": {}}),
+    return Fixture(repo, contract, context)
+
+
+def _seal(fixture: Fixture, test_command: list[str] | None) -> None:
+    """git-init `fixture.repo`, commit whatever is in it now as the accepted
+    base, and write `fixture.context` naming that commit as `base_commit` --
+    mirroring the always-a-git-worktree base `attempt.py` guarantees in
+    production (Task 5 makes `base_commit` a required mutation-context field,
+    so this tool-level harness needs a real one, not the `HEAD` fallback a
+    missing field used to reach)."""
+    _git(fixture.repo, "init", "-q")
+    _git(fixture.repo, "config", "user.email", "test@example.com")
+    _git(fixture.repo, "config", "user.name", "Test")
+    _git(fixture.repo, "add", "-A")
+    _git(fixture.repo, "commit", "-q", "--allow-empty", "-m", "base")
+    base_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=fixture.repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    fixture.context.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "repo": str(fixture.repo),
+                "contract": str(fixture.contract),
+                "revisions": {},
+                "writable_paths": [],
+                "test_command": test_command or [],
+                "symbols": {},
+                "carried": [],
+                "base_commit": base_commit,
+            }
+        ),
         encoding="utf-8",
     )
-    return Fixture(repo, contract, context)
 
 
 def _run(fixture: Fixture) -> tuple[subprocess.CompletedProcess[str], ExerciseBody]:
@@ -97,6 +130,7 @@ def _run(fixture: Fixture) -> tuple[subprocess.CompletedProcess[str], ExerciseBo
 def test_shipped_tool_reports_a_passing_suite(tmp_path: Path) -> None:
     test_command = [sys.executable, "-c", "print('all good')"]
     fixture = _fixture(tmp_path, test_command=test_command)
+    _seal(fixture, test_command)
 
     completed, body = _run(fixture)
 
@@ -110,6 +144,7 @@ def test_shipped_tool_reports_a_passing_suite(tmp_path: Path) -> None:
 def test_shipped_tool_reports_a_failing_suite_as_a_result_not_an_error(tmp_path: Path) -> None:
     test_command = [sys.executable, "-c", "assert 1 == 2, 'boom'"]
     fixture = _fixture(tmp_path, test_command=test_command)
+    _seal(fixture, test_command)
 
     completed, body = _run(fixture)
 
@@ -122,6 +157,7 @@ def test_shipped_tool_reports_a_failing_suite_as_a_result_not_an_error(tmp_path:
 
 def test_shipped_tool_reports_a_missing_test_command_as_a_named_refusal(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path, test_command=None)
+    _seal(fixture, None)
 
     completed, body = _run(fixture)
 
@@ -135,9 +171,9 @@ def test_shipped_tool_restores_a_tampered_preserve_path_before_running(tmp_path:
     """The carried set (steering C3/N2), driven through the real TS tool
     and the real engine child, in a real git fixture: a `preserve` path
     edited in the worktree after the base commit is restored before the
-    self-test's second (preserve) invocation ever sees it. No `base_commit`
-    travels through this JSON mutation context yet (Task 5), so the
-    restore falls back to `HEAD` -- exactly the commit made here."""
+    self-test's second (preserve) invocation ever sees it. `base_commit` is
+    the real commit `_seal` makes here (Task 5), so the restore is anchored
+    to it explicitly rather than falling back to `HEAD`."""
     code = (
         "import sys, pathlib\n"
         "args = sys.argv[1:]\n"
@@ -147,11 +183,7 @@ def test_shipped_tool_restores_a_tampered_preserve_path_before_running(tmp_path:
     fixture = _fixture(tmp_path, test_command=test_command, preserve=["preserve.txt"])
     preserve = fixture.repo / "preserve.txt"
     preserve.write_text("original\n", encoding="utf-8")
-    _git(fixture.repo, "init", "-q")
-    _git(fixture.repo, "config", "user.email", "test@example.com")
-    _git(fixture.repo, "config", "user.name", "Test")
-    _git(fixture.repo, "add", "-A")
-    _git(fixture.repo, "commit", "-q", "-m", "base")
+    _seal(fixture, test_command)
     preserve.write_text("tampered\n", encoding="utf-8")  # uncommitted edit in the worktree
 
     completed, body = _run(fixture)

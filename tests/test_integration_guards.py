@@ -52,8 +52,10 @@ def test_shipped_loop_breaker_behavior_suite_passes() -> None:
     # means every deliberate addition edits this line. Raised 33 -> 38 on
     # 2026-09-09 by the opt-in progress rule and the cycle-1/2 characterisations.
     # 33 -> 38 on 2026-09-09, then 38 -> 36 when the progress rule was
-    # retired with its three rows.
-    assert "pass 36" in completed.stdout
+    # retired with its three rows. 36 -> 41 on 2026-09-14 (Phase 1 Task 5):
+    # the loop breaker learns native `write` revisions and resolves paths
+    # against a known repo, plus the coverage rows those branches needed.
+    assert "pass 41" in completed.stdout
     assert "fail 0" in completed.stdout
     assert "engine.ts | 100.00 |   100.00 |  100.00" in completed.stdout
 

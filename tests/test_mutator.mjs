@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
 
 import { AdapterRefusal, parseResponse } from "../packages/engine/orchestrator.ts";
 import mutationExtension, {
@@ -19,6 +20,11 @@ const context = () => ({
 	repo: "/workspace",
 	contract: "/workspace/contract.yaml",
 	revisions: { "src/app.py": FIRST_REVISION },
+	writable_paths: ["src/*"],
+	test_command: ["uv", "run", "python", "-m", "pytest", "-q"],
+	symbols: {},
+	carried: [],
+	base_commit: "b".repeat(40),
 });
 
 const input = () => ({
@@ -48,6 +54,11 @@ test("mutation context refuses malformed JSON and shapes", () => {
 		JSON.stringify({ ...context(), revisions: [] }),
 		JSON.stringify({ ...context(), revisions: { "": FIRST_REVISION } }),
 		JSON.stringify({ ...context(), revisions: { "src/app.py": "bad" } }),
+		(() => { const { writable_paths, ...rest } = context(); return JSON.stringify(rest); })(),
+		JSON.stringify({ ...context(), symbols: [] }),
+		JSON.stringify({ ...context(), test_command: [1] }),
+		(() => { const { carried, ...rest } = context(); return JSON.stringify(rest); })(),
+		JSON.stringify({ ...context(), base_commit: "not-hex" }),
 	]) {
 		assert.throws(() => parseMutationContext(raw), AdapterRefusal);
 	}
@@ -166,6 +177,44 @@ test("missing revision reaches the engine as an explicit null", async () => {
 	assert.deepEqual(requests.map((request) => request.expected_sha256), [null, null]);
 });
 
+test("a successful native write moves the path's revision so a later edit sends the written digest", async () => {
+	const requests = [];
+	const mutator = createMutator(context(), async (request) => { requests.push(JSON.parse(request)); return success(); });
+	mutator.noteWrite("src/app.py", "def value():\n    return 1\n");
+	await mutator.execute("1", input());
+	assert.equal(requests[0].expected_sha256, createHash("sha256").update("def value():\n    return 1\n", "utf8").digest("hex"));
+});
+
+test("a write by absolute or @ path and an edit by relative path share one revision key", async () => {
+	const requests = [];
+	const mutator = createMutator(context(), async (request) => { requests.push(JSON.parse(request)); return success(); });
+	mutator.noteWrite("/workspace/src/app.py", "x = 1\n");
+	await mutator.execute("1", input());
+	mutator.noteWrite("@src/app.py", "x = 2\n");
+	await mutator.execute("2", input());
+	mutator.noteWrite("/elsewhere/app.py", "ignored");   // outside the repo: no key moves
+	await mutator.execute("3", input());
+	assert.deepEqual(requests.map((r) => r.expected_sha256), [
+		createHash("sha256").update("x = 1\n", "utf8").digest("hex"),
+		createHash("sha256").update("x = 2\n", "utf8").digest("hex"),
+		SECOND_REVISION,   // the mutator's own last success
+	]);
+});
+
+test("a write result with isError leaves the revision alone, and a new file written then edited is not REVISION_UNAVAILABLE", async () => {
+	const requests = [];
+	const { pi, handlers } = fakePi();
+	registerMutator(pi, context(), async (request) => { requests.push(JSON.parse(request)); return success(); });
+	const [result] = handlers.tool_result;
+	await result({ toolName: "write", isError: true, input: { path: "src/app.py", content: "junk" }, content: [], details: undefined });
+	await result({ toolName: "write", isError: false, input: { path: "src/new.py", content: "x = 1\n" }, content: [], details: undefined });
+	const tool = registeredTools(pi).edit;   // the fake pi records registerTool calls
+	await tool.execute("1", input());
+	await tool.execute("2", { path: "src/new.py", edits: [{ oldText: "x = 1", newText: "x = 2" }] });
+	assert.equal(requests[0].expected_sha256, FIRST_REVISION);
+	assert.equal(requests[1].expected_sha256, createHash("sha256").update("x = 1\n", "utf8").digest("hex"));
+});
+
 test("malformed input refuses before exchange", async () => {
 	let exchanges = 0;
 	const mutator = createMutator(context(), async () => {
@@ -234,9 +283,9 @@ test("the edit item tolerates path and nothing else", () => {
 	// Pins the shape against the two ways this fix could be widened by a
 	// later tidy: dropping `additionalProperties` on the item, or leaving
 	// `path` out again.
-	const pi = fakePi();
-	registerMutator(pi.api, context(), async () => success());
-	const items = pi.tool.parameters.properties.edits.items;
+	const { pi } = fakePi();
+	registerMutator(pi, context(), async () => success());
+	const items = registeredTools(pi).edit.parameters.properties.edits.items;
 
 	assert.equal(items.additionalProperties, false);
 	assert.deepEqual(Object.keys(items.properties).sort(), ["newText", "oldText", "path"]);
@@ -332,47 +381,54 @@ test("a result-less policy refusal is malformed and poisons", async () => {
 });
 
 function fakePi() {
-	let tool;
-	let resultHandler;
-	return {
-		api: {
-			registerTool(candidate) {
-				tool = candidate;
-			},
-			on(event, handler) {
-				assert.equal(event, "tool_result");
-				resultHandler = handler;
-			},
+	const handlers = {};
+	const entries = [];
+	const tools = {};
+	const pi = {
+		registerTool(candidate) {
+			tools[candidate.name] = candidate;
 		},
-		get tool() {
-			return tool;
+		on(event, handler) {
+			(handlers[event] ??= []).push(handler);
 		},
-		get resultHandler() {
-			return resultHandler;
+		async appendEntry(kind, data) {
+			entries.push({ kind, data });
 		},
+		_tools: tools,
 	};
+	return { pi, handlers, entries };
+}
+
+function registeredTools(pi) {
+	return pi._tools;
 }
 
 test("registered tool exposes one replacement and marks refusals as errors", async () => {
-	const pi = fakePi();
-	registerMutator(pi.api, context(), async () => success());
+	const { pi, handlers } = fakePi();
+	registerMutator(pi, context(), async () => success());
 
-	assert.equal(pi.tool.name, "edit");
-	assert.equal(pi.tool.parameters.properties.edits.maxItems, 1);
-	const response = await pi.tool.execute("call", input());
+	const tool = registeredTools(pi).edit;
+	assert.equal(tool.name, "edit");
+	assert.equal(tool.parameters.properties.edits.maxItems, 1);
+	const response = await tool.execute("call", input());
 	assert.equal(response.details.ok, true);
-	assert.equal(
-		await pi.resultHandler({ toolName: "edit", details: response.details }),
-		undefined,
-	);
+	// Two listeners are registered on "tool_result" (the write-note listener
+	// and this edit-details one); each returns undefined for the other's
+	// event, so calling every handler and keeping the first defined result
+	// is order-independent.
+	async function editResult(event) {
+		for (const handler of handlers.tool_result) {
+			const outcome = await handler(event);
+			if (outcome !== undefined) return outcome;
+		}
+		return undefined;
+	}
+	assert.equal(await editResult({ toolName: "edit", details: response.details }), undefined);
 	assert.deepEqual(
-		await pi.resultHandler({
-			toolName: "edit",
-			details: { satyrn: true, ok: false },
-		}),
+		await editResult({ toolName: "edit", details: { satyrn: true, ok: false } }),
 		{ isError: true },
 	);
-	assert.equal(await pi.resultHandler({ toolName: "read", details: null }), undefined);
+	assert.equal(await editResult({ toolName: "read", details: null }), undefined);
 });
 
 test("default extension leaves built-in edit alone without explicit context", () => {
@@ -381,9 +437,9 @@ test("default extension leaves built-in edit alone without explicit context", ()
 	delete process.env.SATYRN_MUTATION_CONTEXT;
 	delete process.env.SATYRN_ENGINE_REPO;
 	try {
-		const pi = fakePi();
-		mutationExtension(pi.api);
-		assert.equal(pi.tool, undefined);
+		const { pi } = fakePi();
+		mutationExtension(pi);
+		assert.equal(registeredTools(pi).edit, undefined);
 	} finally {
 		if (previousContext === undefined) delete process.env.SATYRN_MUTATION_CONTEXT;
 		else process.env.SATYRN_MUTATION_CONTEXT = previousContext;
@@ -398,9 +454,9 @@ test("default extension ignores malformed explicit context", () => {
 	process.env.SATYRN_MUTATION_CONTEXT = "bad";
 	process.env.SATYRN_ENGINE_REPO = "/engine";
 	try {
-		const pi = fakePi();
-		mutationExtension(pi.api);
-		assert.equal(pi.tool, undefined);
+		const { pi } = fakePi();
+		mutationExtension(pi);
+		assert.equal(registeredTools(pi).edit, undefined);
 	} finally {
 		if (previousContext === undefined) delete process.env.SATYRN_MUTATION_CONTEXT;
 		else process.env.SATYRN_MUTATION_CONTEXT = previousContext;
@@ -410,9 +466,9 @@ test("default extension ignores malformed explicit context", () => {
 });
 
 test("default extension registers only from a valid explicit context", async () => {
-	const pi = fakePi();
+	const { pi } = fakePi();
 	mutationExtension(
-		pi.api,
+		pi,
 		{
 			SATYRN_MUTATION_CONTEXT: JSON.stringify(context()),
 			SATYRN_ENGINE_REPO: "/engine",
@@ -420,18 +476,19 @@ test("default extension registers only from a valid explicit context", async () 
 		async () => success(),
 	);
 
-	assert.equal(pi.tool.name, "edit");
-	assert.equal((await pi.tool.execute("call", input())).details.ok, true);
+	const tool = registeredTools(pi).edit;
+	assert.equal(tool.name, "edit");
+	assert.equal((await tool.execute("call", input())).details.ok, true);
 });
 
 test("default extension prepares the production transport from valid context", () => {
-	const pi = fakePi();
-	mutationExtension(pi.api, {
+	const { pi } = fakePi();
+	mutationExtension(pi, {
 		SATYRN_MUTATION_CONTEXT: JSON.stringify(context()),
 		SATYRN_ENGINE_REPO: "/engine",
 	});
 
-	assert.equal(pi.tool.name, "edit");
+	assert.equal(registeredTools(pi).edit.name, "edit");
 });
 
 test("engine exchange factory delegates to the existing one-shot transport", async () => {

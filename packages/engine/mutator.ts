@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { isAbsolute } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -13,16 +14,23 @@ import {
 	type EngineResponse,
 	type Spawner,
 } from "./orchestrator.ts";
+import { resolveWorkspacePath } from "./paths.ts";
 
 export const MUTATION_CONTEXT_ENV = "SATYRN_MUTATION_CONTEXT";
 
 const SHA256 = /^[0-9a-f]{64}$/;
+const BASE_COMMIT = /^[0-9a-f]{40}$/;
 
 export interface MutationContext {
 	readonly version: 1;
 	readonly repo: string;
 	readonly contract: string;
 	readonly revisions: Readonly<Record<string, string>>;
+	readonly writable_paths: readonly string[];
+	readonly test_command: readonly string[];
+	readonly symbols: Readonly<Record<string, readonly string[]>>;
+	readonly carried: readonly string[];
+	readonly base_commit: string;
 }
 
 export interface EditReplacement {
@@ -95,6 +103,11 @@ export type MutationEnvironment = Readonly<Record<string, string | undefined>>;
 
 export interface Mutator {
 	execute(toolCallId: string, input: unknown): Promise<MutationToolResult>;
+	/** Record a successful native `write`'s content as `path`'s current
+	 * revision, so a later `edit` on the same path (existing or newly
+	 * created) sends the right `expected_sha256`. A no-op when `path`
+	 * resolves outside the repo. */
+	noteWrite(path: string, content: string): void;
 }
 
 export function createEngineExchange(
@@ -143,6 +156,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
 export function parseMutationContext(text: string): MutationContext {
 	let parsed: unknown;
 	try {
@@ -157,7 +174,14 @@ export function parseMutationContext(text: string): MutationContext {
 		!isAbsolute(parsed.repo) ||
 		typeof parsed.contract !== "string" ||
 		!isAbsolute(parsed.contract) ||
-		!isRecord(parsed.revisions)
+		!isRecord(parsed.revisions) ||
+		!isStringArray(parsed.writable_paths) ||
+		!isStringArray(parsed.test_command) ||
+		!isRecord(parsed.symbols) ||
+		!Object.values(parsed.symbols).every(isStringArray) ||
+		!isStringArray(parsed.carried) ||
+		typeof parsed.base_commit !== "string" ||
+		!BASE_COMMIT.test(parsed.base_commit)
 	) {
 		throw new AdapterRefusal("MUTATION_CONTEXT_INVALID", "mutation context has an unexpected shape");
 	}
@@ -171,6 +195,11 @@ export function parseMutationContext(text: string): MutationContext {
 		repo: parsed.repo,
 		contract: parsed.contract,
 		revisions: parsed.revisions as Record<string, string>,
+		writable_paths: parsed.writable_paths,
+		test_command: parsed.test_command,
+		symbols: parsed.symbols as Record<string, readonly string[]>,
+		carried: parsed.carried,
+		base_commit: parsed.base_commit,
 	};
 }
 
@@ -280,8 +309,13 @@ function refusalResult(code: MutationToolRefusalCode, message: string): Mutation
 	};
 }
 
-export function createMutator(context: MutationContext, exchangeRequest: ExchangeRequest): Mutator {
-	const revisions = new Map(Object.entries(context.revisions));
+export function createMutator(
+	context: MutationContext,
+	exchangeRequest: ExchangeRequest,
+	appendEntry: (kind: string, data: Record<string, unknown>) => Promise<void> = async () => {},
+): Mutator {
+	const key = (p: string) => resolveWorkspacePath(context.repo, p);
+	const revisions = new Map(Object.entries(context.revisions).map(([p, sha]) => [key(p) ?? p, sha]));
 	let poisoned = false;
 	return {
 		async execute(_toolCallId: string, rawInput: unknown): Promise<MutationToolResult> {
@@ -293,7 +327,7 @@ export function createMutator(context: MutationContext, exchangeRequest: Exchang
 			}
 			try {
 				const input = parseEditInput(rawInput);
-				const expectedSha256 = revisions.get(input.path) ?? null;
+				const expectedSha256 = revisions.get(key(input.path) ?? input.path) ?? null;
 				const request = buildReplacementRequest(context, input, expectedSha256);
 				let response: ReplacementResponse;
 				try {
@@ -309,7 +343,7 @@ export function createMutator(context: MutationContext, exchangeRequest: Exchang
 					poisoned = true;
 					return refusalResult("ENGINE_MALFORMED_RESPONSE", "engine returned a different replacement path");
 				}
-				revisions.set(response.result.path, response.result.sha256);
+				revisions.set(key(response.result.path) ?? response.result.path, response.result.sha256);
 				return successResult(response.result);
 			} catch (error) {
 				const refusal = error instanceof AdapterRefusal ? error : undefined;
@@ -319,11 +353,15 @@ export function createMutator(context: MutationContext, exchangeRequest: Exchang
 				);
 			}
 		},
+		noteWrite(path: string, content: string): void {
+			const k = key(path);
+			if (k !== null) revisions.set(k, createHash("sha256").update(content, "utf8").digest("hex"));
+		},
 	};
 }
 
 export function registerMutator(pi: ExtensionAPI, context: MutationContext, exchangeRequest: ExchangeRequest): void {
-	const mutator = createMutator(context, exchangeRequest);
+	const mutator = createMutator(context, exchangeRequest, (kind, data) => pi.appendEntry(kind, data));
 	pi.registerTool({
 		name: "edit",
 		label: "Bounded revision-checked edit",
@@ -335,6 +373,17 @@ export function registerMutator(pi: ExtensionAPI, context: MutationContext, exch
 		description: "Replace one exact unique text anchor in one contract-declared file.",
 		parameters: EditParameters,
 		execute: mutator.execute,
+	});
+	// Registered before the `edit` result listener below: both return
+	// `undefined` for the other's tool, so order between them does not
+	// change what either observes -- only which listener the replayer's
+	// `handlers.tool_result[0]` happens to be.
+	pi.on("tool_result", async (event) => {
+		if (event.toolName === "write" && event.isError !== true && isRecord(event.input)
+			&& typeof event.input.path === "string" && typeof event.input.content === "string") {
+			mutator.noteWrite(event.input.path, event.input.content);
+		}
+		return undefined;
 	});
 	pi.on("tool_result", async (event) => {
 		if (event.toolName !== "edit" || !isRecord(event.details) || event.details.satyrn !== true) {

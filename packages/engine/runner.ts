@@ -140,16 +140,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function buildTestRequest(context: MutationContext): string {
-	// `context.base_commit` is added to `MutationContext` in Task 5; until
-	// then it is read structurally and defaults to `null` (R4).
-	const baseCommit = (context as MutationContext & { base_commit?: string }).base_commit ?? null;
 	return JSON.stringify({
 		version: PROTOCOL_VERSION,
 		operation: "test",
 		repo: context.repo,
 		contract: context.contract,
 		command: null,
-		base_commit: baseCommit,
+		base_commit: context.base_commit ?? null,
 	});
 }
 

@@ -108,7 +108,7 @@ def _repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo.mkdir()
     (repo / ".git").mkdir()
     target = repo / "app.py"
-    target.write_text("value = 1\n", encoding="utf-8")
+    target.write_text("def value(): return 1\n    def inner(self):\n        return 2\n", encoding="utf-8")
     (repo / "notes.txt").write_text("notes\n", encoding="utf-8")
     contract = repo / "contract.yaml"
     contract.write_text(
@@ -340,6 +340,11 @@ def test_attempt_success_exports_exact_artifacts_and_context(tmp_path: Path) -> 
     context = pi.environment[attempt_module.MUTATION_CONTEXT_ENV]
     assert '"revisions":{"app.py":"' in context
     assert '"contract":"' in context
+    assert '"writable_paths":["app.py"]' in context
+    assert '"test_command":[]' in context
+    assert '"symbols":{"app.py":["inner","value"]}' in context
+    assert '"carried":[]' in context
+    assert f'"base_commit":"{"a" * 40}"' in context
     assert any(call[0] == "diff" for call in git.calls)
 
 

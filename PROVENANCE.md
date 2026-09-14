@@ -96,3 +96,13 @@
 | src/satyrn_engine/derive.py | created in release-one |
 | tests/test_derive.py | created in release-one |
 | tests/test_integration_derive.py | created in release-one |
+| packages/engine/paths.ts | created in release-one |
+| packages/engine/scope.ts | created in release-one |
+| tools/replay_events.mjs | created in release-one |
+| tests/test_paths.mjs | created in release-one |
+| tests/test_scope.mjs | created in release-one |
+| tests/fixtures/events/scope-inside.json | created in release-one |
+| tests/fixtures/events/scope-outside.json | created in release-one |
+| tests/fixtures/events/scope-carried.json | created in release-one |
+| tests/fixtures/events/scope-traversal.json | created in release-one |
+| tests/fixtures/events/scope-absolute-inside.json | created in release-one |

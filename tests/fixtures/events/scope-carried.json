@@ -1,0 +1,21 @@
+{
+  "name": "scope-carried",
+  "extension": "scope.ts",
+  "context": {
+    "version": 1,
+    "repo": "/w",
+    "contract": "/w/c.yaml",
+    "revisions": {},
+    "writable_paths": ["src/*", "tests/*"],
+    "test_command": ["uv", "run", "python", "-m", "pytest", "-q"],
+    "symbols": {},
+    "carried": ["tests/test_keep.py", "tests/conftest.py"],
+    "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "events": [
+    {"type": "tool_call", "toolCallId": "c1", "toolName": "edit", "input": {"path": "tests/test_keep.py", "edits": []},
+     "expect": {"blocked": true, "reasonContains": "carried from the accepted base and restored before every self-test"}},
+    {"type": "tool_call", "toolCallId": "c2", "toolName": "write", "input": {"path": "tests/test_new.py", "content": "x"}, "expect": {"blocked": false}}
+  ],
+  "expectedEntries": [{"kind": "scope_refused", "data": {"toolName": "edit", "path": "tests/test_keep.py", "carried": true}}]
+}

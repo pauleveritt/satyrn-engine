@@ -1,4 +1,8 @@
+import { createHash } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+import { MUTATION_CONTEXT_ENV, parseMutationContext, type MutationEnvironment } from "./mutator.ts";
+import { resolveWorkspacePath } from "./paths.ts";
 
 /** Calls retained by the loop breaker. */
 export const WINDOW = 20;
@@ -106,22 +110,33 @@ const NO_REVISION = "unedited";
  * than hashed: the component only has to compare equal for equal maps, and a
  * plain serialization keeps the breaker free of a crypto dependency.
  */
-function workspacePart(input: JsonValue, revisions: ReadonlyMap<string, string>): string {
+function workspacePart(
+	input: JsonValue,
+	revisions: ReadonlyMap<string, string>,
+	resolvePath: (path: string) => string,
+): string {
 	if (input !== null && typeof input === "object" && !Array.isArray(input)) {
 		const path = (input as { readonly [key: string]: JsonValue }).path;
-		if (typeof path === "string") return revisions.get(path) ?? NO_REVISION;
+		if (typeof path === "string") return revisions.get(resolvePath(path)) ?? NO_REVISION;
 	}
 	const entries = [...revisions.entries()].sort(([left], [right]) => (left < right ? -1 : 1));
 	return JSON.stringify(entries);
 }
 
-function callKey(call: ToolCall, revisions: ReadonlyMap<string, string>): string | undefined {
+function callKey(
+	call: ToolCall,
+	revisions: ReadonlyMap<string, string>,
+	resolvePath: (path: string) => string,
+): string | undefined {
 	const input = canonicalJson(call.input, new WeakSet());
 	if (input === undefined) return undefined;
-	return JSON.stringify([call.toolName, input, workspacePart(input, revisions)]);
+	return JSON.stringify([call.toolName, input, workspacePart(input, revisions, resolvePath)]);
 }
 
-export function createLoopBreaker(): LoopBreaker {
+/** Identity by default; a caller that knows the repo passes a resolver so a
+ * `read` by absolute or `@` path and a `write`/`edit` by relative path land
+ * on the same revision-map key (N3). */
+export function createLoopBreaker(resolvePath: (path: string) => string = (path) => path): LoopBreaker {
 	const admitted: string[] = [];
 	const blockedByKey = new Map<string, number>();
 	const revisions = new Map<string, string>();
@@ -130,7 +145,7 @@ export function createLoopBreaker(): LoopBreaker {
 		inspect(call: ToolCall): BlockDecision | undefined {
 			let key: string | undefined;
 			try {
-				key = callKey(call, revisions);
+				key = callKey(call, revisions, resolvePath);
 			} catch {
 				return undefined;
 			}
@@ -261,8 +276,18 @@ const SHA256 = /^[0-9a-f]{64}$/;
  * changed, so reintroducing it fails a named row rather than being
  * rediscovered.
  */
-export default function registerLoopBreaker(pi: ExtensionAPI): void {
-	const breaker = createLoopBreaker();
+export default function registerLoopBreaker(pi: ExtensionAPI, environment: MutationEnvironment = process.env): void {
+	const contextText = environment[MUTATION_CONTEXT_ENV];
+	let repo: string | undefined;
+	if (contextText !== undefined) {
+		try {
+			repo = parseMutationContext(contextText).repo;
+		} catch {
+			repo = undefined;
+		}
+	}
+	const resolvePath = repo === undefined ? (path: string) => path : (path: string) => resolveWorkspacePath(repo, path) ?? path;
+	const breaker = createLoopBreaker(resolvePath);
 	let consecutiveBlocks = 0;
 	pi.on("tool_call", async (event) => {
 		let decision: BlockDecision | undefined;
@@ -302,8 +327,20 @@ export default function registerLoopBreaker(pi: ExtensionAPI): void {
 				// Evidence we cannot read is not evidence of progress: an
 				// absent or malformed digest leaves the window standing.
 				if (typeof path === "string" && typeof sha256 === "string" && SHA256.test(sha256)) {
-					breaker.noteChange(path, sha256);
+					breaker.noteChange(resolvePath(path), sha256);
 				}
+			}
+			if (
+				event.toolName === "write" &&
+				event.isError !== true &&
+				isRecord(event.input) &&
+				typeof event.input.path === "string" &&
+				typeof event.input.content === "string"
+			) {
+				breaker.noteChange(
+					resolvePath(event.input.path),
+					createHash("sha256").update(event.input.content, "utf8").digest("hex"),
+				);
 			}
 		} catch {
 			// A result we cannot read is not evidence that anything changed.

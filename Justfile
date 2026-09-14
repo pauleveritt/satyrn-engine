@@ -3,8 +3,9 @@
 gates:
     uv run pytest -q
     uv run ruff check
-    node --test --experimental-strip-types tests/test_loop_breaker.mjs tests/test_mutator.mjs tests/test_runner.mjs tests/test_runner_prompt.mjs tests/test_orchestrator.mjs tests/test_transport.mjs
+    node --test --experimental-strip-types tests/test_loop_breaker.mjs tests/test_mutator.mjs tests/test_runner.mjs tests/test_runner_prompt.mjs tests/test_orchestrator.mjs tests/test_transport.mjs tests/test_paths.mjs tests/test_scope.mjs
     node --experimental-strip-types tools/replay_guards.mjs
+    node --experimental-strip-types tools/replay_events.mjs
     just lint-docs
     uv run python tools/provenance.py check
 

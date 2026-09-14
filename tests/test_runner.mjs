@@ -16,6 +16,10 @@ const context = () => ({
 	repo: "/workspace",
 	contract: "/workspace/contract.yaml",
 	revisions: {},
+	writable_paths: ["src/*"],
+	test_command: ["uv", "run", "python", "-m", "pytest", "-q"],
+	symbols: {},
+	carried: [],
 	base_commit: "b".repeat(40),
 });
 
@@ -300,12 +304,10 @@ test("engine exchange factory delegates to the existing one-shot transport", asy
 });
 
 test("shared mutation context parses the same way for both tools", () => {
-	// `base_commit` is added to `context()` for the request-building test
-	// above (R4); `parseMutationContext` (unchanged in this task -- Task 5
-	// adds the remaining context keys) ignores it, so the round trip drops
-	// it here rather than refusing the extra key.
-	const { base_commit: _baseCommit, ...withoutBaseCommit } = context();
-	assert.deepEqual(parseMutationContext(JSON.stringify(context())), withoutBaseCommit);
+	// `base_commit` (and the other four keys `context()` now carries) is a
+	// real `MutationContext` field as of this task, so a parsed context
+	// carries it through unchanged: a strict round trip, not a drop.
+	assert.deepEqual(parseMutationContext(JSON.stringify(context())), context());
 });
 
 test("base response parser rejects non-object JSON without leaking a type error", () => {

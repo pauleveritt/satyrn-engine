@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -20,12 +21,21 @@ from .check import check
 from .contract import Contract, ContractError, load_contract
 from .exits import ExitCode
 from .mutation import file_sha256, normalize_relative_path
+from .runner import select_carried
 
 MODEL_ENV = "SATYRN_MODEL"
 PATCH_ENV = "SATYRN_ATTEMPT_PATCH"
 TRANSCRIPT_ENV = "SATYRN_ATTEMPT_TRANSCRIPT"
 MUTATION_CONTEXT_ENV = "SATYRN_MUTATION_CONTEXT"
 ENGINE_REPO_ENV = "SATYRN_ENGINE_REPO"
+
+_SYMBOL = re.compile(rb"^[ \t]*(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)", re.MULTILINE)
+
+
+def _defined_symbols(content: bytes) -> list[str]:
+    """def/class names at any indentation that the accepted base defines in one file
+    (matches scope.ts/mutator.ts's I2 rule; indentation allowed)."""
+    return sorted({match.group(1).decode("ascii") for match in _SYMBOL.finditer(content)})
 
 
 class _GitRoutingVariable(StrEnum):
@@ -153,6 +163,8 @@ class AttemptContext:
     frozen_contract: Path
     base_commit: str
     revisions: Mapping[str, str]
+    symbols: Mapping[str, list[str]]
+    carried: tuple[str, ...]
     model: str
     engine_repo: Path
 
@@ -425,7 +437,7 @@ def attempt(
         if isinstance(prepared, AttemptResult):
             pending = prepared
         else:
-            root, base_commit, revisions, artifacts, engine_repo = prepared
+            root, base_commit, revisions, symbols, carried, artifacts, engine_repo = prepared
             try:
                 temporary_parent = Path(tempfile.mkdtemp(prefix=".satyrn-attempt-", dir=root.parent))
             except OSError as exc:
@@ -447,6 +459,8 @@ def attempt(
                             frozen_contract=frozen_contract,
                             base_commit=base_commit,
                             revisions=revisions,
+                            symbols=symbols,
+                            carried=carried,
                             model=model,
                             engine_repo=engine_repo,
                         )
@@ -498,7 +512,10 @@ def _prepare(
     environment: Mapping[str, str],
     git: GitRunner,
     artifact_owner: list[_ArtifactDestination],
-) -> tuple[Path, str, dict[str, str], AttemptArtifacts, Path] | AttemptResult:
+) -> (
+    tuple[Path, str, dict[str, str], dict[str, list[str]], tuple[str, ...], AttemptArtifacts, Path]
+    | AttemptResult
+):
     try:
         root_result = git.run(repo, ("rev-parse", "--show-toplevel"), environment)
     except OSError as exc:
@@ -556,6 +573,8 @@ def _prepare(
         return _failed(model, _git_message("cannot resolve Git administrative directories", failed))
 
     revisions: dict[str, str] = {}
+    symbols: dict[str, list[str]] = {}
+    tracked_paths: list[str] = []
     for raw_path in listed.stdout.split(b"\0"):
         if not raw_path:
             continue
@@ -564,6 +583,7 @@ def _prepare(
             normalized = normalize_relative_path(path)
         except ValueError:
             continue
+        tracked_paths.append(normalized)
         if not any(fnmatch(normalized, pattern) for pattern in contract.writable_paths):
             continue
         try:
@@ -572,8 +592,10 @@ def _prepare(
             return _failed(model, f"cannot inspect tracked writable file {normalized}: {exc}")
         if content is not None:
             revisions[normalized] = file_sha256(content)
+            symbols[normalized] = _defined_symbols(content)
     if not revisions:
         return _failed(model, "contract matches no existing tracked writable file")
+    carried = tuple(select_carried(contract, tracked_paths))
 
     forbidden_roots = _forbidden_artifact_roots(root, worktrees.stdout, git_dir.stdout, common_dir.stdout)
     if isinstance(forbidden_roots, str):
@@ -600,7 +622,7 @@ def _prepare(
     if isinstance(artifacts, str):
         return _failed(model, artifacts)
 
-    return root, head.stdout.strip().decode("ascii"), revisions, artifacts, engine_repo
+    return root, head.stdout.strip().decode("ascii"), revisions, symbols, carried, artifacts, engine_repo
 
 
 def _read_tracked_regular(root: Path, path: str) -> bytes | None:
@@ -690,6 +712,11 @@ def _run(
             "repo": os.fspath(context.repo),
             "contract": os.fspath(context.frozen_contract),
             "revisions": context.revisions,
+            "writable_paths": list(context.contract.writable_paths),
+            "test_command": list(context.contract.test_command),
+            "symbols": context.symbols,
+            "carried": list(context.carried),
+            "base_commit": context.base_commit,
         },
         ensure_ascii=True,
         separators=(",", ":"),

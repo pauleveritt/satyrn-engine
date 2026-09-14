@@ -1,0 +1,13 @@
+{
+  "name": "scope-outside",
+  "extension": "scope.ts",
+  "context": {"version": 1, "repo": "/w", "contract": "/w/c.yaml", "revisions": {},
+              "writable_paths": ["src/*"], "test_command": ["uv", "run", "python", "-m", "pytest", "-q"], "symbols": {},
+              "carried": ["tests/test_keep.py", "tests/conftest.py"], "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "events": [
+    {"type": "tool_call", "toolCallId": "c1", "toolName": "write", "input": {"path": "src/a.py", "content": "x"}, "expect": {"blocked": false}},
+    {"type": "tool_call", "toolCallId": "c2", "toolName": "write", "input": {"path": "docs/a.md", "content": "x"},
+     "expect": {"blocked": true, "reasonContains": "outside the contract's writable paths"}}
+  ],
+  "expectedEntries": [{"kind": "scope_refused", "data": {"toolName": "write", "path": "docs/a.md", "carried": false}}]
+}
