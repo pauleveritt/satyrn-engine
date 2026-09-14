@@ -8,4 +8,4 @@ pre-release-one-2026-09-13:ROADMAP.md`). Nothing here is planned separately.
 
 | # | Phase | Direction (one sentence) | Status |
 |---|-------|--------------------------|--------|
-| 1 | Engine `/implement` v1 | Derived contract, guards 1–4 and symbol preservation, carried tests, compact results, receipt — all proven against fakes and replay | in progress — `satyrn-evals` plan `2026-09-14-phase-1-implement.md` |
+| 1 | Engine `/implement` v1 | Derived contract, guards 1–4 and symbol preservation, carried tests, compact results, receipt — all proven against fakes and replay | done 2026-09-14 |
