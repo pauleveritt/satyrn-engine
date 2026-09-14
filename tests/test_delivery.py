@@ -658,6 +658,138 @@ def test_validation_carried_checkout_failure_is_unavailable_and_keeps_the_candid
     assert receipt.candidate_commit == "c" * 40
 
 
+def test_validation_shares_one_deadline_that_shrinks_across_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 1, finding 1: validation must spend at most one
+    ``deliver --timeout`` in total, not the full timeout per run. Each of
+    the three runs (suite, preserve, checks) gets whatever remains of the
+    shared deadline, not a fresh copy of it."""
+    contract = Contract(id="validation", task="t", preserve=("tests/test_keep.py",))
+    context = _validation_context(tmp_path, ("pytest",), contract=contract)
+    monkeypatch.setattr(delivery, "_checkout_candidate", lambda *args: None)
+    monkeypatch.setattr(
+        delivery,
+        "_git",
+        lambda *args, **kwargs: delivery._GitResult(0, b"tests/test_keep.py\n", b""),
+    )
+
+    clock = [100.0]
+
+    def fake_monotonic() -> float:
+        return clock[0]
+
+    monkeypatch.setattr(delivery.time, "monotonic", fake_monotonic)
+
+    timeouts_seen: list[float] = []
+
+    def fake_run(
+        command: tuple[str, ...], cwd: Path, environment: dict[str, str], timeout: float, **kwargs: object
+    ) -> delivery._TestRunResult:
+        timeouts_seen.append(timeout)
+        clock[0] += 4.0  # each run consumes wall-clock time from the shared deadline
+        return delivery._TestRunResult(returncode=0, output=b"1 passed\n")
+
+    monkeypatch.setattr(delivery, "_run_test_command", fake_run)
+
+    delivery._validate_candidate(context, _validation_state(tmp_path), _validation_pending(context), 10.0)
+
+    assert timeouts_seen[0] == pytest.approx(10.0)
+    assert timeouts_seen[1] == pytest.approx(6.0)
+    assert timeouts_seen == sorted(timeouts_seen, reverse=True)
+    assert all(t <= 10.0 for t in timeouts_seen)
+
+
+def test_a_timeout_after_a_known_failure_does_not_hide_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 1, finding 2: a later run's timeout must not overwrite an
+    earlier run's already-recorded non-zero exit. When run 1 fails and run
+    2 times out, the receipt must read FAILED/TESTS_FAILED with the joined
+    output -- not TIMED_OUT, which would report code OK and exit 0 and lose
+    the known failure."""
+    contract = Contract(id="validation", task="t", preserve=("tests/test_keep.py",))
+    context = _validation_context(tmp_path, ("pytest",), contract=contract)
+    monkeypatch.setattr(delivery, "_checkout_candidate", lambda *args: None)
+    monkeypatch.setattr(
+        delivery,
+        "_git",
+        lambda *args, **kwargs: delivery._GitResult(0, b"tests/test_keep.py\n", b""),
+    )
+
+    results = [
+        delivery._TestRunResult(returncode=1, output=b"FAILED test_x\n"),
+        delivery._TestRunResult(timed_out=True, output=b"stuck\n"),
+    ]
+
+    def fake_run(*args: object, **kwargs: object) -> delivery._TestRunResult:
+        return results.pop(0)
+
+    monkeypatch.setattr(delivery, "_run_test_command", fake_run)
+
+    receipt = delivery._validate_candidate(
+        context, _validation_state(tmp_path), _validation_pending(context), 30.0
+    )
+
+    assert receipt.validation is ValidationOutcome.FAILED
+    assert receipt.validation_exit == 1
+    assert receipt.code is DeliveryCode.TESTS_FAILED
+    assert "FAILED test_x" in receipt.validation_output
+    assert "stuck" in receipt.validation_output
+
+
+def test_a_carried_path_in_both_preserve_and_checks_is_restored_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 1, finding 3: `restore_carried_at` reuses `select_carried`'s
+    deduplicated output for the checkout list, so a path declared in both
+    `preserve` and `checks` is restored (and later run) once, not twice."""
+    contract = Contract(
+        id="validation",
+        task="t",
+        preserve=("tests/shared.py",),
+        checks=("tests/shared.py",),
+    )
+    context = _validation_context(tmp_path, ("pytest",), contract=contract)
+
+    git_calls: list[tuple[str, ...]] = []
+
+    def fake_git(
+        worktree: Path, environment: dict[str, str], *args: str, input_bytes: bytes | None = None
+    ) -> delivery._GitResult:
+        git_calls.append(args)
+        if args[:3] == ("ls-tree", "-r", "--name-only"):
+            return delivery._GitResult(0, b"tests/shared.py\n", b"")
+        if args[0] == "checkout":
+            return delivery._GitResult(0, b"", b"")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(delivery, "_checkout_candidate", lambda *args: None)
+    monkeypatch.setattr(delivery, "_git", fake_git)
+
+    run_calls: list[tuple[str, ...]] = []
+
+    def fake_run(
+        command: tuple[str, ...], cwd: Path, environment: dict[str, str], timeout: float, **kwargs: object
+    ) -> delivery._TestRunResult:
+        run_calls.append(tuple(command))
+        return delivery._TestRunResult(returncode=0, output=b"1 passed\n")
+
+    monkeypatch.setattr(delivery, "_run_test_command", fake_run)
+
+    receipt = delivery._validate_candidate(
+        context, _validation_state(tmp_path), _validation_pending(context), 30.0
+    )
+
+    checkout_calls = [args for args in git_calls if args[0] == "checkout"]
+    assert checkout_calls == [("checkout", "a" * 40, "--", "tests/shared.py")]
+    assert receipt.carried == Carried(("tests/shared.py",), (), (), (), ())
+    assert run_calls == [
+        ("pytest",),
+        ("pytest", "tests/shared.py"),
+    ]
+
+
 def test_deliver_cli_preserves_command_argv_after_literal_separator() -> None:
     args = parse_args(
         [

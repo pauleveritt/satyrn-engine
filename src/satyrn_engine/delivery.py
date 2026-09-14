@@ -340,12 +340,18 @@ def restore_carried_at(
         raise _CarriedRestoreFailed(f"carried tests could not be read from base {base_commit}")
     tracked = set(listed.stdout.decode("utf-8", errors="replace").splitlines())
     declared = contract if contract is not None else _EMPTY_CONTRACT
-    preserve = tuple(p for p in declared.preserve if p in tracked)
-    checks = tuple(p for p in declared.checks if p in tracked)
+    # `select_carried` is the one place ordering and dedup are decided (a
+    # path declared in both `preserve` and `checks` appears once); `restore`
+    # reuses its output rather than rebuilding it, so a duplicate here would
+    # be restored -- and, downstream, run -- twice.
     selected = select_carried(declared, tracked)
-    infrastructure = tuple(p for p in selected if p not in preserve and p not in checks)
+    preserve_set = set(declared.preserve)
+    checks_set = set(declared.checks)
+    preserve = tuple(p for p in selected if p in preserve_set)
+    checks = tuple(p for p in selected if p in checks_set and p not in preserve_set)
+    infrastructure = tuple(p for p in selected if p not in preserve_set and p not in checks_set)
     absent = tuple(p for p in (*declared.preserve, *declared.checks) if p not in tracked)
-    restore = [*preserve, *checks, *infrastructure]
+    restore = selected
     if restore:
         checked_out = _git(worktree, environment, "checkout", base_commit, "--", *restore)
         if checked_out.returncode != 0:
@@ -1509,11 +1515,37 @@ def _validate_candidate(
     if carried.checks:
         runs.append((*test_command, *carried.checks))
 
+    def _failed(exit_code: int, joined_output: str) -> DeliveryReceipt:
+        if pending.code is DeliveryCode.BUDGET_EXHAUSTED:
+            return _validated(
+                pending,
+                validation=ValidationOutcome.FAILED,
+                validation_exit=exit_code,
+                validation_output=joined_output,
+                message=(
+                    "candidate created (budget exhausted); "
+                    f"contract test_command failed with exit {exit_code}"
+                ),
+            )
+        return _validated(
+            pending,
+            validation=ValidationOutcome.FAILED,
+            validation_exit=exit_code,
+            validation_output=joined_output,
+            code=DeliveryCode.TESTS_FAILED,
+            message=f"candidate created; contract test_command failed with exit {exit_code}",
+        )
+
     outputs: list[str] = []
     exit_code: int | None = None
+    # One shared deadline for the whole validation operation (contradicting
+    # "3x the timeout" would break the "one knob" docstring above): each run
+    # gets whatever is left of `timeout`, not a fresh copy of it.
+    started = time.monotonic()
     for argv in runs:
+        remaining = max(timeout - (time.monotonic() - started), 0.1)
         result = _run_test_command(
-            argv, state.worktree, context.environment, timeout, extra_env={"COLUMNS": "500"}
+            argv, state.worktree, context.environment, remaining, extra_env={"COLUMNS": "500"}
         )
         if result.unavailable is not None:
             return _validated(
@@ -1525,6 +1557,11 @@ def _validate_candidate(
         output, _ = tail_output(result.output)
         outputs.append(output)
         if result.timed_out:
+            # A later timeout must not hide an earlier run's known failure:
+            # if an earlier run already recorded a non-zero exit, that
+            # failure -- not the timeout -- is the verdict.
+            if exit_code is not None:
+                return _failed(exit_code, "\n".join(outputs))
             return _validated(
                 pending,
                 validation=ValidationOutcome.TIMED_OUT,
@@ -1535,34 +1572,14 @@ def _validate_candidate(
             exit_code = result.returncode
 
     joined_output = "\n".join(outputs)
-    match exit_code:
-        case None:
-            return _validated(
-                pending,
-                validation=ValidationOutcome.PASSED,
-                validation_exit=0,
-                validation_output=joined_output,
-            )
-        case failed_exit_code:
-            if pending.code is DeliveryCode.BUDGET_EXHAUSTED:
-                return _validated(
-                    pending,
-                    validation=ValidationOutcome.FAILED,
-                    validation_exit=failed_exit_code,
-                    validation_output=joined_output,
-                    message=(
-                        "candidate created (budget exhausted); "
-                        f"contract test_command failed with exit {failed_exit_code}"
-                    ),
-                )
-            return _validated(
-                pending,
-                validation=ValidationOutcome.FAILED,
-                validation_exit=failed_exit_code,
-                validation_output=joined_output,
-                code=DeliveryCode.TESTS_FAILED,
-                message=f"candidate created; contract test_command failed with exit {failed_exit_code}",
-            )
+    if exit_code is None:
+        return _validated(
+            pending,
+            validation=ValidationOutcome.PASSED,
+            validation_exit=0,
+            validation_output=joined_output,
+        )
+    return _failed(exit_code, joined_output)
 
 
 def _remove_worktree(context: _DeliveryContext, worktree: Path) -> str | None:
