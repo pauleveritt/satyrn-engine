@@ -526,6 +526,29 @@ test("/implement with a request derives and shows the contract; without a UI it 
 	assert.match(notes[1][1], /run \/implement --go implement-0123456789ab to dispatch/);
 });
 
+test("--gopher is not mistaken for --go and is derived as a request", () => {
+	process.env.SATYRN_ENGINE_REPO = "/engine"; process.env.SATYRN_MODEL = "m";
+	const spawned = [];
+	const spawner = (command, args) => { spawned.push([command, ...args]); return child({ stdout: "id: implement-0123456789ab\ntask: t\n", stderr: "satyrn-engine: contract /repo/.git/satyrn/contracts/implement-0123456789ab.yaml\n" }); };
+	const notes = [];
+	return createAdapter(spawner).implement("--gopher src/a.py", { cwd: "/repo", hasUI: false, ui: ui(notes, false) }).then(() => {
+		assert.deepEqual(spawned[0].slice(0, 6), ["uv", "run", "--project", "/engine", "satyrn-engine", "derive"]);
+		assert.ok(spawned[0].includes("--gopher src/a.py"));
+	});
+});
+
+test("the no-UI dispatch hint keeps only the contract line, dropping any warning before it", async () => {
+	process.env.SATYRN_ENGINE_REPO = "/engine"; process.env.SATYRN_MODEL = "m";
+	const spawner = () => child({
+		stdout: "id: implement-0123456789ab\ntask: t\n",
+		stderr: "uv warning: something noisy\nsatyrn-engine: contract /repo/.git/satyrn/contracts/implement-0123456789ab.yaml\n",
+	});
+	const notes = [];
+	await createAdapter(spawner).implement("t src/a.py", { cwd: "/repo", hasUI: false, ui: ui(notes, false) });
+	assert.doesNotMatch(notes.at(-1)[1], /uv warning/);
+	assert.match(notes.at(-1)[1], /^satyrn-engine: contract \/repo\/\.git\/satyrn\/contracts\/implement-0123456789ab\.yaml; run \/implement --go implement-0123456789ab to dispatch$/);
+});
+
 test("/implement with a UI confirms in place and dispatches on yes, waits on no", async () => {
 	process.env.SATYRN_ENGINE_REPO = "/engine"; process.env.SATYRN_MODEL = "m";
 	for (const answer of [true, false]) {
@@ -537,7 +560,7 @@ test("/implement with a UI confirms in place and dispatches on yes, waits on no"
 			return child({ stdout: okReceipt() });
 		};
 		const notes = [];
-		await createAdapter(spawner, undefined, undefined, () => {}).implement("t src/a.py", { cwd: "/repo", hasUI: true, ui: ui(notes, answer) });   // fake receipt writer: never touch /repo (m8)
+		await createAdapter(spawner, undefined, DIRECT_CONTROL, () => {}).implement("t src/a.py", { cwd: "/repo", hasUI: true, ui: ui(notes, answer) });   // fake receipt writer: never touch /repo (m8)
 		assert.equal(spawned.some((argv) => argv.includes("deliver")), answer);
 		if (!answer) assert.match(notes.at(-1)[1], /not dispatched; run \/implement --go implement-0123456789ab/);
 	}
@@ -553,11 +576,36 @@ test("/implement --go resolves the contract under the git dir, dispatches, write
 			guard_firings: { loop_broken: 0, scope_refused: 1, symbol_preserved: 0, command_bounded: 2, command_timed_out: 0 } }) });
 	};
 	const notes = [];
-	await createAdapter(spawner, undefined, undefined, (path, text) => written.push([path, text])).implement("--go implement-0123456789ab", { cwd: "/repo", hasUI: false, ui: ui(notes, false) });
+	await createAdapter(spawner, undefined, DIRECT_CONTROL, (path, text) => written.push([path, text])).implement("--go implement-0123456789ab", { cwd: "/repo", hasUI: false, ui: ui(notes, false) });
 	assert.deepEqual(spawned[0], ["git", "-C", "/repo", "rev-parse", "--path-format=absolute", "--git-dir"]);
 	assert.equal(spawned[1].at(-1), "/repo/.git/satyrn/contracts/implement-0123456789ab.yaml");
 	assert.equal(written[0][0], "/repo/.git/satyrn/receipts/implement-0123456789ab.json");
 	assert.deepEqual(notes.at(-1), ["error", "satyrn-engine: TESTS_FAILED: refs/satyrn/candidates/task/head candidate validation=failed tokens_out=1200 turns=7 guards: scope_refused=1 command_bounded=2"]);
+});
+
+test("--go writes the engine's raw receipt verbatim, keeping fields the parser does not model", async () => {
+	process.env.SATYRN_ENGINE_REPO = "/engine"; process.env.SATYRN_MODEL = "m";
+	const raw = okReceipt({
+		budget: { state: "token_exhausted" },
+		carried: { tampered: ["conftest.py"], absent: [] },
+		validation_exit: 1,
+		validation_output: "FAILED tests/test_app.py",
+		tool_calls: 5,
+		tokens_in: 300,
+	});
+	const spawner = (command) => (command === "git" ? child({ stdout: "/repo/.git\n" }) : child({ stdout: raw }));
+	const written = [];
+	const notes = [];
+	await createAdapter(spawner, undefined, DIRECT_CONTROL, (path, text) => written.push([path, text])).implement("--go implement-0123456789ab", { cwd: "/repo", hasUI: false, ui: ui(notes, false) });
+	const [, text] = written[0];
+	assert.equal(text, `${raw}\n`);
+	const parsed = JSON.parse(text);
+	assert.deepEqual(parsed.budget, { state: "token_exhausted" });
+	assert.deepEqual(parsed.carried, { tampered: ["conftest.py"], absent: [] });
+	assert.equal(parsed.validation_exit, 1);
+	assert.equal(parsed.validation_output, "FAILED tests/test_app.py");
+	assert.equal(parsed.tool_calls, 5);
+	assert.equal(parsed.tokens_in, 300);
 });
 
 test("/implement --go with a bad id, and a failed derive, are named refusals", async () => {
@@ -570,16 +618,18 @@ test("/implement --go with a bad id, and a failed derive, are named refusals", a
 	assert.deepEqual(notes.at(-1), ["error", "satyrn-engine: USAGE: --go takes a contract id like implement-0123456789ab"]);
 });
 
-test("R13: code OK with validation unavailable notifies at error, even via --go", async () => {
+test("R13: a clean pass is info, every other validation outcome for code OK is error", async () => {
 	process.env.SATYRN_ENGINE_REPO = "/engine"; process.env.SATYRN_MODEL = "m";
-	const spawner = (command) => {
-		if (command === "git") return child({ stdout: "/repo/.git\n" });
-		return child({ stdout: okReceipt({ validation: "unavailable" }) });
-	};
-	const notes = [];
-	await createAdapter(spawner, undefined, undefined, () => {}).implement("--go implement-0123456789ab", { cwd: "/repo", hasUI: false, ui: ui(notes, false) });
-	assert.equal(notes.at(-1)[0], "error");
-	assert.match(notes.at(-1)[1], /satyrn-engine: OK: /);
+	for (const [validation, expectedLevel] of [["passed", "info"], ["unavailable", "error"]]) {
+		const spawner = (command) => {
+			if (command === "git") return child({ stdout: "/repo/.git\n" });
+			return child({ stdout: okReceipt({ validation }) });
+		};
+		const notes = [];
+		await createAdapter(spawner, undefined, DIRECT_CONTROL, () => {}).implement("--go implement-0123456789ab", { cwd: "/repo", hasUI: false, ui: ui(notes, false) });
+		assert.equal(notes.at(-1)[0], expectedLevel, `validation=${validation} should notify at ${expectedLevel}`);
+		assert.match(notes.at(-1)[1], /satyrn-engine: OK: /);
+	}
 });
 
 test("receiptSummary formats validation, tokens_out, turns and nonzero guard firings", () => {

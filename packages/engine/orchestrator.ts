@@ -611,6 +611,19 @@ export async function exchange(
 	}
 }
 
+/**
+ * The exact stdout body the engine returned for a successfully-parsed
+ * delivery receipt, keyed by the parsed object `runDelivery` resolves with.
+ * The parser only keeps the fields it knows about (R15's `parseDeliveryReceipt`
+ * still validates shape strictly), but the receipt file on disk must hold
+ * every field the engine wrote — budget state, carried-test tampering, the
+ * validation command's exit and output, tool_calls, tokens_in, and anything
+ * added later. A side channel (rather than a field on the parsed object)
+ * keeps the parsed `DeliveryReceipt` type exact and every existing
+ * `deepEqual`/`.code` assertion on it unaffected.
+ */
+const rawReceiptText = new WeakMap<DeliveryReceipt, string>();
+
 export async function runDelivery(
 	spawner: DeliverySpawner,
 	invocation: DeliveryInvocation,
@@ -758,6 +771,7 @@ export async function runDelivery(
 				}
 				try {
 					const receipt = parseDeliveryReceipt(stdout);
+					rawReceiptText.set(receipt, stdout);
 					settled = true;
 					clearLifecycleTimers();
 					resolvePromise(receipt);
@@ -828,6 +842,9 @@ export function receiptSummary(receipt: DeliveryReceipt): string {
 }
 
 const CONTRACT_ID = /^implement-[0-9a-f]{12}$/;
+const GO_FLAG = /^--go(\s|$)/;
+const CONTRACT_LINE = /^satyrn-engine: contract .*$/m;
+const DERIVE_ERROR_LINE = /^satyrn-engine: DERIVE: .*$/m;
 
 /** The command surface, with process dependencies injected as test seams. */
 export function createAdapter(
@@ -863,7 +880,16 @@ export function createAdapter(
 				processControl,
 			);
 			try {
-				writeReceipt(resolve(gitDir.stdout.trim(), "satyrn", "receipts", `${id}.json`), `${JSON.stringify(receipt)}\n`);
+				// R15: the file holds the engine's raw receipt verbatim — the exact
+				// stdout body it returned, newline-terminated — not the re-serialized
+				// parsed object, which drops every field parseDeliveryReceipt does
+				// not keep (budget, carried, validation_exit, validation_output,
+				// tool_calls, tokens_in, ...).
+				const raw = rawReceiptText.get(receipt) ?? JSON.stringify(receipt);
+				writeReceipt(
+					resolve(gitDir.stdout.trim(), "satyrn", "receipts", `${id}.json`),
+					raw.endsWith("\n") ? raw : `${raw}\n`,
+				);
 			} catch (err) {
 				ctx.ui.notify(`satyrn-engine: ADAPTER_ERROR: could not write the receipt: ${String(err)}`, "error");
 			}
@@ -902,7 +928,7 @@ export function createAdapter(
 				return;
 			}
 			const trimmed = args.trim();
-			if (trimmed.startsWith("--go")) {
+			if (GO_FLAG.test(trimmed)) {
 				const id = trimmed.slice(4).trim();
 				if (!CONTRACT_ID.test(id)) {
 					ctx.ui.notify("satyrn-engine: USAGE: --go takes a contract id like implement-0123456789ab", "error");
@@ -922,7 +948,13 @@ export function createAdapter(
 			try {
 				const derived = await collect(spawner as unknown as Spawner, derive.command, derive.args, derive.cwd, DEFAULT_DEADLINE_MS);
 				if (derived.code !== 0) {
-					ctx.ui.notify(derived.stderr.trim() || `satyrn-engine: DERIVE: exit ${derived.code}`, "error");
+					// Only the engine's own DERIVE error line is shown — the rest of
+					// stderr (e.g. a uv warning) never leaks into the notification.
+					const deriveError = DERIVE_ERROR_LINE.exec(derived.stderr)?.[0];
+					ctx.ui.notify(
+						deriveError ?? (derived.stderr.trim() || `satyrn-engine: DERIVE: exit ${derived.code}`),
+						"error",
+					);
 					return;
 				}
 				ctx.ui.notify(derived.stdout, "info");
@@ -935,10 +967,13 @@ export function createAdapter(
 					await dispatch(id, ctx, model, engineRepo);
 					return;
 				}
+				// Only the engine's own contract line is shown — the rest of stderr
+				// (e.g. a uv warning) never leaks into the notification.
+				const contractLine = CONTRACT_LINE.exec(derived.stderr)?.[0];
 				ctx.ui.notify(
 					ctx.hasUI === true
 						? `satyrn-engine: not dispatched; run /implement --go ${id} to dispatch later`
-						: `${derived.stderr.trim()}; run /implement --go ${id} to dispatch`,
+						: `${contractLine ?? derived.stderr.trim()}; run /implement --go ${id} to dispatch`,
 					"info",
 				);
 			} catch (err) {
