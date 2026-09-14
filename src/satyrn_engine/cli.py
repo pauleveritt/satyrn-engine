@@ -107,8 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
             "caller loops this flag across an ordered sequence of "
             "deliveries -- phase 1 from HEAD, phase N from phase N-1's own "
             "candidate commit -- to compose HP3's chained isolation without "
-            "importing this package (see delivery.deliver_chain for the "
-            "same loop run in-process)."
+            "importing this package."
         ),
     )
     deliver_parser.add_argument(

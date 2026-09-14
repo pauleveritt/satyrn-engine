@@ -1570,4 +1570,3 @@ def _receipt(
         budget=declared,
         budget_usage=usage,
     )
-

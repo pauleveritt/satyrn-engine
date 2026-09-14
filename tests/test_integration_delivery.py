@@ -183,12 +183,11 @@ def test_clean_root_reaches_no_changes_without_touching_source(tmp_path: Path) -
 def test_base_composes_two_real_cli_deliveries_into_one_fold_forward(
     tmp_path: Path,
 ) -> None:
-    """The CLI-level sibling of `test_integration_delivery_chain.py`'s own
-    fold-forward proof -- that test drives `deliver_chain` in process; this
-    one drives two real `satyrn-engine deliver` subprocess calls, `--base`
-    threaded by hand the way an external caller (never importing this
-    package) has to. Against a build that parses `--base` but ignores it,
-    phase 2's tree holds only `phase2.txt` and this assertion fails."""
+    """The fold-forward proof for `--base`: two real `satyrn-engine deliver`
+    subprocess calls, `--base` threaded by hand the way an external caller
+    (never importing this package) has to. Against a build that parses
+    `--base` but ignores it, phase 2's tree holds only `phase2.txt` and this
+    assertion fails."""
     repo = make_repo(tmp_path / "repo")
     contract_one = tmp_path / "phase-1.yaml"
     contract_one.write_text("id: 'phase-1'\ntask: 'add phase 1'\n", encoding="utf-8")
