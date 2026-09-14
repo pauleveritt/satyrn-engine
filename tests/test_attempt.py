@@ -160,9 +160,10 @@ def test_prompt_and_pi_command_are_small_and_hermetic(tmp_path: Path) -> None:
     command = build_pi_command(tmp_path, "provider/model", prompt)
 
     assert prompt == (
-        "Implement this bounded task:\nFix it\n\nWritable files:\n"
-        "- app.py\n- src/other.py\n\nYou may read files. Use the edit tool for every write. "
-        "Do not create files. Stop when the task is complete."
+        "Implement this bounded task:\nFix it\n\n"
+        "Writable paths (edit and write are refused elsewhere; new files are allowed under these):\n"
+        "- app.py  (existing: app.py)\n\n"
+        "Shell commands are bounded at 120 seconds. Stop when the task is complete."
     )
     assert command[:7] == (
         "pi",
@@ -174,10 +175,10 @@ def test_prompt_and_pi_command_are_small_and_hermetic(tmp_path: Path) -> None:
         "provider/model",
     )
     assert build_pi_command(tmp_path, "-provider/model", prompt)[6] == "-provider/model"
-    assert command[-3:] == ("--tools", "read,edit", prompt)
+    assert command[-3:] == ("--tools", "read,bash,edit,write", prompt)
     assert "--no-extensions" in command
     assert "orchestrator.ts" not in " ".join(command)
-    assert command.count("--extension") == 2
+    assert command.count("--extension") == 4
 
 
 def test_a_declared_test_command_puts_the_tool_name_in_the_tools_flag(
@@ -191,7 +192,7 @@ def test_a_declared_test_command_puts_the_tool_name_in_the_tools_flag(
         tmp_path, "provider/model", "prompt", test_command=("uv", "run", "pytest")
     )
 
-    assert argv[argv.index("--tools") + 1] == "read,edit,bash"
+    assert argv[argv.index("--tools") + 1] == "read,bash,edit,write,self_test"
 
 
 def test_a_contract_without_test_command_leaves_the_tools_flag_alone(
@@ -199,11 +200,12 @@ def test_a_contract_without_test_command_leaves_the_tools_flag_alone(
 ) -> None:
     argv = build_pi_command(tmp_path, "provider/model", "prompt")
 
-    assert argv[argv.index("--tools") + 1] == "read,edit"
+    assert argv[argv.index("--tools") + 1] == "read,bash,edit,write"
 
 
 def test_a_contract_without_test_command_produces_a_byte_identical_argv(tmp_path: Path) -> None:
-    """E7 acceptance item 1: no `test_command` changes nothing about the argv.
+    """E7 acceptance item 1: no `test_command` changes nothing about the argv
+    apart from Task 9's always-loaded guards.
 
     Pinned as an exact tuple, not a subset assertion, so any future change
     to E5's argv shape that also touches this branch is caught here.
@@ -225,19 +227,24 @@ def test_a_contract_without_test_command_produces_a_byte_identical_argv(tmp_path
         os.fspath(tmp_path / "packages" / "engine" / "engine.ts"),
         "--extension",
         os.fspath(tmp_path / "packages" / "engine" / "mutator.ts"),
+        "--extension",
+        os.fspath(tmp_path / "packages" / "engine" / "scope.ts"),
+        "--extension",
+        os.fspath(tmp_path / "packages" / "engine" / "bounds.ts"),
         "--no-skills",
         "--no-prompt-templates",
         "--no-themes",
         "--no-context-files",
         "--no-approve",
         "--tools",
-        "read,edit",
+        "read,bash,edit,write",
         prompt,
     )
     assert prompt == (
-        "Implement this bounded task:\nFix it\n\nWritable files:\n- app.py\n\n"
-        "You may read files. Use the edit tool for every write. "
-        "Do not create files. Stop when the task is complete."
+        "Implement this bounded task:\nFix it\n\n"
+        "Writable paths (edit and write are refused elsewhere; new files are allowed under these):\n"
+        "- app.py  (existing: app.py)\n\n"
+        "Shell commands are bounded at 120 seconds. Stop when the task is complete."
     )
 
 
@@ -248,10 +255,10 @@ def test_a_contract_with_test_command_registers_the_runner_extension_and_prompt_
     prompt = build_prompt(contract, ("app.py",))
     command = build_pi_command(tmp_path, "provider/model", prompt, test_command=contract.test_command)
 
-    assert command.count("--extension") == 3
+    assert command.count("--extension") == 5
     assert os.fspath(tmp_path / "packages" / "engine" / "runner.ts") in command
-    assert "bash tool" in prompt
-    assert 'exactly this command: "pytest"' in prompt
+    assert "self_test tool" in prompt
+    assert 'it runs "pytest"' in prompt
     assert command[:7] == (
         "pi",
         "--print",
@@ -261,20 +268,57 @@ def test_a_contract_with_test_command_registers_the_runner_extension_and_prompt_
         "--model",
         "provider/model",
     )
-    # Corrected 2026-09-06: this asserted `read,edit` even with a runner
-    # registered, which is what the bug looked like from inside the
-    # tests. `--tools` gates extension-registered tools, so the
-    # registered tool answered "Tool bash not found" for every call
-    # the model made in the smoke.
-    # Extended 2026-09-09: the argv now also appends a system-prompt
-    # correction. The task prompt asserted just above already explains the
-    # restriction, but it is lower priority than pi's own guideline telling the
-    # model to use bash for ls, rg and find -- which fires because `bash` must
-    # be named in --tools for the registered runner to exist at all.
-    assert command[-5:-3] == ("--tools", "read,edit,bash")
-    assert command[-3] == "--append-system-prompt"
-    assert "not a shell" in command[-2]
-    assert command[-1] == prompt
+    # Ruling 1: bash is native and always kept; the runner is registered as
+    # `self_test`, added to --tools only when a test command exists. There is
+    # no system-prompt correction to append -- the prompt itself already
+    # names `self_test` and says what it does.
+    assert command[-3:] == ("--tools", "read,bash,edit,write,self_test", prompt)
+
+
+def test_prompt_states_patterns_with_existing_files_carried_tests_self_test_and_budgets_inline() -> None:
+    contract = Contract(
+        id="x",
+        task="Add --check",
+        writable_paths=("src/*", "src/app/new.py"),
+        test_command=("uv", "run", "python", "-m", "pytest", "-q"),
+        preserve=("tests/test_a.py",),
+        checks=("checks/c.py",),
+        token_budget=32000,
+        turn_budget=48,
+    )
+    prompt = build_prompt(contract, ("src/app/cli.py", "src/app/gate.py"))
+    assert "Implement this bounded task:\nAdd --check\n" in prompt
+    assert "- src/*  (existing: src/app/cli.py, src/app/gate.py)\n" in prompt
+    assert "- src/app/new.py  (new file)\n" in prompt
+    assert "restored before every self-test" in prompt and "- tests/test_a.py\n" in prompt
+    assert "Developer checks that must pass:\n- checks/c.py\n" in prompt
+    assert 'self_test tool before finishing: it runs "uv run python -m pytest -q"' in prompt
+    assert "bounded at 120 seconds" in prompt
+    assert "Budget: 32000 output tokens and 48 turns" in prompt
+    assert "Do not create files" not in prompt
+
+
+def test_prompt_omits_empty_carried_sections_and_absent_budgets() -> None:
+    prompt = build_prompt(Contract(id="x", task="t", writable_paths=("a.py",)), ("a.py",))
+    assert "carried from" not in prompt and "Developer checks" not in prompt
+    assert "Budget:" not in prompt and "self_test" not in prompt
+
+
+def test_pi_command_loads_every_guard_and_names_the_native_tools_plus_self_test(tmp_path: Path) -> None:
+    command = build_pi_command(tmp_path, "m", "p", test_command=("uv", "run", "python", "-m", "pytest", "-q"))
+    package = tmp_path / "packages" / "engine"
+    extensions = [command[i + 1] for i, token in enumerate(command) if token == "--extension"]
+    assert extensions == [
+        os.fspath(package / name) for name in ("engine.ts", "mutator.ts", "scope.ts", "bounds.ts", "runner.ts")
+    ]
+    assert command[command.index("--tools") + 1] == "read,bash,edit,write,self_test"
+    assert "--append-system-prompt" not in command
+
+
+def test_pi_command_without_a_test_command_has_no_runner_and_no_self_test(tmp_path: Path) -> None:
+    command = build_pi_command(tmp_path, "m", "p")
+    assert not any(token.endswith("runner.ts") for token in command)
+    assert command[command.index("--tools") + 1] == "read,bash,edit,write"
 
 
 def test_attempt_result_has_exhaustive_stable_exit_mapping() -> None:
@@ -453,10 +497,10 @@ def test_attempt_with_test_command_adds_runner_extension_and_prompt_sentence(tmp
 
     assert result.code is AttemptCode.OK
     assert pi.command is not None
-    assert pi.command.count("--extension") == 3
+    assert pi.command.count("--extension") == 5
     assert any(part.endswith("runner.ts") for part in pi.command)
-    assert "bash tool" in pi.command[-1]
-    assert 'exactly this command: "pytest"' in pi.command[-1]
+    assert "self_test tool" in pi.command[-1]
+    assert 'it runs "pytest"' in pi.command[-1]
 
 
 @pytest.mark.parametrize(
@@ -574,12 +618,28 @@ def test_repository_must_be_exact_root(tmp_path: Path) -> None:
     assert "working-tree root" in result.message
 
 
-def test_no_writable_file_is_refused_before_pi(tmp_path: Path) -> None:
+def test_no_writable_path_at_all_is_refused_before_pi(tmp_path: Path) -> None:
+    """Ruling 12 relaxed this refusal to fire only when the contract names no
+    writable path at all -- a pattern that matches nothing (a build task's new
+    file) must still run; see the sibling success test below."""
     repo, contract, _ = _repo(tmp_path)
-    contract.write_text("id: x\ntask: y\nwritable_paths:\n  - missing.py\n", encoding="utf-8")
+    contract.write_text("id: x\ntask: y\nwritable_paths: []\n", encoding="utf-8")
     result, *_ = _run_existing(repo, contract, FakeGit(repo))
     assert result.code is AttemptCode.ATTEMPT_FAILED
     assert "no existing tracked" in result.message
+
+
+def test_a_build_tasks_only_writable_path_naming_a_new_file_still_runs(tmp_path: Path) -> None:
+    """Ruling 12: a writable pattern matching no tracked file has no
+    revisions yet, but the attempt must still run rather than be refused."""
+    repo, contract, _ = _repo(tmp_path)
+    contract.write_text("id: x\ntask: y\nwritable_paths:\n  - src/app/new.py\n", encoding="utf-8")
+    pi = FakePi()
+    result, _ = _run_existing(repo, contract, FakeGit(repo), pi=pi)
+    assert result.code is AttemptCode.OK
+    assert pi.environment is not None
+    context = json.loads(pi.environment[attempt_module.MUTATION_CONTEXT_ENV])
+    assert context["revisions"] == {}
 
 
 def _run_existing(
@@ -1120,12 +1180,18 @@ def test_head_failure_and_unsafe_or_unreadable_paths_are_refused(tmp_path: Path)
 
 
 def test_non_file_tracked_path_is_skipped(tmp_path: Path) -> None:
+    """Ruling 12: `writable_paths` names an existing entry (`app.py`), so the
+    attempt still runs even though that entry is not a regular file and
+    contributes no revision."""
     repo, contract, target = _repo(tmp_path)
     target.unlink()
     target.mkdir()
-    result, _ = _run_existing(repo, contract, FakeGit(repo))
-    assert result.code is AttemptCode.ATTEMPT_FAILED
-    assert "no existing tracked" in result.message
+    pi = FakePi()
+    result, _ = _run_existing(repo, contract, FakeGit(repo), pi=pi)
+    assert result.code is AttemptCode.OK
+    assert pi.environment is not None
+    context = json.loads(pi.environment[attempt_module.MUTATION_CONTEXT_ENV])
+    assert context["revisions"] == {}
 
 
 @pytest.mark.parametrize("symlink_kind", ["leaf", "ancestor"])
@@ -1149,9 +1215,14 @@ def test_tracked_symlinks_are_excluded_while_regular_sibling_remains_writable(
     contract.write_text("id: x\ntask: y\nwritable_paths:\n  - '*.py'\n", encoding="utf-8")
     only_symlink = FakeGit(repo)
     only_symlink.overrides["ls-files"] = GitResult(0, unsafe_path + b"\0", b"")
-    refused, _ = _run_existing(repo, contract, only_symlink)
-    assert refused.code is AttemptCode.ATTEMPT_FAILED
-    assert "no existing tracked" in refused.message
+    only_symlink_pi = FakePi()
+    # Ruling 12: `*.py` is a non-empty writable pattern, so the attempt still
+    # runs even though the only tracked match is a symlink -- excluded from
+    # revisions, same as before, just no longer a reason to refuse outright.
+    accepted_without_revisions, _ = _run_existing(repo, contract, only_symlink, pi=only_symlink_pi)
+    assert accepted_without_revisions.code is AttemptCode.OK
+    assert only_symlink_pi.environment is not None
+    assert json.loads(only_symlink_pi.environment[attempt_module.MUTATION_CONTEXT_ENV])["revisions"] == {}
 
     if symlink_kind == "ancestor":
         sibling = repo / "regular" / "sibling.py"
@@ -2085,39 +2156,26 @@ def test_cli_reserves_exit_one_for_broken_transcript_pipe(monkeypatch: pytest.Mo
     assert cli.main(["attempt", "--model", "m", "contract.yaml"]) == 1
 
 
-# --- 2026-09-09: the argv must correct pi's shell-exploration guideline ---
+# --- Task 9 / Ruling 1: bash is native and always kept, so pi's own
+# "use bash for ls, rg, find" guideline is now accurate -- there is nothing
+# left to correct, and `--append-system-prompt` is gone from the argv
+# entirely. `test_pi_argv_corrects_the_shell_exploration_guideline` is
+# removed; its sibling below now asserts the correction stays absent in
+# both arms instead of only the arm without a test command.
 
 
-def test_pi_argv_corrects_the_shell_exploration_guideline() -> None:
-    """pi tells the model to use bash for `ls`, `rg` and `find`; ours refuses.
-
-    pi's system-prompt builder adds "Use bash for file operations like ls, rg,
-    find" whenever bash is selected and no grep/find/ls tool is. The engine
-    MUST name `bash` in --tools or its registered runner does not exist, so the
-    guideline always fires on a contract that declares a test command -- and
-    the runner refuses every command but that one. The argv appends a
-    correction rather than replacing pi's prompt, so the rest of pi's guidance
-    is untouched.
-    """
-    argv = build_pi_command(
+def test_no_arm_appends_a_system_prompt_correction() -> None:
+    """Bash is native and always kept (Ruling 1), so pi's own shell-exploration
+    guideline is already correct and nothing needs appending -- with or
+    without a declared test command; only `self_test` differs between arms."""
+    without_test_command = build_pi_command(Path("/repo"), "m", "do the thing")
+    with_test_command = build_pi_command(
         Path("/repo"), "m", "do the thing", test_command=("uv", "run", "pytest")
     )
-    assert "--append-system-prompt" in argv
-    correction = argv[argv.index("--append-system-prompt") + 1]
-    assert "ls" in correction and "find" in correction
-    assert "test command" in correction
-
-
-def test_a_contract_without_a_test_command_appends_nothing() -> None:
-    """The sibling: no runner, no misleading guideline, no correction.
-
-    Without a test command the runner extension is not loaded and `bash` is not
-    in --tools, so pi never emits the guideline and appending a correction
-    would describe a tool the model does not have.
-    """
-    argv = build_pi_command(Path("/repo"), "m", "do the thing")
-    assert "--append-system-prompt" not in argv
-    assert "bash" not in argv[argv.index("--tools") + 1]
+    assert "--append-system-prompt" not in without_test_command
+    assert "--append-system-prompt" not in with_test_command
+    assert without_test_command[without_test_command.index("--tools") + 1] == "read,bash,edit,write"
+    assert with_test_command[with_test_command.index("--tools") + 1] == "read,bash,edit,write,self_test"
 
 
 def test_the_invocation_is_recorded_beside_the_contract(tmp_path: Path) -> None:

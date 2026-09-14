@@ -283,23 +283,51 @@ class SubprocessPiRunner:
             self._process = None
 
 
-def build_prompt(contract: Contract, writable_paths: Sequence[str]) -> str:
-    """Build the intentionally small E5 handoff prompt."""
-    paths = "\n".join(f"- {path}" for path in writable_paths)
-    sentence = (
-        " Before finishing, verify your change by calling the bash tool with "
-        f'exactly this command: "{" ".join(contract.test_command)}".'
+BASH_BOUND_SECONDS = 120  # pinned to packages/engine/bounds.ts DEFAULT_TIMEOUT_SECONDS by tests/test_bounds_pin.py
+
+
+def build_prompt(contract: Contract, existing: Sequence[str]) -> str:
+    """Build the E5 handoff prompt: every fact inline, nothing pointed at."""
+
+    def writable_line(pattern: str) -> str:
+        beneath = sorted(path for path in existing if fnmatch(path, pattern))
+        if beneath:
+            return f"- {pattern}  (existing: {', '.join(beneath)})"
+        return f"- {pattern}  (new file)" if not any(char in pattern for char in "*?[") else f"- {pattern}"
+
+    def block(title: str, items: Sequence[str]) -> str:
+        return f"{title}\n" + "\n".join(f"- {item}" for item in items) + "\n\n" if items else ""
+
+    writable = (
+        "Writable paths (edit and write are refused elsewhere; new files are allowed under these):\n"
+        + "\n".join(writable_line(pattern) for pattern in contract.writable_paths)
+        + "\n\n"
+    )
+    verify = (
+        f'Verify with the self_test tool before finishing: it runs "{" ".join(contract.test_command)}"'
+        f'{" (and the checks)" if contract.checks else ""} and returns failed test ids with their first '
+        "assertion line. "
         if contract.test_command
         else ""
     )
+    budget = (
+        f"Budget: {contract.token_budget} output tokens and {contract.turn_budget} turns. "
+        if contract.token_budget is not None and contract.turn_budget is not None
+        else ""
+    )
     return (
-        "Implement this bounded task:\n"
-        f"{contract.task}\n\n"
-        "Writable files:\n"
-        f"{paths}\n\n"
-        "You may read files. Use the edit tool for every write."
-        f"{sentence} "
-        "Do not create files. Stop when the task is complete."
+        f"Implement this bounded task:\n{contract.task}\n\n"
+        + writable
+        + block(
+            "Tests carried from the accepted base; they are restored before every self-test, "
+            "so edits to them never count:",
+            contract.preserve,
+        )
+        + block("Developer checks that must pass:", contract.checks)
+        + verify
+        + f"Shell commands are bounded at {BASH_BOUND_SECONDS} seconds. "
+        + budget
+        + "Stop when the task is complete."
     )
 
 
@@ -337,29 +365,21 @@ def build_pi_command(
 ) -> tuple[str, ...]:
     """Return the exact hermetic Pi child argv.
 
-    `--extension .../runner.ts` (the E7 `bash` tool) is added only
-    when the contract declares `test_command` -- a contract without one
-    produces an argv byte-identical to before E7 (see the E7 design's
-    acceptance section 7).
+    `engine.ts`, `mutator.ts`, `scope.ts` and `bounds.ts` are always loaded;
+    `--extension .../runner.ts` (the `self_test` tool, Ruling 1) is added
+    only when the contract declares `test_command`, and `self_test` is then
+    the only addition to `--tools` -- native `bash` is kept in both arms.
     """
     package = engine_repo / "packages" / "engine"
-    # pi's system-prompt builder adds "Use bash for file operations like ls,
-    # rg, find" whenever bash is selected and no grep/find/ls tool is. The
-    # engine must name `bash` in --tools or its registered runner does not
-    # exist, so on a contract with a test command that guideline always fires
-    # -- instructing the model to do exactly what the runner refuses. Appended
-    # rather than replacing pi's prompt, so its other guidance is untouched.
-    correction: tuple[str, ...] = (
-        "--append-system-prompt",
-        "The bash tool here runs only this contract's declared test command; "
-        "it is not a shell. Do not use it for ls, rg, find or any other "
-        "exploration -- read files with the read tool instead.",
-    )
     extensions: tuple[str, ...] = (
         "--extension",
         os.fspath(package / "engine.ts"),
         "--extension",
         os.fspath(package / "mutator.ts"),
+        "--extension",
+        os.fspath(package / "scope.ts"),
+        "--extension",
+        os.fspath(package / "bounds.ts"),
     )
     if test_command:
         extensions += ("--extension", os.fspath(package / "runner.ts"))
@@ -392,8 +412,12 @@ def build_pi_command(
         # refusing calls that pi's built-in `edit` would have accepted.
         # The smoke re-proves it per batch by reading what a `bash` call
         # actually did.
-        "read,edit,bash" if test_command else "read,edit",
-        *(correction if test_command else ()),
+        #
+        # Ruling 1: the runner is registered as `self_test`, not `bash` --
+        # native `bash` stays native and guard 4 (bounds.ts) bounds it
+        # directly, so both native tools are always kept and `self_test` is
+        # added only when a test command exists to run.
+        "read,bash,edit,write,self_test" if test_command else "read,bash,edit,write",
         prompt,
     )
 
@@ -593,7 +617,10 @@ def _prepare(
         if content is not None:
             revisions[normalized] = file_sha256(content)
             symbols[normalized] = _defined_symbols(content)
-    if not revisions:
+    if not contract.writable_paths:
+        # Ruling 12: a build task whose only writable path is a new file has
+        # no revisions yet and must still run -- only a contract that names
+        # no writable path at all can never have anything to write.
         return _failed(model, "contract matches no existing tracked writable file")
     carried = tuple(select_carried(contract, tracked_paths))
 
@@ -612,7 +639,7 @@ def _prepare(
     except (OSError, RuntimeError) as exc:
         return _failed(model, f"cannot resolve engine repository: {exc}")
     package = engine_repo / "packages" / "engine"
-    required_extensions = ("engine.ts", "mutator.ts")
+    required_extensions = ("engine.ts", "mutator.ts", "scope.ts", "bounds.ts")
     if contract.test_command:
         required_extensions += ("runner.ts",)
     if not all((package / name).is_file() for name in required_extensions):

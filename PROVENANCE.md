@@ -119,3 +119,4 @@
 | tests/fixtures/events/bounds-result-sentence.json | created in release-one |
 | tests/fixtures/events/bounds-timed-out.json | created in release-one |
 | tests/fixtures/events/bounds-no-context.json | created in release-one |
+| tests/test_bounds_pin.py | created in release-one |

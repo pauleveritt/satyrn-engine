@@ -122,7 +122,12 @@ def test_attempt_uses_shipped_e4_mutator_and_exports_artifacts(tmp_path: Path) -
     assert b"exercise_mutator:" not in stderr
 
 
-def test_attempt_excludes_real_tracked_symlink_before_pi(tmp_path: Path) -> None:
+def test_attempt_excludes_real_tracked_symlink_from_revisions(tmp_path: Path) -> None:
+    """Ruling 12 (Task 9): `writable_paths` still names `app.py`, so this no
+    longer refuses before Pi runs -- only a contract naming no writable path
+    at all does that now. The symlink stays excluded from revisions, same as
+    before; the fake Pi's `nochange` mode proves the run still completes
+    with nothing to edit, and the symlink target is left untouched."""
     repo, contract, target, environment = _fixture(tmp_path)
     outside = tmp_path / "outside.py"
     outside.write_text("outside = True\n", encoding="utf-8")
@@ -140,12 +145,12 @@ def test_attempt_excludes_real_tracked_symlink_before_pi(tmp_path: Path) -> None
         "track symlink",
     )
     assert committed.returncode == 0, committed.stderr
+    environment["SATYRN_FAKE_PI_MODE"] = "nochange"
 
     result, stdout, stderr = _attempt(repo, contract, environment)
 
-    assert result.code is AttemptCode.ATTEMPT_FAILED
-    assert "no existing tracked writable file" in result.message
-    assert stdout == b""
+    assert result.code is AttemptCode.OK
+    assert b'"reason": "fixture no change"' in stdout
     assert stderr == b""
     assert outside.read_text(encoding="utf-8") == "outside = True\n"
 
