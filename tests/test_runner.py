@@ -26,6 +26,7 @@ from satyrn_engine.runner import (
     command_matches,
     compact_output,
     run_tests,
+    select_carried,
     tail_output,
 )
 
@@ -179,6 +180,44 @@ def _fake_runs(
     return calls
 
 
+def test_select_carried_orders_preserve_checks_sorted_conftests_then_infrastructure_and_dedups() -> None:
+    """Ordering and dedup rule only, no git: preserve, then checks, then
+    every tracked `conftest.py` sorted, then tracked `INFRASTRUCTURE` --
+    each filtered to `tracked`, with a duplicate (`tests/conftest.py` named
+    twice) collapsed to one occurrence at its first position."""
+    contract = _contract(
+        preserve=("tests/test_keep.py", "tests/conftest.py"),
+        checks=("checks/check_x.py",),
+    )
+    tracked = [
+        "app.py",
+        "pyproject.toml",
+        "z/conftest.py",
+        "a/conftest.py",
+        "tests/conftest.py",
+        "tests/test_keep.py",
+        "checks/check_x.py",
+        "tests/test_gone.py",  # not tracked at all -- see below
+    ]
+    # Drop the untracked-marker entry itself so `tracked` only names what a
+    # real `git ls-tree` would have listed; the point of this row is to
+    # prove select_carried filters to *tracked*, done via a separate case.
+    tracked_real = [p for p in tracked if p != "tests/test_gone.py"]
+    assert select_carried(contract, tracked_real) == [
+        "tests/test_keep.py",
+        "tests/conftest.py",
+        "checks/check_x.py",
+        "a/conftest.py",
+        "z/conftest.py",
+        "pyproject.toml",
+    ]
+
+
+def test_select_carried_drops_preserve_and_checks_paths_absent_from_tracked() -> None:
+    contract = _contract(preserve=("tests/test_gone.py",), checks=("checks/check_gone.py",))
+    assert select_carried(contract, ["app.py"]) == []
+
+
 BASE = "b" * 40
 LS_TREE = b"app.py\npyproject.toml\ntests/conftest.py\ntests/test_keep.py\nchecks/check_x.py\n"
 
@@ -220,6 +259,43 @@ def test_run_tests_skips_carried_paths_absent_at_base_and_defaults_to_head(
     argvs = [argv for argv, _ in calls]
     assert argvs == [["git", "ls-tree", "-r", "--name-only", "HEAD"], list(contract.test_command)]
     assert receipt.ok
+
+
+def test_run_tests_stays_a_silent_noop_when_head_fallback_ls_tree_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Sibling of `test_run_tests_refuses_when_ls_tree_fails_for_an_explicit_base`:
+    same failing `git ls-tree`, but no `base_commit` was given at all, so the
+    fallback is `HEAD` -- R9 keeps this the pre-existing silent no-op (there
+    was nothing carried forward to begin with) and the suite still runs.
+    """
+    contract = _contract()
+    calls = _fake_runs(monkeypatch, {("git", "ls-tree", "-r", "--name-only", "HEAD"): (128, b"")})
+    receipt = run_tests(tmp_path, contract, None)
+    argvs = [argv for argv, _ in calls]
+    assert argvs == [["git", "ls-tree", "-r", "--name-only", "HEAD"], list(contract.test_command)]
+    assert receipt.ok
+
+
+def test_run_tests_refuses_when_checkout_fails_under_the_head_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Sibling of `test_run_tests_refuses_when_checkout_fails_to_restore_the_carried_set`:
+    same failing `git checkout`, but under the `HEAD` fallback rather than an
+    explicit base -- R9 refuses here too; a checkout failure refuses either
+    way."""
+    contract = _contract(preserve=("tests/test_keep.py",))
+    checkout = ("git", "checkout", "HEAD", "--", "tests/test_keep.py", "tests/conftest.py", "pyproject.toml")
+    calls = _fake_runs(monkeypatch, {
+        ("git", "ls-tree", "-r", "--name-only", "HEAD"): (0, LS_TREE),
+        checkout: (1, b""),
+    })
+    receipt = run_tests(tmp_path, contract, None)
+    assert receipt.code is RunnerCode.TEST_COMMAND_UNAVAILABLE
+    assert receipt.result is None
+    assert receipt.message == "carried tests could not be restored from base HEAD"
+    argvs = [argv for argv, _ in calls]
+    assert argvs == [["git", "ls-tree", "-r", "--name-only", "HEAD"], list(checkout)]
 
 
 def test_run_tests_still_refuses_a_string_command_that_does_not_match(tmp_path: Path) -> None:
