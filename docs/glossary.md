@@ -70,9 +70,13 @@ exit code
 
 guard
   A small TypeScript check that observes an ordinary Pi tool call before it
-  runs. E3.5 ships one guard: the loop breaker, which remembers the last twenty
+  runs. Four guards ship: the loop breaker, which remembers the last twenty
   admitted call keys and refuses a sixth exact repeat while five matches remain
-  in that window. Its state belongs to one extension registration. It is not a
+  in that window, and runs in every Pi session (`engine.ts`); writable-path
+  scope, symbol preservation, and command bounds, which register only inside
+  the `/implement` child (`scope.ts`, `bounds.ts`, loaded there by explicit
+  `--extension` flags, not through the package's own extension list). Each
+  guard's state belongs to one extension registration. A guard is not a
   mutation policy or a Python engine operation.
 
 guard firing

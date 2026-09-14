@@ -238,23 +238,27 @@ Inside Pi with the package installed (`pi install <engine>/packages/engine`,
     /implement add --check to src/app/cli.py
 
 derives a contract from the request and the repository — `writable_paths`
-from the files, directories and new files the request names, `test_command`
-from `[tool.satyrn] self_test` in `pyproject.toml` or the default
-`uv run python -m pytest -q`, `preserve` (every tracked test file) and
-`checks` (`checks/`), budgets of 32,000 output tokens and 48 turns — writes it
-under `.git/satyrn/contracts/<id>.yaml`, and shows it. In the TUI, answer the
+from the files, directories and new files the request names (naming a
+non-test `.py` file also makes its test file, `tests/test_<stem>.py`,
+writable), `test_command` from `[tool.satyrn] self_test` in `pyproject.toml`
+or the default `uv run python -m pytest -q`, `preserve` (tracked test files
+under `tests/`) and `checks` (`checks/`), budgets of 32,000 output tokens and
+48 turns — writes it under `.git/satyrn/contracts/<id>.yaml`, and shows it. A
+repository with no `pyproject.toml` is refused. In the TUI, answer the
 confirmation to dispatch; in print mode run:
 
     /implement --go implement-0123456789ab
 
 One fresh Pi runs in a worktree branched from `HEAD` with the guards loaded
-(they register only in that child): the loop breaker; `edit`/`write` refused
-outside `writable_paths`; an `edit` or `write` that would remove a symbol the
-base defines refused with what to do instead; bash `timeout` set to 120 s
-when absent and clamped at 300 s, the result naming the bound and the
-self-test. `preserve` and `checks` are restored from the base into the
-worktree before every `self_test` run and before validation, so the model's
-edits to them never count. The receipt is written to stdout and, verbatim, to
+(the loop breaker runs in every Pi session; the rest register only in that
+child): the loop breaker; `edit`/`write` refused outside `writable_paths`; an
+`edit` or `write` that would remove a symbol the base defines refused with
+what to do instead; bash `timeout` set to 120 s when absent and clamped at
+300 s, the result naming the bound and the self-test. `preserve`, `checks`,
+tracked `conftest.py` files and tracked pytest configuration
+(`pyproject.toml`, `pytest.ini`, `setup.cfg`, `tox.ini`) are restored from the
+base into the worktree before every `self_test` run and before validation, so
+the model's edits to them never count. The receipt is written to stdout and, verbatim, to
 `.git/satyrn/receipts/<id>.json`; it adds `turns`, `tool_calls`, `tokens_in`,
 `tokens_out`, `guard_firings` and `carried`; `validation` is the engine's own
 run and is authoritative; `budget.state` is `token_exhausted` when the model
