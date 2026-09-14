@@ -211,6 +211,13 @@ interface DeliveryReceiptBase {
 	readonly tokens_out?: number;
 	readonly turns?: number;
 	readonly guard_firings?: Record<string, number>;
+	/** Final review fix: `carried.tampered` -- the carried paths (a new
+	 * `tests/conftest.py` the model added counts) the candidate commit
+	 * changed, restored before every self-test and so never itself run as
+	 * edited. Copied from the receipt's nested `carried` object when present
+	 * so a tampered set is visible in the notification, not only the
+	 * receipt file. */
+	readonly tampered?: readonly string[];
 }
 
 export interface CandidateCreatedReceipt extends DeliveryReceiptBase {
@@ -348,6 +355,17 @@ function isOptionalGuardFirings(value: unknown): value is Record<string, number>
 	);
 }
 
+/** `body.carried.tampered`, when `carried` is present and shaped as
+ * expected -- a string array, or absent (older/other receipts). */
+function optionalTampered(carried: unknown): readonly string[] | undefined {
+	if (carried === undefined || carried === null || typeof carried !== "object" || Array.isArray(carried)) {
+		return undefined;
+	}
+	const tampered = (carried as Record<string, unknown>).tampered;
+	if (!Array.isArray(tampered) || !tampered.every((path) => typeof path === "string")) return undefined;
+	return tampered;
+}
+
 export function parseDeliveryReceipt(text: string): DeliveryReceipt {
 	let parsed: unknown;
 	try {
@@ -391,6 +409,7 @@ export function parseDeliveryReceipt(text: string): DeliveryReceipt {
 		...(body.tokens_out !== undefined ? { tokens_out: body.tokens_out } : {}),
 		...(body.turns !== undefined ? { turns: body.turns } : {}),
 		...(body.guard_firings !== undefined ? { guard_firings: body.guard_firings as Record<string, number> } : {}),
+		...(optionalTampered(body.carried) !== undefined ? { tampered: optionalTampered(body.carried) } : {}),
 	};
 	if (DELIVERY_CODE_OUTCOMES[body.code] === "candidate-created") {
 		if (
@@ -838,7 +857,9 @@ export function receiptSummary(receipt: DeliveryReceipt): string {
 	const firings = Object.entries(receipt.guard_firings ?? {})
 		.filter(([, count]) => count > 0)
 		.map(([kind, count]) => `${kind}=${count}`);
-	return `validation=${receipt.validation ?? "unknown"} tokens_out=${receipt.tokens_out ?? 0} turns=${receipt.turns ?? 0} guards: ${firings.join(" ") || "none"}`;
+	const tampered = receipt.tampered ?? [];
+	const tamperedSuffix = tampered.length > 0 ? ` tampered=${tampered.join(",")}` : "";
+	return `validation=${receipt.validation ?? "unknown"} tokens_out=${receipt.tokens_out ?? 0} turns=${receipt.turns ?? 0} guards: ${firings.join(" ") || "none"}${tamperedSuffix}`;
 }
 
 const CONTRACT_ID = /^implement-[0-9a-f]{12}$/;
@@ -898,8 +919,13 @@ export function createAdapter(
 				// passed. OK with validation unavailable/timed_out/not_run (or
 				// TESTS_FAILED/BUDGET_EXHAUSTED) must read as an error, because
 				// the engine keeps code OK in those cases and a developer must
-				// never mistake that for a clean pass.
-				const level = receipt.code === "OK" && receipt.validation === "passed" ? "info" : "error";
+				// never mistake that for a clean pass. Final review fix: this
+				// extends to a tampered carried set -- a new tests/conftest.py
+				// the model added, restored before every self-test and so
+				// invisible to validation's own code/passed fields -- which
+				// must also read as an error even with code OK and passed.
+				const tampered = (receipt.tampered ?? []).length > 0;
+				const level = receipt.code === "OK" && receipt.validation === "passed" && !tampered ? "info" : "error";
 				ctx.ui.notify(
 					`satyrn-engine: ${receipt.code}: ${receipt.candidate_ref} ${receipt.candidate_commit} ${receiptSummary(receipt)}`,
 					level,

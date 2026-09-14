@@ -194,6 +194,7 @@ test("check request and response stay compatible", () => {
 test("delivery receipt parser closes shape and outcome", () => {
 	assert.equal(parseDeliveryReceipt(DELIVERY_OK).candidate_commit, "candidate");
 	assert.equal(parseDeliveryReceipt(DELIVERY_REFUSAL).code, "REPO_DIRTY");
+	assert.equal(parseDeliveryReceipt(DELIVERY_OK).tampered, undefined);
 	const valid = JSON.parse(DELIVERY_OK);
 	const malformed = [
 		"bad",
@@ -632,9 +633,44 @@ test("R13: a clean pass is info, every other validation outcome for code OK is e
 	}
 });
 
-test("receiptSummary formats validation, tokens_out, turns and nonzero guard firings", () => {
+test("parseDeliveryReceipt copies carried.tampered when present", () => {
+	const withTampered = JSON.parse(DELIVERY_OK);
+	withTampered.carried = { tampered: ["a.py", "b.py"], absent: [] };
+	assert.deepEqual(parseDeliveryReceipt(JSON.stringify(withTampered)).tampered, ["a.py", "b.py"]);
+	const emptyTampered = JSON.parse(DELIVERY_OK);
+	emptyTampered.carried = { tampered: [], absent: [] };
+	assert.deepEqual(parseDeliveryReceipt(JSON.stringify(emptyTampered)).tampered, []);
+});
+
+test("final review fix (extends R13): a tampered carried set is error even with code OK and validation passed", async () => {
+	process.env.SATYRN_ENGINE_REPO = "/engine"; process.env.SATYRN_MODEL = "m";
+	const spawner = (command) => {
+		if (command === "git") return child({ stdout: "/repo/.git\n" });
+		return child({ stdout: okReceipt({ validation: "passed", carried: { tampered: ["tests/conftest.py"], absent: [] } }) });
+	};
+	const notes = [];
+	await createAdapter(spawner, undefined, DIRECT_CONTROL, () => {}).implement("--go implement-0123456789ab", { cwd: "/repo", hasUI: false, ui: ui(notes, false) });
+	assert.equal(notes.at(-1)[0], "error");
+	assert.match(notes.at(-1)[1], /tampered=tests\/conftest\.py/);
+});
+
+test("OK + passed + no tampered still notifies info (the existing R13 case is unchanged)", async () => {
+	process.env.SATYRN_ENGINE_REPO = "/engine"; process.env.SATYRN_MODEL = "m";
+	const spawner = (command) => {
+		if (command === "git") return child({ stdout: "/repo/.git\n" });
+		return child({ stdout: okReceipt({ validation: "passed", carried: { tampered: [], absent: [] } }) });
+	};
+	const notes = [];
+	await createAdapter(spawner, undefined, DIRECT_CONTROL, () => {}).implement("--go implement-0123456789ab", { cwd: "/repo", hasUI: false, ui: ui(notes, false) });
+	assert.equal(notes.at(-1)[0], "info");
+	assert.doesNotMatch(notes.at(-1)[1], /tampered=/);
+});
+
+test("receiptSummary formats validation, tokens_out, turns, nonzero guard firings and a tampered list", () => {
 	assert.equal(receiptSummary({ validation: "passed", tokens_out: 10, turns: 2, guard_firings: {} }),
 		"validation=passed tokens_out=10 turns=2 guards: none");
+	assert.equal(receiptSummary({ guard_firings: {}, tampered: ["a.py", "b.py"] }),
+		"validation=unknown tokens_out=0 turns=0 guards: none tampered=a.py,b.py");
 	assert.equal(receiptSummary({ guard_firings: { scope_refused: 1, command_bounded: 0 } }),
 		"validation=unknown tokens_out=0 turns=0 guards: scope_refused=1");
 });
