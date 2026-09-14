@@ -317,17 +317,59 @@ def test_attempt_success_exports_exact_artifacts_and_context(tmp_path: Path) -> 
     output.mkdir()
     patch = output / "patch.diff"
     transcript = output / "transcript.jsonl"
-    result, stdout, _, git, pi = _run(
-        tmp_path,
-        environment={
-            attempt_module.PATCH_ENV: str(patch),
-            attempt_module.TRANSCRIPT_ENV: str(transcript),
-            "VIRTUAL_ENV": "/bad/venv",
-            "PATH": "/bad/venv/bin:/usr/bin",
-            "SSH_AUTH_SOCK": "/bad/socket",
-            "GIT_DIR": "/bad/git",
-        },
+    repo, contract, _ = _repo(tmp_path)
+    # The carried wiring is only exercised when at least one of preserve,
+    # checks, a tracked conftest.py, or a tracked infrastructure file is
+    # present -- an empty list would pass even if `_prepare` never wired
+    # `tracked_paths` through at all. This contract and fixture name one of
+    # each, plus a second conftest.py, so the ordered, deduplicated,
+    # tracked-only result (preserve, then checks, then sorted conftests,
+    # then infrastructure) is what the assertion below actually pins.
+    contract.write_text(
+        "id: attempt\ntask: Replace one with two\nwritable_paths:\n  - app.py\n"
+        "preserve:\n  - tests/test_keep.py\nchecks:\n  - tests/checks/lint.py\n",
+        encoding="utf-8",
     )
+    git = FakeGit(repo)
+    git.overrides["ls-files"] = GitResult(
+        0,
+        b"\0".join(
+            [
+                b"app.py",
+                b"notes.txt",
+                b"tests/test_keep.py",
+                b"tests/checks/lint.py",
+                b"conftest.py",
+                b"b/conftest.py",
+                b"pyproject.toml",
+            ]
+        )
+        + b"\0",
+        b"",
+    )
+    pi = FakePi()
+    stdout_buffer = io.BytesIO()
+    stderr_buffer = io.BytesIO()
+    env = {
+        attempt_module.ENGINE_REPO_ENV: str(Path(__file__).parents[1]),
+        attempt_module.PATCH_ENV: str(patch),
+        attempt_module.TRANSCRIPT_ENV: str(transcript),
+        "VIRTUAL_ENV": "/bad/venv",
+        "PATH": "/bad/venv/bin:/usr/bin",
+        "SSH_AUTH_SOCK": "/bad/socket",
+        "GIT_DIR": "/bad/git",
+    }
+    result = attempt_module.attempt(
+        repo,
+        contract,
+        "provider/model",
+        environment=env,
+        git_runner=git,
+        pi_runner=pi,
+        stdout=stdout_buffer,
+        stderr=stderr_buffer,
+    )
+    stdout = stdout_buffer.getvalue()
 
     assert result == AttemptResult(AttemptCode.OK, model="provider/model", command_exit=0)
     assert stdout == transcript.read_bytes() == b'{"type":"session_shutdown"}\n'
@@ -343,7 +385,13 @@ def test_attempt_success_exports_exact_artifacts_and_context(tmp_path: Path) -> 
     assert '"writable_paths":["app.py"]' in context
     assert '"test_command":[]' in context
     assert '"symbols":{"app.py":["inner","value"]}' in context
-    assert '"carried":[]' in context
+    # Ordered per select_carried: preserve, then checks, then every tracked
+    # conftest.py (sorted), then tracked infrastructure. Not just non-empty --
+    # the order and the dedup/tracked-only filter are the point.
+    assert (
+        '"carried":["tests/test_keep.py","tests/checks/lint.py",'
+        '"b/conftest.py","conftest.py","pyproject.toml"]'
+    ) in context
     assert f'"base_commit":"{"a" * 40}"' in context
     assert any(call[0] == "diff" for call in git.calls)
 

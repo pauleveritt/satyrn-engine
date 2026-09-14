@@ -374,10 +374,12 @@ export function registerMutator(pi: ExtensionAPI, context: MutationContext, exch
 		parameters: EditParameters,
 		execute: mutator.execute,
 	});
-	// Registered before the `edit` result listener below: both return
-	// `undefined` for the other's tool, so order between them does not
-	// change what either observes -- only which listener the replayer's
-	// `handlers.tool_result[0]` happens to be.
+	// Two `tool_result` listeners are registered on `pi` (this one and the
+	// `edit`-details one below); each returns `undefined` for the other's
+	// tool, so registration order between them does not change what either
+	// observes. A caller must still invoke every registered `tool_result`
+	// handler for a given event -- as Pi's own `emitToolResult` does -- not
+	// only the first one, since either listener may be first.
 	pi.on("tool_result", async (event) => {
 		if (event.toolName === "write" && event.isError !== true && isRecord(event.input)
 			&& typeof event.input.path === "string" && typeof event.input.content === "string") {

@@ -287,6 +287,15 @@ export default function registerLoopBreaker(pi: ExtensionAPI, environment: Mutat
 		}
 	}
 	const resolvePath = repo === undefined ? (path: string) => path : (path: string) => resolveWorkspacePath(repo, path) ?? path;
+	// Distinct from `resolvePath` above: that one is for *keying* a read or a
+	// path-less call against whatever revisions are already known, so falling
+	// back to the raw path when it will not resolve is harmless -- it just
+	// keys the call by itself. This one is for *recording* a change. When the
+	// repo is known and a path resolves outside it, the change is not
+	// recorded at all, matching scope's own refusal boundary: a write outside
+	// the known repo is not evidence about anything inside it. Without a
+	// context, the raw path is the key, as before.
+	const keyForChange = repo === undefined ? (path: string) => path : (path: string) => resolveWorkspacePath(repo, path);
 	const breaker = createLoopBreaker(resolvePath);
 	let consecutiveBlocks = 0;
 	pi.on("tool_call", async (event) => {
@@ -327,7 +336,8 @@ export default function registerLoopBreaker(pi: ExtensionAPI, environment: Mutat
 				// Evidence we cannot read is not evidence of progress: an
 				// absent or malformed digest leaves the window standing.
 				if (typeof path === "string" && typeof sha256 === "string" && SHA256.test(sha256)) {
-					breaker.noteChange(resolvePath(path), sha256);
+					const key = keyForChange(path);
+					if (key !== null) breaker.noteChange(key, sha256);
 				}
 			}
 			if (
@@ -337,10 +347,13 @@ export default function registerLoopBreaker(pi: ExtensionAPI, environment: Mutat
 				typeof event.input.path === "string" &&
 				typeof event.input.content === "string"
 			) {
-				breaker.noteChange(
-					resolvePath(event.input.path),
-					createHash("sha256").update(event.input.content, "utf8").digest("hex"),
-				);
+				const key = keyForChange(event.input.path);
+				if (key !== null) {
+					breaker.noteChange(
+						key,
+						createHash("sha256").update(event.input.content, "utf8").digest("hex"),
+					);
+				}
 			}
 		} catch {
 			// A result we cannot read is not evidence that anything changed.

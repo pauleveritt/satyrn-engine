@@ -618,7 +618,14 @@ test("a malformed mutation context falls back to the identity resolver rather th
 });
 
 test("a write result missing shape information is a no-op, not a crash", async () => {
-	const { result } = registeredExtension();
+	const { call, result } = registeredExtension();
+	const retest = repeated("bash", { command: "pytest -q" });
+
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await call(retest), undefined);
+	}
+	assert.equal((await call(retest))?.block, true, "sixth identical call refused before any write");
+
 	assert.equal(
 		await result({ toolName: "write", input: { path: "app.py", content: "x" }, isError: true }),
 		undefined,
@@ -632,26 +639,71 @@ test("a write result missing shape information is a no-op, not a crash", async (
 		await result({ toolName: "write", input: { path: "app.py", content: 1 }, isError: false }),
 		undefined,
 	);
+	assert.equal(
+		(await call(retest))?.block,
+		true,
+		"still refused: none of the malformed write results moved anything",
+	);
+
+	// A well-formed write on the same path does move the revision, and the
+	// path-less command is admitted again.
+	assert.equal(
+		await result({ toolName: "write", input: { path: "app.py", content: "one" }, isError: false }),
+		undefined,
+	);
+	assert.equal(await call(retest), undefined, "admitted once a well-formed write lands");
 });
 
-test("a write outside the known repo falls back to its raw path rather than crashing", async () => {
+test("an edit or write outside the known repo is not recorded as a change; inside it is", async () => {
 	const context = {
 		version: 1,
 		repo: "/workspace",
 		contract: "/workspace/contract.yaml",
 		revisions: {},
-		writable_paths: [],
+		writable_paths: ["app.py"],
 		test_command: [],
 		symbols: {},
 		carried: [],
 		base_commit: "b".repeat(40),
 	};
-	const { result } = registeredExtension({
+	const { call, result } = registeredExtension({
 		environment: { SATYRN_MUTATION_CONTEXT: JSON.stringify(context) },
 	});
+	const retest = repeated("bash", { command: "pytest -q" });
+
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await call(retest), undefined);
+	}
+	assert.equal((await call(retest))?.block, true, "sixth identical call refused before any write");
+
+	// Neither an edit nor a write outside the known repo moves any revision:
+	// per the brief, when the repo is known and the path resolves to null,
+	// no change is recorded at all -- not even under the raw path.
+	assert.equal(await result(landedEdit("/elsewhere/app.py", "one")), undefined);
+	assert.equal((await call(retest))?.block, true, "still refused after an outside-repo edit");
 	assert.equal(
-		await result({ toolName: "write", input: { path: "/elsewhere/app.py", content: "x" }, isError: false }),
+		await result({ toolName: "write", input: { path: "/elsewhere/app.py", content: "one" }, isError: false }),
 		undefined,
+	);
+	assert.equal((await call(retest))?.block, true, "still refused after an outside-repo write");
+
+	// An edit inside the known repo does move a revision, and admits the
+	// path-less command again.
+	assert.equal(await result(landedEdit("app.py", "one")), undefined);
+	assert.equal(await call(retest), undefined, "admitted after an inside-repo edit");
+
+	// A *read* naming a path outside the known repo is a different code path
+	// (resolvePath, used to key a call rather than to record a change): it
+	// falls back to the raw path rather than refusing to key the call at
+	// all, so it is bounded like any other repeated call.
+	const outsideRead = repeated("read", { path: "/elsewhere/other.py" });
+	for (let index = 0; index < THRESHOLD; index += 1) {
+		assert.equal(await call(outsideRead), undefined);
+	}
+	assert.equal(
+		(await call(outsideRead))?.block,
+		true,
+		"an outside-repo read is still bounded, keyed by its own raw path",
 	);
 });
 

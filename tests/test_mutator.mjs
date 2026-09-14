@@ -205,9 +205,8 @@ test("a write result with isError leaves the revision alone, and a new file writ
 	const requests = [];
 	const { pi, handlers } = fakePi();
 	registerMutator(pi, context(), async (request) => { requests.push(JSON.parse(request)); return success(); });
-	const [result] = handlers.tool_result;
-	await result({ toolName: "write", isError: true, input: { path: "src/app.py", content: "junk" }, content: [], details: undefined });
-	await result({ toolName: "write", isError: false, input: { path: "src/new.py", content: "x = 1\n" }, content: [], details: undefined });
+	await toolResult(handlers.tool_result, { toolName: "write", isError: true, input: { path: "src/app.py", content: "junk" }, content: [], details: undefined });
+	await toolResult(handlers.tool_result, { toolName: "write", isError: false, input: { path: "src/new.py", content: "x = 1\n" }, content: [], details: undefined });
 	const tool = registeredTools(pi).edit;   // the fake pi records registerTool calls
 	await tool.execute("1", input());
 	await tool.execute("2", { path: "src/new.py", edits: [{ oldText: "x = 1", newText: "x = 2" }] });
@@ -403,6 +402,20 @@ function registeredTools(pi) {
 	return pi._tools;
 }
 
+/** Calls every registered `tool_result` handler in turn and returns the
+ * first defined result. `registerMutator` registers two `tool_result`
+ * listeners (a write-note listener and an edit-details listener); each
+ * returns `undefined` for the other's event, so calling every handler this
+ * way -- rather than only `handlers.tool_result[0]` -- is order-independent
+ * and matches how Pi actually dispatches a result to every listener. */
+async function toolResult(handlers, event) {
+	for (const handler of handlers) {
+		const outcome = await handler(event);
+		if (outcome !== undefined) return outcome;
+	}
+	return undefined;
+}
+
 test("registered tool exposes one replacement and marks refusals as errors", async () => {
 	const { pi, handlers } = fakePi();
 	registerMutator(pi, context(), async () => success());
@@ -412,23 +425,12 @@ test("registered tool exposes one replacement and marks refusals as errors", asy
 	assert.equal(tool.parameters.properties.edits.maxItems, 1);
 	const response = await tool.execute("call", input());
 	assert.equal(response.details.ok, true);
-	// Two listeners are registered on "tool_result" (the write-note listener
-	// and this edit-details one); each returns undefined for the other's
-	// event, so calling every handler and keeping the first defined result
-	// is order-independent.
-	async function editResult(event) {
-		for (const handler of handlers.tool_result) {
-			const outcome = await handler(event);
-			if (outcome !== undefined) return outcome;
-		}
-		return undefined;
-	}
-	assert.equal(await editResult({ toolName: "edit", details: response.details }), undefined);
+	assert.equal(await toolResult(handlers.tool_result, { toolName: "edit", details: response.details }), undefined);
 	assert.deepEqual(
-		await editResult({ toolName: "edit", details: { satyrn: true, ok: false } }),
+		await toolResult(handlers.tool_result, { toolName: "edit", details: { satyrn: true, ok: false } }),
 		{ isError: true },
 	);
-	assert.equal(await editResult({ toolName: "read", details: null }), undefined);
+	assert.equal(await toolResult(handlers.tool_result, { toolName: "read", details: null }), undefined);
 });
 
 test("default extension leaves built-in edit alone without explicit context", () => {
