@@ -302,6 +302,20 @@ function successResult(replacement: ReplacementResult): MutationToolResult {
 	};
 }
 
+function definitionLine(name: string): RegExp {
+	return new RegExp(`^[ \\t]*(?:async\\s+)?(?:def|class)\\s+${name}\\b`, "m");
+}
+
+/** Base-defined symbols whose definition line is in oldText and absent from newText. */
+export function removedSymbols(oldText: string, newText: string, defined: readonly string[]): string[] {
+	return defined.filter((name) => definitionLine(name).test(oldText) && !definitionLine(name).test(newText));
+}
+
+export function symbolRefusalText(verb: "edit" | "write", name: string, path: string): string {
+	return `this ${verb} would remove \`${name}\`, which the accepted base defines in ${path}. ` +
+		"Keep the definition and change its body, or add new code beside it.";
+}
+
 function refusalResult(code: MutationToolRefusalCode, message: string): MutationToolResult {
 	return {
 		content: [{ type: "text", text: `${code}: ${message}` }],
@@ -327,6 +341,20 @@ export function createMutator(
 			}
 			try {
 				const input = parseEditInput(rawInput);
+				const symbolPath = key(input.path) ?? input.path;
+				const removed = removedSymbols(
+					input.edits[0].oldText,
+					input.edits[0].newText,
+					context.symbols[symbolPath] ?? [],
+				);
+				if (removed.length > 0) {
+					try {
+						await appendEntry("symbol_preserved", { toolName: "edit", path: symbolPath, symbols: removed });
+					} catch {
+						// evidence, not permission
+					}
+					return refusalResult("SYMBOL_REMOVED", symbolRefusalText("edit", removed[0], symbolPath));
+				}
 				const expectedSha256 = revisions.get(key(input.path) ?? input.path) ?? null;
 				const request = buildReplacementRequest(context, input, expectedSha256);
 				let response: ReplacementResponse;

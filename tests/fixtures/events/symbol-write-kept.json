@@ -1,0 +1,21 @@
+{
+  "name": "symbol-write-kept",
+  "extension": "scope.ts",
+  "context": {
+    "version": 1,
+    "repo": "/w",
+    "contract": "/w/c.yaml",
+    "revisions": {},
+    "writable_paths": ["src/*"],
+    "test_command": ["uv", "run", "python", "-m", "pytest", "-q"],
+    "symbols": {"src/a.py": ["value", "Helper"]},
+    "carried": [],
+    "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "events": [
+    {"type": "tool_call", "toolCallId": "c1", "toolName": "write",
+     "input": {"path": "src/a.py", "content": "class Helper:\n    pass\n\n\ndef value():\n    return 2\n"},
+     "expect": {"blocked": false}}
+  ],
+  "expectedEntries": []
+}

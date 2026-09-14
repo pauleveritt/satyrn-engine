@@ -1,0 +1,21 @@
+{
+  "name": "symbol-kept",
+  "extension": "mutator.ts",
+  "context": {
+    "version": 1,
+    "repo": "/w",
+    "contract": "/w/c.yaml",
+    "revisions": {},
+    "writable_paths": ["src/*"],
+    "test_command": ["uv", "run", "python", "-m", "pytest", "-q"],
+    "symbols": {"src/app.py": ["value"]},
+    "carried": [],
+    "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "events": [
+    {"type": "tool_exec", "toolCallId": "c1", "toolName": "edit",
+     "input": {"path": "src/app.py", "edits": [{"oldText": "def value():\n    return 1", "newText": "def value():\n    return 2"}]},
+     "expect": {"code": "OK"}}
+  ],
+  "expectedEntries": []
+}

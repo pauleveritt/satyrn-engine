@@ -85,7 +85,8 @@ export type AdapterRefusalCode =
 	| "ENGINE_START_FAILED"
 	| "ENGINE_TIMEOUT"
 	| "INVALID_REQUEST"
-	| "MUTATION_CONTEXT_INVALID";
+	| "MUTATION_CONTEXT_INVALID"
+	| "SYMBOL_REMOVED";
 
 /** A named adapter refusal: a transport failure the engine never sees. */
 export class AdapterRefusal extends Error {

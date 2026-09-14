@@ -10,6 +10,7 @@ import mutationExtension, {
 	parseMutationContext,
 	parseReplacementResponse,
 	registerMutator,
+	removedSymbols,
 } from "../packages/engine/mutator.ts";
 
 const FIRST_REVISION = "1".repeat(64);
@@ -38,6 +39,47 @@ const success = (revision = SECOND_REVISION, region = "1: return 2") => ({
 	code: "OK",
 	message: "",
 	result: { path: "src/app.py", sha256: revision, region },
+});
+
+test("removedSymbols names base-defined symbols whose definition line leaves the text", () => {
+	assert.deepEqual(removedSymbols("def value():\n    return 1\n", "def other():\n    return 1\n", ["value"]), ["value"]);
+	assert.deepEqual(removedSymbols("def value():\n    return 1\n", "def value():\n    return 2\n", ["value"]), []);
+	assert.deepEqual(removedSymbols("class A:\n    pass\n", "", ["A", "B"]), ["A"]);
+	assert.deepEqual(removedSymbols("def helper():\n    pass\n", "", ["value"]), []);
+	assert.deepEqual(removedSymbols("    def value(self):\n        pass\n", "    pass\n", ["value"]), ["value"]);
+});
+
+test("an edit that removes a base symbol is refused without an exchange and recorded; a body edit is not", async () => {
+	const calls = []; const entries = [];
+	const mutator = createMutator({ ...context(), symbols: { "src/app.py": ["value"] } },
+		async (request) => { calls.push(request); return success(); },
+		async (kind, data) => { entries.push({ kind, data }); });
+	const refused = await mutator.execute("1", { path: "src/app.py", edits: [{ oldText: "def value():\n    return 1", newText: "def renamed():\n    return 1" }] });
+	assert.equal(refused.details.code, "SYMBOL_REMOVED");
+	assert.match(refused.content[0].text, /would remove `value`, which the accepted base defines in src\/app\.py/);
+	assert.equal(calls.length, 0);
+	assert.deepEqual(entries, [{ kind: "symbol_preserved", data: { toolName: "edit", path: "src/app.py", symbols: ["value"] } }]);
+	const kept = await mutator.execute("2", { path: "src/app.py", edits: [{ oldText: "def value():\n    return 1", newText: "def value():\n    return 2" }] });
+	assert.equal(kept.details.ok, true);
+	assert.equal(calls.length, 1);
+});
+
+test("R5: an edit by absolute path is looked up under the same resolved symbol key, and a rename is refused", async () => {
+	// context().repo is "/workspace"; symbols are keyed by the repo-relative
+	// path, so an absolute-path edit must resolve to that same key rather than
+	// bypass the check under its own raw string.
+	const calls = []; const entries = [];
+	const mutator = createMutator({ ...context(), symbols: { "src/app.py": ["value"] } },
+		async (request) => { calls.push(request); return success(); },
+		async (kind, data) => { entries.push({ kind, data }); });
+	const refused = await mutator.execute("1", {
+		path: "/workspace/src/app.py",
+		edits: [{ oldText: "def value():\n    return 1", newText: "def renamed():\n    return 1" }],
+	});
+	assert.equal(refused.details.code, "SYMBOL_REMOVED");
+	assert.match(refused.content[0].text, /would remove `value`, which the accepted base defines in src\/app\.py/);
+	assert.equal(calls.length, 0);
+	assert.deepEqual(entries, [{ kind: "symbol_preserved", data: { toolName: "edit", path: "src/app.py", symbols: ["value"] } }]);
 });
 
 test("mutation context accepts one typed revision map", () => {

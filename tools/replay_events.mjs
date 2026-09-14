@@ -77,7 +77,7 @@ async function fakeExchange(request) {
  * result -- unlike a first-truthy-wins scan, which is what let a fixture with
  * several handlers on one extension pass while checking an intermediate
  * decision instead of the final one. */
-async function runToolCallHandlers(handlers, event) {
+export async function runToolCallHandlers(handlers, event) {
 	let result;
 	for (const handler of handlers ?? []) {
 		const handlerResult = await handler(event);
@@ -95,7 +95,7 @@ async function runToolCallHandlers(handlers, event) {
  * copy (later handlers see earlier merges), and the merged event is returned
  * only if at least one handler patched something -- "patched" means at least
  * one handler returned a patch, not only the first. */
-async function runToolResultHandlers(handlers, event) {
+export async function runToolResultHandlers(handlers, event) {
 	const currentEvent = { ...event };
 	let modified = false;
 	for (const handler of handlers ?? []) {

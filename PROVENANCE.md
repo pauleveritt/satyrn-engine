@@ -106,3 +106,8 @@
 | tests/fixtures/events/scope-carried.json | created in release-one |
 | tests/fixtures/events/scope-traversal.json | created in release-one |
 | tests/fixtures/events/scope-absolute-inside.json | created in release-one |
+| tests/fixtures/events/symbol-kept.json | created in release-one |
+| tests/fixtures/events/symbol-removed.json | created in release-one |
+| tests/fixtures/events/symbol-write-kept.json | created in release-one |
+| tests/fixtures/events/symbol-write-removed.json | created in release-one |
+| tests/test_replay_events.mjs | created in release-one |

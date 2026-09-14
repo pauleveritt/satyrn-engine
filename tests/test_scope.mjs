@@ -63,6 +63,20 @@ test("edit paths are checked too; read and bash are not", async () => {
 	assert.equal(await handler({ toolCallId: "3", toolName: "bash", input: { command: "cat docs/a.md" } }), undefined);
 });
 
+test("a write that drops a base-defined symbol is refused; a write that keeps every definition line is admitted", async () => {
+	const { pi, handlers, entries } = fakePi();
+	registerScope(pi, { ...context(), symbols: { "src/a.py": ["value", "Helper"] } });
+	const [handler] = handlers.tool_call;
+	const dropped = await handler({ toolCallId: "1", toolName: "write", input: { path: "src/a.py", content: "def value():\n    return 2\n" } });
+	assert.equal(dropped.block, true);
+	assert.match(dropped.reason, /this write would remove `Helper`, which the accepted base defines in src\/a\.py/);
+	assert.deepEqual(entries.at(-1), { kind: "symbol_preserved", data: { toolName: "write", path: "src/a.py", symbols: ["Helper"] } });
+	const kept = await handler({ toolCallId: "2", toolName: "write", input: { path: "src/a.py", content: "class Helper:\n    pass\n\n\ndef value():\n    return 2\n" } });
+	assert.equal(kept, undefined);
+	const fresh = await handler({ toolCallId: "3", toolName: "write", input: { path: "src/new.py", content: "x = 1\n" } });
+	assert.equal(fresh, undefined);   // no base symbols for a new file
+});
+
 test("the default extension registers nothing without a mutation context", () => {
 	const { pi, handlers } = fakePi();
 	scopeExtension(pi, {});

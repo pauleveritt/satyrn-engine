@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { MUTATION_CONTEXT_ENV, parseMutationContext, type MutationContext } from "./mutator.ts";
+import { MUTATION_CONTEXT_ENV, parseMutationContext, removedSymbols, symbolRefusalText, type MutationContext } from "./mutator.ts";
 import { resolveWorkspacePath } from "./paths.ts";
 
 const SCOPED_TOOLS = new Set(["write", "edit"]);
@@ -43,7 +43,22 @@ export function registerScope(pi: ExtensionAPI, context: MutationContext): void 
 				`${resolved} is carried from the accepted base and restored before every self-test; edits to it never count. ` +
 				"Add new tests beside it instead.");
 		}
-		if (resolved !== null && admits(context.writable_paths, resolved)) return undefined;
+		if (resolved !== null && admits(context.writable_paths, resolved)) {
+			if (event.toolName === "write" && typeof event.input.content === "string") {
+				const defined = context.symbols[resolved] ?? [];
+				const synthetic = defined.map((name) => `def ${name}():\n`).join("");
+				const removed = removedSymbols(synthetic, event.input.content, defined);
+				if (removed.length > 0) {
+					try {
+						await pi.appendEntry("symbol_preserved", { toolName: "write", path: resolved, symbols: removed });
+					} catch {
+						// Telemetry is evidence, not permission.
+					}
+					return { block: true, reason: symbolRefusalText("write", removed[0], resolved) };
+				}
+			}
+			return undefined;
+		}
 		const shown = resolved ?? event.input.path;
 		return refuse(event, shown, false,
 			`Path outside the contract's writable paths: ${shown}. ` +
