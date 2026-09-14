@@ -93,3 +93,6 @@
 | uv.lock | created in release-one |
 | .github/workflows/gates.yml | created in release-one |
 | tests/test_provenance.py | created in release-one |
+| src/satyrn_engine/derive.py | created in release-one |
+| tests/test_derive.py | created in release-one |
+| tests/test_integration_derive.py | created in release-one |

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from satyrn_engine.cli import main
+from satyrn_engine.cli import main, parse_args
 from satyrn_engine.exits import ExitCode
 from satyrn_engine.protocol import PROTOCOL_VERSION
 
@@ -62,6 +62,11 @@ def test_check_paths_make_no_process_or_model_calls(tmp_path: Path) -> None:
     ]
     for argv, expected in cases:
         assert main(argv) == expected
+
+
+def test_derive_request_keeps_a_leading_dash_out_of_argparse() -> None:
+    args = parse_args(["derive", "--repo", ".", "--", "-add", "a", "flag"])
+    assert args.request == ["-add", "a", "flag"]
 
 
 class _FakeStream:

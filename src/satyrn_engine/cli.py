@@ -4,6 +4,7 @@ import argparse
 import math
 import os
 import signal
+import subprocess
 import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -76,6 +77,11 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser = subparsers.add_parser("check", help="parse and validate a contract")
     check_parser.add_argument("--repo", required=True, help="working-tree root; must be a directory")
     check_parser.add_argument("contract", help="path to the contract YAML file")
+
+    derive_parser = subparsers.add_parser("derive", help="derive a contract from a request and the repository",
+                                          usage="satyrn-engine derive --repo REPO -- REQUEST...")
+    derive_parser.add_argument("--repo", required=True, help="working-tree root of a Git repository")
+    derive_parser.add_argument("request", nargs="+", help="the developer's request, as words, after --")
 
     deliver_parser = subparsers.add_parser(
         "deliver",
@@ -252,10 +258,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not _write_receipt(rendered):
             return 1
         return int(receipt.exit_code)
+    if args.command == "derive":
+        return _derive(Path(args.repo), " ".join(args.request))
     result = check(Path(args.repo), Path(args.contract))
     if result.code != ExitCode.OK:
         print(f"satyrn-engine: {result.code.name}: {result.message}", file=sys.stderr)
     return int(result.code)
+
+
+def _derive(repo: Path, request: str) -> int:
+    from .derive import DeriveError, RepoFacts, derive_contract, render_contract
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", os.fspath(repo), *args], check=True, capture_output=True, text=True).stdout
+
+    try:
+        tracked = tuple(line for line in git("ls-files").splitlines() if line)
+        head = git("rev-parse", "--verify", "HEAD^{commit}").strip()
+        git_dir = Path(git("rev-parse", "--path-format=absolute", "--git-dir").strip())
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"satyrn-engine: REPO_UNAVAILABLE: {exc}", file=sys.stderr)
+        return int(ExitCode.REPO_UNAVAILABLE)
+    pyproject = repo / "pyproject.toml"
+    facts = RepoFacts(tracked, pyproject.read_text(encoding="utf-8") if pyproject.is_file() else "", head)
+    try:
+        contract = derive_contract(request, facts)
+    except DeriveError as exc:
+        print(f"satyrn-engine: DERIVE: {exc.message}", file=sys.stderr)
+        return int(ExitCode.CONTRACT_MISSING_FIELD)
+    rendered = render_contract(contract)
+    target = git_dir / "satyrn" / "contracts" / f"{contract.id}.yaml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(rendered, encoding="utf-8")
+    sys.stdout.write(rendered)
+    print(f"satyrn-engine: contract {target}", file=sys.stderr)
+    return 0
 
 
 def _write_receipt(rendered: str) -> bool:
