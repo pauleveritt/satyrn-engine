@@ -121,6 +121,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     deliver_parser.add_argument(
+        "--token-limit",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help=(
+            "whole-attempt output-token limit, counted from the implementer's "
+            "own stream (default: the contract's token_budget, or no limit)"
+        ),
+    )
+    deliver_parser.add_argument(
         "--deadline-seconds",
         type=_positive_finite_timeout,
         default=None,
@@ -234,6 +244,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     base=args.base,
                     turn_limit=args.turn_limit,
                     deadline_seconds=args.deadline_seconds,
+                    token_limit=args.token_limit,
                 )
         except _DeliveryTerminationRequested:
             return 128 + signal.SIGTERM

@@ -5,6 +5,8 @@ No model, no network, no subprocess: validation is stubbed exactly as in
 ``_context_receipt`` helper the product path uses.
 """
 
+import io
+import json
 from pathlib import Path
 
 import pytest
@@ -151,3 +153,54 @@ def test_failed_validation_does_not_overwrite_budget_exhausted(
     assert receipt.validation is ValidationOutcome.FAILED
     assert receipt.validation_exit == 1
     assert receipt.candidate_commit == "c" * 40
+
+
+def _assistant_message_end(output: int) -> bytes:
+    return (
+        json.dumps(
+            {
+                "type": "message_end",
+                "message": {"role": "assistant", "usage": {"input": 0, "output": output}},
+            }
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def test_token_exhaustion_keeps_the_candidate_and_says_so(tmp_path: Path) -> None:
+    """The sibling of the turn-exhaustion receipt: a token trip also keeps
+    the candidate and names the tokens spent. ``tokens_used`` is 600, not
+    900, because the real stream tee (``_consume_chunk``) stops counting as
+    soon as the second of three 300-token assistant lines crosses a 500
+    token_budget -- the third line is never reached."""
+    context = _context(tmp_path, Budget(token_limit=500))
+    counter = delivery.TurnCounter()
+    pending_bytes = b""
+    exhausted = None
+    for line in (
+        _assistant_message_end(300),
+        _assistant_message_end(300),
+        _assistant_message_end(300),
+    ):
+        pending_bytes, exhausted = delivery._consume_chunk(
+            line, io.BytesIO(), pending_bytes, counter, context.budget
+        )
+        if exhausted is not None:
+            break
+    assert exhausted is BudgetState.TOKEN_EXHAUSTED
+
+    usage = BudgetUsage(exhausted, 0, 0.0, tokens_used=counter.tokens_out)
+    receipt = delivery._context_receipt(
+        context,
+        DeliveryCode.BUDGET_EXHAUSTED,
+        f"candidate created; whole-attempt {delivery._budget_exhaustion_detail(exhausted, usage)}",
+        candidate_commit="c" * 40,
+        changed_paths=("app.py",),
+        budget=context.budget,
+        budget_usage=usage,
+    )
+
+    assert receipt.code is DeliveryCode.BUDGET_EXHAUSTED
+    assert receipt.budget_usage.state is BudgetState.TOKEN_EXHAUSTED
+    assert receipt.budget.token_limit == 500 and receipt.budget_usage.tokens_used == 600
+    assert receipt.message == "candidate created; whole-attempt token budget exhausted after 600 output tokens"

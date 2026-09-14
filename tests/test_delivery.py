@@ -488,6 +488,7 @@ def test_deliver_cli_passes_base_through_to_deliver(
         base: str | None = None,
         turn_limit: int | None = None,
         deadline_seconds: float | None = None,
+        token_limit: int | None = None,
     ) -> DeliveryReceipt:
         captured["base"] = base
         return _receipt(DeliveryCode.OK)
@@ -514,6 +515,7 @@ def test_deliver_cli_passes_none_through_when_base_is_omitted(
         base: str | None = None,
         turn_limit: int | None = None,
         deadline_seconds: float | None = None,
+        token_limit: int | None = None,
     ) -> DeliveryReceipt:
         captured["base"] = base
         return _receipt(DeliveryCode.OK)
@@ -583,6 +585,7 @@ def test_deliver_cli_passes_budget_flags_through_to_deliver(
         base: str | None = None,
         turn_limit: int | None = None,
         deadline_seconds: float | None = None,
+        token_limit: int | None = None,
     ) -> DeliveryReceipt:
         captured["turn_limit"] = turn_limit
         captured["deadline_seconds"] = deadline_seconds

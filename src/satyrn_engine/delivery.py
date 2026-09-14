@@ -320,12 +320,14 @@ def deliver(
     base: str | None = None,
     turn_limit: int | None = None,
     deadline_seconds: float | None = None,
+    token_limit: int | None = None,
 ) -> DeliveryReceipt:
     """Run one command outside the caller checkout and publish one candidate.
 
-    ``turn_limit`` and ``deadline_seconds`` override the contract's own
-    ``turn_budget``/``deadline_seconds``; ``None`` means "not overridden", so
-    the contract value (or no budget) applies.
+    ``turn_limit``, ``deadline_seconds``, and ``token_limit`` override the
+    contract's own ``turn_budget``/``deadline_seconds``/``token_budget``;
+    ``None`` means "not overridden", so the contract value (or no budget)
+    applies.
     """
     repository = os.path.abspath(repo)
     checked = check(repo, contract_path)
@@ -334,9 +336,10 @@ def deliver(
         Budget(
             turn_limit if turn_limit is not None else contract.turn_budget,
             deadline_seconds if deadline_seconds is not None else contract.deadline_seconds,
+            token_limit if token_limit is not None else contract.token_budget,
         )
         if contract is not None
-        else Budget(turn_limit, deadline_seconds)
+        else Budget(turn_limit, deadline_seconds, token_limit)
     )
     if checked.code is not ExitCode.OK:
         return _receipt(
@@ -614,6 +617,22 @@ def _attempt(context: _DeliveryContext, command: tuple[str, ...], timeout: float
                     _write_cleanup_diagnostic(f"satyrn-engine: cleanup failed; retained path: {retained_path}")
 
 
+def _budget_exhaustion_detail(exhausted: BudgetState, usage: BudgetUsage) -> str:
+    """The clause that names what tripped, for the exhaustion message.
+
+    Token exhaustion is checked first by :func:`~satyrn_engine.budget.evaluate`,
+    so ``exhausted`` is one of exactly these three states here."""
+    return {
+        BudgetState.TURN_EXHAUSTED: f"turn limit exhausted after {usage.turns_used} turns",
+        BudgetState.TOKEN_EXHAUSTED: (
+            f"token budget exhausted after {usage.tokens_used} output tokens"
+        ),
+        BudgetState.DEADLINE_EXHAUSTED: (
+            f"deadline exhausted after {usage.seconds_used:.0f} seconds"
+        ),
+    }[exhausted]
+
+
 def _run_and_commit(
     context: _DeliveryContext,
     state: _AttemptState,
@@ -654,13 +673,15 @@ def _run_and_commit(
         exhausted: BudgetState | None = None
         timed_out = False
         turns_used = 0
+        tokens_used = 0
         seconds_used = 0.0
         try:
             if context.budget.declared:
                 stream = _stream_implementer(process, output, context.budget, timeout)
                 exhausted = stream.exhausted
                 timed_out = stream.command_timed_out
-                turns_used = stream.turns_used
+                turns_used = stream.counter.turns
+                tokens_used = stream.counter.tokens_out
                 seconds_used = stream.seconds_used
             else:
                 try:
@@ -687,11 +708,11 @@ def _run_and_commit(
             state.cleanup_gate = _CleanupGate.OPEN
             state.process_detail = None
         if exhausted is not None:
-            usage = BudgetUsage(exhausted, turns_used, seconds_used)
+            usage = BudgetUsage(exhausted, turns_used, seconds_used, tokens_used=tokens_used)
         elif context.budget.declared:
-            usage = BudgetUsage(BudgetState.WITHIN, turns_used, seconds_used)
+            usage = BudgetUsage(BudgetState.WITHIN, turns_used, seconds_used, tokens_used=tokens_used)
         else:
-            usage = BudgetUsage(BudgetState.NOT_DECLARED, turns_used, seconds_used)
+            usage = BudgetUsage(BudgetState.NOT_DECLARED, turns_used, seconds_used, tokens_used=tokens_used)
         _write_attempt_output(output)
         if timed_out:
             return _context_receipt(
@@ -850,17 +871,7 @@ def _run_and_commit(
             budget_usage=usage,
         )
     if exhausted is not None:
-        detail = (
-            "turn limit"
-            if exhausted is BudgetState.TURN_EXHAUSTED
-            else "deadline"
-        )
-        message = (
-            f"candidate created; whole-attempt {detail} exhausted after "
-            f"{usage.turns_used} turns"
-            if exhausted is BudgetState.TURN_EXHAUSTED
-            else f"candidate created; whole-attempt deadline exhausted after {usage.seconds_used:g} seconds"
-        )
+        message = f"candidate created; whole-attempt {_budget_exhaustion_detail(exhausted, usage)}"
         return _context_receipt(
             context,
             DeliveryCode.BUDGET_EXHAUSTED,
@@ -888,7 +899,7 @@ class _StreamOutcome:
 
     exhausted: BudgetState | None
     command_timed_out: bool
-    turns_used: int
+    counter: TurnCounter
     seconds_used: float
 
 
@@ -913,6 +924,8 @@ def _consume_chunk(
         counter.feed(line)
         if budget.turn_limit is not None and counter.turns > budget.turn_limit:
             return pending, BudgetState.TURN_EXHAUSTED
+        if budget.token_limit is not None and counter.tokens_out > budget.token_limit:
+            return pending, BudgetState.TOKEN_EXHAUSTED
     return pending, None
 
 
@@ -962,22 +975,22 @@ def _stream_implementer(
                     # remaining output so the spool tail survives and its own
                     # exit is reported, not a spurious DEADLINE_EXHAUSTED.
                     while chunk := stdout.read1(64 * 1024):
-                        pending, turn_exhausted = _consume_chunk(
+                        pending, exhausted = _consume_chunk(
                             chunk, spool, pending, counter, budget
                         )
-                        if turn_exhausted is not None:
+                        if exhausted is not None:
                             return _StreamOutcome(
-                                turn_exhausted,
+                                exhausted,
                                 False,
-                                counter.turns,
+                                counter,
                                 time.monotonic() - started,
                             )
                     break
                 return _StreamOutcome(
-                    BudgetState.DEADLINE_EXHAUSTED, False, counter.turns, elapsed
+                    BudgetState.DEADLINE_EXHAUSTED, False, counter, elapsed
                 )
             if now >= command_deadline:
-                return _StreamOutcome(None, True, counter.turns, elapsed)
+                return _StreamOutcome(None, True, counter, elapsed)
 
             wait = min(_STREAM_POLL_SECONDS, max(0.0, command_deadline - now))
             if budget.deadline_seconds is not None:
@@ -991,12 +1004,12 @@ def _stream_implementer(
             chunk = stdout.read1(64 * 1024)
             if not chunk:
                 break
-            pending, turn_exhausted = _consume_chunk(
+            pending, exhausted = _consume_chunk(
                 chunk, spool, pending, counter, budget
             )
-            if turn_exhausted is not None:
+            if exhausted is not None:
                 return _StreamOutcome(
-                    turn_exhausted, False, counter.turns, time.monotonic() - started
+                    exhausted, False, counter, time.monotonic() - started
                 )
 
         if pending:
@@ -1005,15 +1018,22 @@ def _stream_implementer(
                 return _StreamOutcome(
                     BudgetState.TURN_EXHAUSTED,
                     False,
-                    counter.turns,
+                    counter,
+                    time.monotonic() - started,
+                )
+            if budget.token_limit is not None and counter.tokens_out > budget.token_limit:
+                return _StreamOutcome(
+                    BudgetState.TOKEN_EXHAUSTED,
+                    False,
+                    counter,
                     time.monotonic() - started,
                 )
 
         try:
             process.wait(timeout=max(0.0, command_deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
-            return _StreamOutcome(None, True, counter.turns, time.monotonic() - started)
-        return _StreamOutcome(None, False, counter.turns, time.monotonic() - started)
+            return _StreamOutcome(None, True, counter, time.monotonic() - started)
+        return _StreamOutcome(None, False, counter, time.monotonic() - started)
     finally:
         selector.close()
 

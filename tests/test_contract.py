@@ -180,3 +180,34 @@ def test_load_invalid_deadline_seconds_is_refused(tmp_path: Path, value: object)
         load_contract(path)
     assert excinfo.value.code is ExitCode.CONTRACT_MISSING_FIELD
     assert "deadline_seconds" in excinfo.value.message
+
+
+def test_load_contract_with_carried_fields_and_token_budget(tmp_path: Path) -> None:
+    path = tmp_path / "c.yaml"
+    path.write_text("id: x\ntask: t\npreserve: [tests/test_a.py]\nchecks: [checks/c.py]\ntoken_budget: 32000\n", encoding="utf-8")
+    contract = load_contract(path)
+    assert contract.preserve == ("tests/test_a.py",) and contract.checks == ("checks/c.py",)
+    assert contract.token_budget == 32000
+
+
+def test_carried_fields_default_to_empty_and_token_budget_to_absent(tmp_path: Path) -> None:
+    path = tmp_path / "c.yaml"
+    path.write_text("id: x\ntask: t\n", encoding="utf-8")
+    contract = load_contract(path)
+    assert contract.preserve == () and contract.checks == () and contract.token_budget is None
+
+
+@pytest.mark.parametrize("value", ["tests", "[1]", "['']"])
+def test_load_invalid_preserve_is_refused(tmp_path: Path, value: str) -> None:
+    path = tmp_path / "c.yaml"
+    path.write_text(f"id: x\ntask: t\npreserve: {value}\n", encoding="utf-8")
+    with pytest.raises(ContractError, match="preserve"):
+        load_contract(path)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", "'32000'"])
+def test_load_invalid_token_budget_is_refused(tmp_path: Path, value: str) -> None:
+    path = tmp_path / "c.yaml"
+    path.write_text(f"id: x\ntask: t\ntoken_budget: {value}\n", encoding="utf-8")
+    with pytest.raises(ContractError, match="token_budget"):
+        load_contract(path)

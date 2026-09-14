@@ -960,11 +960,14 @@ def _stub_exhausted_stream(
     monkeypatch.setattr(
         delivery.subprocess, "Popen", lambda *args, **kwargs: _FinishedProcess()
     )
+    counter = delivery.TurnCounter()
+    for _ in range(4):
+        counter.feed('{"type":"turn_start"}')
     monkeypatch.setattr(
         delivery,
         "_stream_implementer",
         lambda process, spool, budget, timeout: delivery._StreamOutcome(
-            state, False, 4, 2.0
+            state, False, counter, 2.0
         ),
     )
     monkeypatch.setattr(

@@ -31,6 +31,9 @@ class Contract:
     test_command: tuple[str, ...] = ()
     turn_budget: int | None = None
     deadline_seconds: float | None = None
+    preserve: tuple[str, ...] = ()
+    checks: tuple[str, ...] = ()
+    token_budget: int | None = None
 
 
 def load_contract(path: Path) -> Contract:
@@ -68,6 +71,8 @@ def load_contract(path: Path) -> Contract:
 
     normalized_paths = tuple(cast(list[str], data.get("writable_paths", [])))
     normalized_command = tuple(cast(list[str], data.get("test_command", [])))
+    normalized_preserve = tuple(cast(list[str], data.get("preserve", [])))
+    normalized_checks = tuple(cast(list[str], data.get("checks", [])))
     raw_deadline = data.get("deadline_seconds")
     return Contract(
         id=data["id"],
@@ -76,6 +81,9 @@ def load_contract(path: Path) -> Contract:
         test_command=normalized_command,
         turn_budget=data.get("turn_budget"),
         deadline_seconds=None if raw_deadline is None else float(raw_deadline),
+        preserve=normalized_preserve,
+        checks=normalized_checks,
+        token_budget=data.get("token_budget"),
     )
 
 
@@ -109,12 +117,29 @@ def _field_problems(data: dict[str, object]) -> list[str]:
             case _:
                 problems.append("optional field 'test_command' must be a list")
 
+    for field in ("preserve", "checks"):
+        if field in data:
+            match data[field]:
+                case list() as paths if all(isinstance(path, str) and path.strip() for path in paths):
+                    pass
+                case list():
+                    problems.append(f"optional field {field!r} must contain only non-empty strings")
+                case _:
+                    problems.append(f"optional field {field!r} must be a list")
+
     if "turn_budget" in data:
         match data["turn_budget"]:
             case int() if not isinstance(data["turn_budget"], bool) and data["turn_budget"] > 0:
                 pass
             case _:
                 problems.append("optional field 'turn_budget' must be a positive integer")
+
+    if "token_budget" in data:
+        match data["token_budget"]:
+            case int() if not isinstance(data["token_budget"], bool) and data["token_budget"] > 0:
+                pass
+            case _:
+                problems.append("optional field 'token_budget' must be a positive integer")
 
     if "deadline_seconds" in data:
         match data["deadline_seconds"]:

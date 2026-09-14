@@ -5,6 +5,8 @@ No model, no network, no subprocess: the clock is controlled by passing
 lines. Every refusal has a sibling success (binding rule 4).
 """
 
+import json
+
 import pytest
 
 from satyrn_engine.budget import (
@@ -89,3 +91,43 @@ def test_turn_exhaustion_wins_over_deadline_when_both_are_declared() -> None:
     both limits on the same observation is named TURN_EXHAUSTED."""
     usage = evaluate(Budget(turn_limit=2, deadline_seconds=0.5), 3, 1.0)
     assert usage.state is BudgetState.TURN_EXHAUSTED
+
+
+def _assistant(output: int, input_tokens: int = 10) -> str:
+    return json.dumps({"type": "message_end", "message": {
+        "role": "assistant", "usage": {"input": input_tokens, "output": output, "cacheRead": 5000}}})
+
+
+def _entry(kind: str) -> str:
+    return json.dumps({"type": "entry_appended", "entry": {"type": "custom", "customType": kind, "data": {}}})
+
+
+def test_counter_sums_assistant_usage_tool_calls_and_guard_firings_only() -> None:
+    counter = TurnCounter()
+    for line in (
+        '{"type":"turn_start"}', _assistant(100, 50),
+        json.dumps({"type": "message_end", "message": {"role": "user"}}),
+        json.dumps({"type": "message_end", "message": {"role": "toolResult", "usage": {"output": 999}}}),
+        '{"type":"tool_execution_start","toolName":"bash"}', _assistant(20, 70),
+        '{"type":"message_update","usage":{"output":5000}}',
+        _entry("loop_broken"), _entry("command_bounded"), _entry("command_bounded"), _entry("unknown_kind"),
+    ):
+        counter.feed(line)
+    assert (counter.turns, counter.tokens_in, counter.tokens_out, counter.tool_calls) == (1, 120, 120, 1)
+    assert counter.guard_firings == {"loop_broken": 1, "scope_refused": 0, "symbol_preserved": 0,
+                                     "command_bounded": 2, "command_timed_out": 0}
+
+
+def test_a_token_limit_trips_on_the_limit_plus_one() -> None:
+    budget = Budget(token_limit=100)
+    assert evaluate(budget, 1, 0.0, tokens_used=100).state is BudgetState.WITHIN
+    assert evaluate(budget, 1, 0.0, tokens_used=101).state is BudgetState.TOKEN_EXHAUSTED
+
+
+def test_token_exhaustion_wins_over_turns_and_deadline() -> None:
+    budget = Budget(turn_limit=1, deadline_seconds=1.0, token_limit=1)
+    assert evaluate(budget, 5, 5.0, tokens_used=5).state is BudgetState.TOKEN_EXHAUSTED
+
+
+def test_a_budget_with_only_a_token_limit_is_declared() -> None:
+    assert Budget(token_limit=1).declared and not Budget().declared

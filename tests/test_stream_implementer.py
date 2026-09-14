@@ -6,6 +6,7 @@ into a real pipe so ``selectors`` can report it readable without a process.
 """
 
 import io
+import json
 import os
 from collections.abc import Callable
 
@@ -139,6 +140,42 @@ def _run_stream(
     return outcome, spool.getvalue()
 
 
+def _assistant_message_end(output: int) -> bytes:
+    return (
+        json.dumps(
+            {
+                "type": "message_end",
+                "message": {"role": "assistant", "usage": {"input": 0, "output": output}},
+            }
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def test_token_limit_exceeded_stops_the_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A token limit trips over the implementer's own assistant usage: the
+    stream stops as soon as the running total crosses it, so the third
+    300-token line is never reached and only 600 tokens are counted."""
+    data = (
+        _assistant_message_end(300) + _assistant_message_end(300) + _assistant_message_end(300)
+    )
+
+    outcome, spool = _run_stream(
+        monkeypatch,
+        data,
+        Budget(token_limit=500),
+        timeout=30.0,
+        clock=_clock(),
+    )
+
+    assert outcome.exhausted is BudgetState.TOKEN_EXHAUSTED
+    assert not outcome.command_timed_out
+    assert outcome.counter.tokens_out == 600
+    assert spool == data
+
+
 def test_turn_limit_exceeded_with_suite_passing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -157,7 +194,7 @@ def test_turn_limit_exceeded_with_suite_passing(
 
     assert outcome.exhausted is BudgetState.TURN_EXHAUSTED
     assert not outcome.command_timed_out
-    assert outcome.turns_used == 4
+    assert outcome.counter.turns == 4
     assert spool == data
 
 
@@ -204,7 +241,7 @@ def test_under_reporting_stream_is_not_believed(
     )
 
     assert outcome.exhausted is BudgetState.TURN_EXHAUSTED
-    assert outcome.turns_used == 3
+    assert outcome.counter.turns == 3
     assert spool == data
 
 
@@ -223,7 +260,7 @@ def test_within_budget_stream_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert outcome.exhausted is None
     assert not outcome.command_timed_out
-    assert outcome.turns_used == 2
+    assert outcome.counter.turns == 2
     assert spool == data
 
 
@@ -291,7 +328,7 @@ def test_deadline_drains_a_process_that_finished_before_the_deadline(
 
     assert outcome.exhausted is None
     assert not outcome.command_timed_out
-    assert outcome.turns_used == 1
+    assert outcome.counter.turns == 1
     assert spool.getvalue() == data
 
 
@@ -312,5 +349,5 @@ def test_turn_start_split_across_chunks_is_counted_once(
         stdout.close()
 
     assert outcome.exhausted is None
-    assert outcome.turns_used == 1
+    assert outcome.counter.turns == 1
     assert spool.getvalue() == data
