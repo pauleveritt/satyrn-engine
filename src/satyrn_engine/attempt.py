@@ -164,6 +164,7 @@ class AttemptContext:
     base_commit: str
     revisions: Mapping[str, str]
     symbols: Mapping[str, list[str]]
+    tracked_writable: tuple[str, ...]
     carried: tuple[str, ...]
     model: str
     engine_repo: Path
@@ -286,14 +287,26 @@ class SubprocessPiRunner:
 BASH_BOUND_SECONDS = 120  # pinned to packages/engine/bounds.ts DEFAULT_TIMEOUT_SECONDS by tests/test_bounds_pin.py
 
 
-def build_prompt(contract: Contract, existing: Sequence[str]) -> str:
-    """Build the E5 handoff prompt: every fact inline, nothing pointed at."""
+def build_prompt(contract: Contract, existing: Sequence[str], tracked: Sequence[str] = ()) -> str:
+    """Build the E5 handoff prompt: every fact inline, nothing pointed at.
+
+    ``existing`` is the writable-pattern-matched tracked *regular* files
+    (what ``AttemptContext.revisions`` holds); ``tracked`` is every
+    writable-pattern-matched tracked path regardless of regularity. R14:
+    `_prepare` refuses before this ever runs when an exact pattern names a
+    tracked symlink or directory, but the label here must not lie even in
+    isolation, so an exact pattern present in ``tracked`` but absent from
+    ``existing`` is never called "(new file)".
+    """
 
     def writable_line(pattern: str) -> str:
         beneath = sorted(path for path in existing if fnmatch(path, pattern))
         if beneath:
             return f"- {pattern}  (existing: {', '.join(beneath)})"
-        return f"- {pattern}  (new file)" if not any(char in pattern for char in "*?[") else f"- {pattern}"
+        is_exact = not any(char in pattern for char in "*?[")
+        if is_exact and pattern not in tracked:
+            return f"- {pattern}  (new file)"
+        return f"- {pattern}"
 
     def block(title: str, items: Sequence[str]) -> str:
         return f"{title}\n" + "\n".join(f"- {item}" for item in items) + "\n\n" if items else ""
@@ -405,14 +418,6 @@ def build_pi_command(
         # (2026-09-06 smoke). The name must appear here or the tool does
         # not exist, however carefully it was registered.
         #
-        # `bash` is also a pi built-in, and naming it here yields *our*
-        # bounded tool rather than a shell, because `registerTool`
-        # overrides a built-in of the same name -- which `edit` has been
-        # relying on since E4, demonstrated by the engine's own edit schema
-        # refusing calls that pi's built-in `edit` would have accepted.
-        # The smoke re-proves it per batch by reading what a `bash` call
-        # actually did.
-        #
         # Ruling 1: the runner is registered as `self_test`, not `bash` --
         # native `bash` stays native and guard 4 (bounds.ts) bounds it
         # directly, so both native tools are always kept and `self_test` is
@@ -461,7 +466,7 @@ def attempt(
         if isinstance(prepared, AttemptResult):
             pending = prepared
         else:
-            root, base_commit, revisions, symbols, carried, artifacts, engine_repo = prepared
+            root, base_commit, revisions, symbols, tracked_writable, carried, artifacts, engine_repo = prepared
             try:
                 temporary_parent = Path(tempfile.mkdtemp(prefix=".satyrn-attempt-", dir=root.parent))
             except OSError as exc:
@@ -484,6 +489,7 @@ def attempt(
                             base_commit=base_commit,
                             revisions=revisions,
                             symbols=symbols,
+                            tracked_writable=tracked_writable,
                             carried=carried,
                             model=model,
                             engine_repo=engine_repo,
@@ -537,7 +543,16 @@ def _prepare(
     git: GitRunner,
     artifact_owner: list[_ArtifactDestination],
 ) -> (
-    tuple[Path, str, dict[str, str], dict[str, list[str]], tuple[str, ...], AttemptArtifacts, Path]
+    tuple[
+        Path,
+        str,
+        dict[str, str],
+        dict[str, list[str]],
+        tuple[str, ...],
+        tuple[str, ...],
+        AttemptArtifacts,
+        Path,
+    ]
     | AttemptResult
 ):
     try:
@@ -599,6 +614,7 @@ def _prepare(
     revisions: dict[str, str] = {}
     symbols: dict[str, list[str]] = {}
     tracked_paths: list[str] = []
+    matched_tracked: list[str] = []
     for raw_path in listed.stdout.split(b"\0"):
         if not raw_path:
             continue
@@ -610,6 +626,7 @@ def _prepare(
         tracked_paths.append(normalized)
         if not any(fnmatch(normalized, pattern) for pattern in contract.writable_paths):
             continue
+        matched_tracked.append(normalized)
         try:
             content = _read_tracked_regular(root, normalized)
         except OSError as exc:
@@ -617,11 +634,34 @@ def _prepare(
         if content is not None:
             revisions[normalized] = file_sha256(content)
             symbols[normalized] = _defined_symbols(content)
+
+    # R14 (review of Ruling 3/12): an *exact* writable path (no `*`, `?` or
+    # `[`) that is tracked but not a regular file -- a symlink, a directory,
+    # or a submodule -- is refused before Pi ever starts, rather than left
+    # for scope.ts/mutator.ts to merely exclude from revisions the way a
+    # pattern-covered symlink still is. `_read_tracked_regular`'s own
+    # `O_NOFOLLOW` chain already determined this without following the
+    # symlink: `matched_tracked` holds every writable-matched tracked path,
+    # `revisions` holds only the regular ones, and the difference for an
+    # exact pattern names exactly this case.
+    non_regular_exact = sorted(
+        pattern
+        for pattern in contract.writable_paths
+        if not any(char in pattern for char in "*?[") and pattern in matched_tracked and pattern not in revisions
+    )
+    if non_regular_exact:
+        unsafe_path = non_regular_exact[0]
+        return _failed(
+            model,
+            f"writable path {unsafe_path} is tracked but is not a regular file "
+            "(symlink or directory); name the file itself",
+        )
+
     if not contract.writable_paths:
         # Ruling 12: a build task whose only writable path is a new file has
         # no revisions yet and must still run -- only a contract that names
         # no writable path at all can never have anything to write.
-        return _failed(model, "contract matches no existing tracked writable file")
+        return _failed(model, "contract names no writable path")
     carried = tuple(select_carried(contract, tracked_paths))
 
     forbidden_roots = _forbidden_artifact_roots(root, worktrees.stdout, git_dir.stdout, common_dir.stdout)
@@ -649,7 +689,16 @@ def _prepare(
     if isinstance(artifacts, str):
         return _failed(model, artifacts)
 
-    return root, head.stdout.strip().decode("ascii"), revisions, symbols, carried, artifacts, engine_repo
+    return (
+        root,
+        head.stdout.strip().decode("ascii"),
+        revisions,
+        symbols,
+        tuple(matched_tracked),
+        carried,
+        artifacts,
+        engine_repo,
+    )
 
 
 def _read_tracked_regular(root: Path, path: str) -> bytes | None:
@@ -751,7 +800,7 @@ def _run(
     child_environment = dict(environment)
     child_environment[ENGINE_REPO_ENV] = os.fspath(context.engine_repo)
     child_environment[MUTATION_CONTEXT_ENV] = mutation_context
-    prompt = build_prompt(context.contract, tuple(sorted(context.revisions)))
+    prompt = build_prompt(context.contract, tuple(sorted(context.revisions)), context.tracked_writable)
     command = build_pi_command(
         context.engine_repo,
         context.model,

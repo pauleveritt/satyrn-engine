@@ -304,6 +304,20 @@ def test_prompt_omits_empty_carried_sections_and_absent_budgets() -> None:
     assert "Budget:" not in prompt and "self_test" not in prompt
 
 
+def test_new_file_label_is_never_claimed_for_a_tracked_exact_path() -> None:
+    """R14: `_prepare` refuses before this ever runs when an exact pattern
+    names a tracked symlink or directory, but `build_prompt` must not lie in
+    isolation either -- an exact pattern present in `tracked` (matched but
+    excluded from `existing` because it is not a regular file) is neither
+    "(new file)" nor tagged "(existing: ...)"."""
+    contract = Contract(id="x", task="t", writable_paths=("app.py", "src/app/new.py"))
+    prompt = build_prompt(contract, (), tracked=("app.py",))
+    assert "- app.py  (new file)" not in prompt
+    assert "- app.py  (existing:" not in prompt
+    assert "- app.py\n" in prompt
+    assert "- src/app/new.py  (new file)\n" in prompt
+
+
 def test_pi_command_loads_every_guard_and_names_the_native_tools_plus_self_test(tmp_path: Path) -> None:
     command = build_pi_command(tmp_path, "m", "p", test_command=("uv", "run", "python", "-m", "pytest", "-q"))
     package = tmp_path / "packages" / "engine"
@@ -626,7 +640,7 @@ def test_no_writable_path_at_all_is_refused_before_pi(tmp_path: Path) -> None:
     contract.write_text("id: x\ntask: y\nwritable_paths: []\n", encoding="utf-8")
     result, *_ = _run_existing(repo, contract, FakeGit(repo))
     assert result.code is AttemptCode.ATTEMPT_FAILED
-    assert "no existing tracked" in result.message
+    assert "contract names no writable path" in result.message
 
 
 def test_a_build_tasks_only_writable_path_naming_a_new_file_still_runs(tmp_path: Path) -> None:
@@ -1179,19 +1193,60 @@ def test_head_failure_and_unsafe_or_unreadable_paths_are_refused(tmp_path: Path)
     assert result.code is AttemptCode.OK
 
 
-def test_non_file_tracked_path_is_skipped(tmp_path: Path) -> None:
-    """Ruling 12: `writable_paths` names an existing entry (`app.py`), so the
-    attempt still runs even though that entry is not a regular file and
-    contributes no revision."""
+def test_exact_writable_directory_is_refused_before_pi(tmp_path: Path) -> None:
+    """R14: `app.py` is an *exact* writable path (no `*`, `?` or `[`); once
+    the tracked entry it names is a directory rather than a regular file,
+    `_prepare` refuses the contract before Pi ever starts -- a pattern-covered
+    symlink or directory is still merely excluded from revisions (the sibling
+    test above), but an exact path that turns out not to be a regular file
+    is refused outright, per R14."""
     repo, contract, target = _repo(tmp_path)
     target.unlink()
     target.mkdir()
     pi = FakePi()
     result, _ = _run_existing(repo, contract, FakeGit(repo), pi=pi)
+    assert result.code is AttemptCode.ATTEMPT_FAILED
+    assert "writable path app.py is tracked but is not a regular file" in result.message
+    assert pi.environment is None
+
+
+def test_exact_writable_symlink_is_refused_before_pi(tmp_path: Path) -> None:
+    """R14's sibling for a symlink instead of a directory: `app.py` is the
+    contract's only exact writable path, and it is a real tracked symlink,
+    so the contract is refused before Pi ever starts and the symlink's
+    target is never touched."""
+    repo, contract, target = _repo(tmp_path)
+    outside = tmp_path / "outside.py"
+    outside.write_text("outside = True\n", encoding="utf-8")
+    target.unlink()
+    target.symlink_to(outside)
+    pi = FakePi()
+    result, _ = _run_existing(repo, contract, FakeGit(repo), pi=pi)
+    assert result.code is AttemptCode.ATTEMPT_FAILED
+    assert "writable path app.py is tracked but is not a regular file" in result.message
+    assert pi.environment is None
+    assert outside.read_text(encoding="utf-8") == "outside = True\n"
+
+
+def test_regular_sibling_of_an_exact_writable_symlink_is_accepted(tmp_path: Path) -> None:
+    """Sibling success test for R14: a tracked symlink elsewhere in the repo
+    that is *not* named by any writable pattern never enters
+    `matched_tracked`, so it cannot trigger the refusal above -- the exact
+    writable path that names a genuine regular file is accepted normally."""
+    repo, contract, target = _repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "unrelated.py").write_text("outside = True\n", encoding="utf-8")
+    unrelated_symlink = repo / "unrelated.py"
+    unrelated_symlink.symlink_to(outside / "unrelated.py")
+    git = FakeGit(repo)
+    git.overrides["ls-files"] = GitResult(0, b"app.py\0unrelated.py\0", b"")
+    pi = FakePi()
+    result, _ = _run_existing(repo, contract, git, pi=pi)
     assert result.code is AttemptCode.OK
     assert pi.environment is not None
     context = json.loads(pi.environment[attempt_module.MUTATION_CONTEXT_ENV])
-    assert context["revisions"] == {}
+    assert context["revisions"] == {"app.py": attempt_module.file_sha256(target.read_bytes())}
 
 
 @pytest.mark.parametrize("symlink_kind", ["leaf", "ancestor"])

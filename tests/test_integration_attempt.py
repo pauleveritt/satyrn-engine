@@ -122,12 +122,13 @@ def test_attempt_uses_shipped_e4_mutator_and_exports_artifacts(tmp_path: Path) -
     assert b"exercise_mutator:" not in stderr
 
 
-def test_attempt_excludes_real_tracked_symlink_from_revisions(tmp_path: Path) -> None:
-    """Ruling 12 (Task 9): `writable_paths` still names `app.py`, so this no
-    longer refuses before Pi runs -- only a contract naming no writable path
-    at all does that now. The symlink stays excluded from revisions, same as
-    before; the fake Pi's `nochange` mode proves the run still completes
-    with nothing to edit, and the symlink target is left untouched."""
+def test_attempt_refuses_an_exact_writable_path_that_is_a_real_tracked_symlink(tmp_path: Path) -> None:
+    """R14 (review of Task 9's Ruling 12): `writable_paths` names only the
+    exact path `app.py`. Once that tracked entry is a real symlink rather
+    than a regular file, `_prepare` refuses the contract before Pi ever
+    starts -- proven here against a real Git repository and a real
+    filesystem symlink, not a fake. The symlink's target is left untouched
+    because Pi never runs."""
     repo, contract, target, environment = _fixture(tmp_path)
     outside = tmp_path / "outside.py"
     outside.write_text("outside = True\n", encoding="utf-8")
@@ -145,12 +146,12 @@ def test_attempt_excludes_real_tracked_symlink_from_revisions(tmp_path: Path) ->
         "track symlink",
     )
     assert committed.returncode == 0, committed.stderr
-    environment["SATYRN_FAKE_PI_MODE"] = "nochange"
 
     result, stdout, stderr = _attempt(repo, contract, environment)
 
-    assert result.code is AttemptCode.OK
-    assert b'"reason": "fixture no change"' in stdout
+    assert result.code is AttemptCode.ATTEMPT_FAILED
+    assert "writable path app.py is tracked but is not a regular file" in result.message
+    assert stdout == b""
     assert stderr == b""
     assert outside.read_text(encoding="utf-8") == "outside = True\n"
 
