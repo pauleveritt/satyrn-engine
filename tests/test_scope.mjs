@@ -41,7 +41,7 @@ test("a write inside the scope is admitted; outside, traversal and absolute-outs
 	assert.deepEqual(entries[0], { kind: "scope_refused", data: { toolName: "write", toolCallId: "docs/a.md", path: "docs/a.md", carried: false } });
 });
 
-test("a carried path inside a writable pattern is refused as carried; a new test beside it is admitted", async () => {
+test("a carried path inside a writable pattern is refused as carried; a new test under a writable path is admitted", async () => {
 	const { pi, handlers, entries } = fakePi();
 	registerScope(pi, context());
 	const [handler] = handlers.tool_call;
@@ -49,6 +49,10 @@ test("a carried path inside a writable pattern is refused as carried; a new test
 		const refusal = await handler({ toolCallId: path, toolName: "edit", input: { path, edits: [] } });
 		assert.equal(refusal.block, true);
 		assert.match(refusal.reason, /carried from the accepted base and restored before every self-test/);
+		// Final review fix: the old sentence ("Add new tests beside it
+		// instead") pointed at a path scope usually refuses; it now names
+		// the contract's actual writable paths instead.
+		assert.match(refusal.reason, /Add new tests only under a writable path: src\/\*, tests\/\*\./);
 	}
 	assert.equal(await handler({ toolCallId: "n", toolName: "write", input: { path: "tests/test_new.py", content: "" } }), undefined);
 	assert.deepEqual(entries.at(-1).data, { toolName: "edit", toolCallId: "/w/pyproject.toml", path: "pyproject.toml", carried: true });

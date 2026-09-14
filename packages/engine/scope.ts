@@ -39,9 +39,12 @@ export function registerScope(pi: ExtensionAPI, context: MutationContext): void 
 		if (!SCOPED_TOOLS.has(event.toolName) || !isRecord(event.input) || typeof event.input.path !== "string") return undefined;
 		const resolved = resolveWorkspacePath(context.repo, event.input.path);
 		if (resolved !== null && carried.has(resolved)) {
+			// Final review fix: "beside it" told the model to write into a path
+			// a derived contract usually does not make writable. Name the
+			// writable paths the contract actually admits instead.
 			return refuse(event, resolved, true,
 				`${resolved} is carried from the accepted base and restored before every self-test; edits to it never count. ` +
-				"Add new tests beside it instead.");
+				`Add new tests only under a writable path: ${context.writable_paths.join(", ")}.`);
 		}
 		if (resolved !== null && admits(context.writable_paths, resolved)) {
 			if (event.toolName === "write" && typeof event.input.content === "string") {
