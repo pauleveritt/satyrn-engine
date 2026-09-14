@@ -4,8 +4,8 @@
 `read,edit` cost 8 of 12 successes on a repair task (one-sided Fisher
 p = 0.00067): baseline's `bash` calls were overwhelmingly `pytest`, run to
 read the failure and then edit. `run_tests` restores exactly that one
-capability -- run the suite the contract names, nothing else -- without
-reopening a shell (see
+capability -- run the suite the contract names, nothing else -- as an
+addition alongside native `bash`, not a replacement for it (see
 docs/superpowers/specs/2026-09-06-e7-model-invocable-test-runner-design.md).
 
 A failing suite is a *result*, not an error: the process ran to completion
@@ -17,16 +17,17 @@ at all -- missing or not executable -- is a refusal.
 never invoked across four smoke cells, including one that succeeded
 without ever running the suite -- the model's prior expects a `bash` tool
 that takes a `command` argument, and a closed empty schema does not match
-that prior. The TypeScript tool is renamed to `bash` and now accepts a
-`command: str` argument so the model's expectation is satisfied at the
-schema. The check that matters -- that only the contract's own command
-ever runs -- moves here, into `run_tests` itself, because a schema-level
-restriction fails invisibly (pi's schema validation runs before every
-extension hook, so a rejected call never reaches `execute` and is
-unobservable). `run_tests` now takes the model's `command` string and
-compares it against the contract's `test_command`; only a match is
-executed, and it is always the contract's own argv that runs, never the
-model's string.
+that prior. **Ruling 1 (Phase 1):** rather than shadow Pi's own `bash` under
+that name, the tool is registered as `self_test`, and native `bash` stays
+native and is always kept alongside it, bounded directly by guard 4
+(`bounds.ts`). `self_test`'s own schema is open (`command` optional and
+ignored, `additionalProperties: true`, `packages/engine/runner.ts`) so a
+model call that guesses an argument is never rejected before any hook can
+see it. The check that matters -- that only the contract's own command ever
+runs -- lives here, in `run_tests`: when the model's tool call does supply a
+`command` string it is compared (`command_matches`) against the contract's
+declared `test_command`, but it is always the contract's own argv that
+executes, never the model's string.
 """
 
 import os

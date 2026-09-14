@@ -240,7 +240,8 @@ Inside Pi with the package installed (`pi install <engine>/packages/engine`,
 derives a contract from the request and the repository — `writable_paths`
 from the files, directories and new files the request names (naming a
 non-test `.py` file also makes its test file, `tests/test_<stem>.py`,
-writable), `test_command` from `[tool.satyrn] self_test` in `pyproject.toml`
+writable, unless that test already exists — it is then preserved instead),
+`test_command` from `[tool.satyrn] self_test` in `pyproject.toml`
 or the default `uv run python -m pytest -q`, `preserve` (tracked test files
 under `tests/`) and `checks` (`checks/`), budgets of 32,000 output tokens and
 48 turns — writes it under `.git/satyrn/contracts/<id>.yaml`, and shows it. A
@@ -258,15 +259,22 @@ what to do instead; bash `timeout` set to 120 s when absent and clamped at
 tracked `conftest.py` files and tracked pytest configuration
 (`pyproject.toml`, `pytest.ini`, `setup.cfg`, `tox.ini`) are restored from the
 base into the worktree before every `self_test` run and before validation, so
-the model's edits to them never count. The receipt is written to stdout and, verbatim, to
+the model's edits to them never count; `carried.tampered` names any of those
+paths the candidate commit changed anyway (a new `tests/conftest.py` the
+model added counts). The receipt is written to stdout and, verbatim, to
 `.git/satyrn/receipts/<id>.json`; it adds `turns`, `tool_calls`, `tokens_in`,
 `tokens_out`, `guard_firings` and `carried`; `validation` is the engine's own
 run and is authoritative; `budget.state` is `token_exhausted` when the model
-spent past its token budget and the candidate is kept. The `/implement`
-notification reads as `error` unless the receipt's `code` is `OK` and
-`validation` is `passed` — `OK` with validation unavailable, timed out, not
-run, or failed still reads as an error, since a developer must never mistake
-that for a clean pass. `self_test` itself refuses with
+spent past its token budget and the candidate is kept — because Pi's stdout
+is forwarded to `attempt`'s own stdout live, line by line, while it runs
+(not copied over only after it exits), a declared token or turn budget can
+trip and end the attempt during the run rather than only label it
+afterwards. The `/implement` notification reads as `error` unless the
+receipt's `code` is `OK`, `validation` is `passed`, and `carried.tampered` is
+empty — `OK` with validation unavailable, timed out, not run, or failed, or
+with a non-empty `tampered` list, still reads as an error (and names the
+tampered paths), since a developer must never mistake any of those for a
+clean pass. `self_test` itself refuses with
 `TEST_COMMAND_UNAVAILABLE` when the carried `preserve`/`checks` set cannot be
 read or restored from the base.
 
@@ -282,11 +290,17 @@ satyrn-engine attempt --model omlx/gemma-4-12B-it-MLX-8bit CONTRACT
 
 The model is explicit: `--model` wins, then `SATYRN_MODEL`; omitting both is a
 usage error. The command freezes the parsed contract, records exact revisions
-for its tracked writable files, and starts Pi with only `read` and E4's bounded
-`edit`. Pi skills, prompt templates, themes, context files, sessions, and
+for its tracked writable files, and starts Pi with `read`, native `bash`,
+`edit`, `write`, and — only when the contract declares a `test_command` —
+`self_test` (`attempt.build_pi_command`), alongside the loaded guards (the
+loop breaker, the scope, symbol and bash-bound checks, and the `self_test`
+runner). Pi skills, prompt templates, themes, context files, sessions, and
 ambient extensions are disabled. The current worktree remains the model's
 workspace, so direct `attempt` is intended for E3's disposable worktree rather
-than a developer's checkout.
+than a developer's checkout. Pi's own stdout is forwarded to `attempt`'s
+stdout line by line while Pi runs, not copied over only after it exits, so a
+caller streaming that output (E3's budget enforcement) can act on it during
+the run.
 
 Both artifact paths are optional and must be absent. Their parents must be real
 directories outside every registered worktree and outside Git's worktree and
@@ -317,18 +331,15 @@ than uncaught Node exceptions.
 
 ## The Pi adapter
 
-The {term}`adapter` exposes the engine inside Pi as a command:
-
-```console
-/implement CONTRACT
-```
-
-The command resolves `CONTRACT` against the current working directory and
-starts E3 `deliver` there. Delivery runs the same E5 `attempt` once in a
+The {term}`adapter` exposes the engine inside Pi as the `/implement` command
+described in the section above (`/implement <request>`, confirmed in place or
+dispatched with `--go <id>` in print mode). Once dispatched, it starts E3
+`deliver` against the derived contract's absolute path under
+`.git/satyrn/contracts/`. Delivery runs the same E5 `attempt` once in a
 detached worktree. A success reports the candidate ref and commit; a refusal
-reports the exact delivery receipt code and detail. A start failure, deadline,
-crash, or malformed receipt is contained and reported by the adapter rather
-than escaping the Pi turn.
+reports the exact delivery receipt code and detail. A start failure,
+deadline, crash, or malformed receipt is contained and reported by the
+adapter rather than escaping the Pi turn.
 
 Install the Pi package from the engine checkout:
 
@@ -389,4 +400,6 @@ session or replay. The guard only sees schema-valid calls that reach
 `tool_call`; it cannot stop a loop in Pi's earlier argument validation. It also
 does not detect churn where calls keep changing their content. Contract-aware
 path and revision enforcement belongs to E4's bounded replacement rather than
-this always-on check; symbol analysis remains deferred.
+this always-on check; symbol preservation is built there (an `edit` or
+`write` that would remove a symbol the accepted base defines is refused —
+see `/implement` above).
