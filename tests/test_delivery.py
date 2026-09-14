@@ -536,6 +536,8 @@ def test_deliver_cli_parses_budget_flags() -> None:
             "3",
             "--deadline-seconds",
             "2.5",
+            "--token-limit",
+            "500",
             "contract.yaml",
             "--",
             "tool",
@@ -543,6 +545,7 @@ def test_deliver_cli_parses_budget_flags() -> None:
     )
     assert args.turn_limit == 3
     assert args.deadline_seconds == 2.5
+    assert args.token_limit == 500
 
 
 def test_deliver_cli_budget_flags_default_to_none() -> None:
@@ -551,6 +554,7 @@ def test_deliver_cli_budget_flags_default_to_none() -> None:
     args = parse_args(["deliver", "--repo", ".", "contract.yaml", "--", "tool"])
     assert args.turn_limit is None
     assert args.deadline_seconds is None
+    assert args.token_limit is None
 
 
 @pytest.mark.parametrize("turn_limit", ["0", "-1", "1.5", "nan", "not-a-number"])
@@ -558,6 +562,15 @@ def test_deliver_cli_refuses_invalid_turn_limit(turn_limit: str) -> None:
     with pytest.raises(SystemExit) as excinfo:
         parse_args(
             ["deliver", "--repo", ".", "--turn-limit", turn_limit, "contract.yaml", "--", "tool"]
+        )
+    assert excinfo.value.code == int(ExitCode.USAGE)
+
+
+@pytest.mark.parametrize("token_limit", ["0", "-1", "1.5", "nan", "not-a-number"])
+def test_deliver_cli_refuses_invalid_token_limit(token_limit: str) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        parse_args(
+            ["deliver", "--repo", ".", "--token-limit", token_limit, "contract.yaml", "--", "tool"]
         )
     assert excinfo.value.code == int(ExitCode.USAGE)
 
@@ -589,6 +602,7 @@ def test_deliver_cli_passes_budget_flags_through_to_deliver(
     ) -> DeliveryReceipt:
         captured["turn_limit"] = turn_limit
         captured["deadline_seconds"] = deadline_seconds
+        captured["token_limit"] = token_limit
         return _receipt(DeliveryCode.OK)
 
     monkeypatch.setattr(cli, "deliver", fake_deliver)
@@ -601,6 +615,8 @@ def test_deliver_cli_passes_budget_flags_through_to_deliver(
             "4",
             "--deadline-seconds",
             "1.5",
+            "--token-limit",
+            "500",
             "contract.yaml",
             "--",
             "tool",
@@ -609,6 +625,7 @@ def test_deliver_cli_passes_budget_flags_through_to_deliver(
     assert code == 0
     assert captured["turn_limit"] == 4
     assert captured["deadline_seconds"] == 1.5
+    assert captured["token_limit"] == 500
 
 
 def test_deliver_cli_requires_literal_separator() -> None:

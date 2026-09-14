@@ -18,6 +18,7 @@ from typing import BinaryIO, Literal, Protocol, TypedDict
 
 from .budget import Budget, BudgetState, BudgetUsage, TurnCounter, evaluate
 from .check import check
+from .contract import Contract
 from .exits import ExitCode
 from .runner import tail_output
 
@@ -311,6 +312,24 @@ class DeliveryReceipt:
         return json.dumps(self.payload(), ensure_ascii=True, separators=(",", ":")) + "\n"
 
 
+def _resolve_budget(
+    contract: Contract | None,
+    turn_limit: int | None,
+    deadline_seconds: float | None,
+    token_limit: int | None,
+) -> Budget:
+    """The contract's own budget fields, each overridden by an explicit
+    argument when one is given. ``None`` means "not overridden", so the
+    contract's value (or no limit, with no contract) applies."""
+    if contract is None:
+        return Budget(turn_limit, deadline_seconds, token_limit)
+    return Budget(
+        turn_limit if turn_limit is not None else contract.turn_budget,
+        deadline_seconds if deadline_seconds is not None else contract.deadline_seconds,
+        token_limit if token_limit is not None else contract.token_budget,
+    )
+
+
 def deliver(
     repo: Path,
     contract_path: Path,
@@ -332,15 +351,7 @@ def deliver(
     repository = os.path.abspath(repo)
     checked = check(repo, contract_path)
     contract = checked.contract
-    budget = (
-        Budget(
-            turn_limit if turn_limit is not None else contract.turn_budget,
-            deadline_seconds if deadline_seconds is not None else contract.deadline_seconds,
-            token_limit if token_limit is not None else contract.token_budget,
-        )
-        if contract is not None
-        else Budget(turn_limit, deadline_seconds, token_limit)
-    )
+    budget = _resolve_budget(contract, turn_limit, deadline_seconds, token_limit)
     if checked.code is not ExitCode.OK:
         return _receipt(
             repository,
@@ -914,7 +925,8 @@ def _consume_chunk(
 
     Returns ``(pending, exhausted)``. ``pending`` is the still-unterminated
     tail after every complete line has been fed; ``exhausted`` is
-    ``TURN_EXHAUSTED`` when the chunk crossed the turn limit, else ``None``.
+    ``TURN_EXHAUSTED`` when the chunk crossed the turn limit,
+    ``TOKEN_EXHAUSTED`` when it crossed the token limit, else ``None``.
     """
     spool.write(chunk)
     pending += chunk
