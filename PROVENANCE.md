@@ -91,3 +91,5 @@
 | tools/replay_orchestrator.mjs | pre-release-one-2026-09-13 @ 1ea478cbe4ac46f83454de5049c66bf9ddebe729 |
 | AGENTS.md | created in release-one |
 | uv.lock | created in release-one |
+| .github/workflows/gates.yml | created in release-one |
+| tests/test_provenance.py | created in release-one |

@@ -10,7 +10,8 @@ import sys
 from pathlib import Path
 
 TAG = "pre-release-one-2026-09-13"
-TRACKED_DIRS = ("src", "tests", "scripts", "tools", "arms", "docs")
+TRACKED_DIRS = ("src", "tests", "scripts", "tools", "arms", "docs", "packages", ".github")
+TRACKED_FILES = (".claude/settings.json",)
 TRACKED_ROOT_SUFFIXES = (".md", ".toml", ".py")
 TRACKED_ROOT_NAMES = ("Justfile", "LICENSE", ".gitignore", ".gitattributes")
 SKIP_PARTS = frozenset({"__pycache__", ".venv", "node_modules", "_build", ".pytest_cache", ".ruff_cache"})
@@ -67,6 +68,9 @@ def tracked(root: Path) -> list[str]:
             and path.name != "PROVENANCE.md"
         ):
             files.append(path.name)
+    for rel in TRACKED_FILES:
+        if (root / rel).is_file():
+            files.append(rel)
     return files
 
 
