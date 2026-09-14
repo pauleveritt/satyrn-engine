@@ -4,12 +4,11 @@ import test from "node:test";
 import { registerRunner } from "../packages/engine/runner.ts";
 
 // pi lists a tool under "Available tools" only when its registration supplies a
-// promptSnippet, and its default guidelines tell the model to "use bash for
-// file operations like ls, rg, find" whenever bash is selected and no
-// grep/find/ls tool is (pi's system-prompt builder). The engine's `bash` IS
-// selected -- it must be named in --tools or the registered tool does not exist
-// -- and it refuses every command but the contract's declared test command.
-// This line is the only place the model is told so before it tries.
+// promptSnippet. `self_test` no longer shadows native `bash` (Ruling 1, Phase 1
+// Task 4) -- it must still be named in --tools or the registered tool does not
+// exist -- and it restores the carried set, then runs only the contract's
+// declared self-test command. This line is the only place the model is told
+// so before it tries.
 
 const CONTEXT = { repo: "/repo", contract: { test_command: ["uv", "run", "pytest"] }, revisions: {} };
 
@@ -21,15 +20,15 @@ function registered() {
 }
 
 test("the bounded runner registers a prompt snippet naming its one command", () => {
-	const bash = registered().find((tool) => tool.name === "bash");
-	assert.ok(bash, "the runner registers a bash tool");
-	assert.equal(typeof bash.promptSnippet, "string");
-	assert.match(bash.promptSnippet, /only|exact/i);
+	const selfTest = registered().find((tool) => tool.name === "self_test");
+	assert.ok(selfTest, "the runner registers a self_test tool");
+	assert.equal(typeof selfTest.promptSnippet, "string");
+	assert.match(selfTest.promptSnippet, /declared self-test command/i);
 });
 
 test("the snippet does not repeat the shell exploration pi suggests", () => {
 	// The refusal direction: a snippet mentioning ls/rg/find would reinforce
 	// the guideline it exists to counteract.
-	const bash = registered().find((tool) => tool.name === "bash");
-	assert.doesNotMatch(bash.promptSnippet, /\bls\b|\brg\b|\bfind\b/);
+	const selfTest = registered().find((tool) => tool.name === "self_test");
+	assert.doesNotMatch(selfTest.promptSnippet, /\bls\b|\brg\b|\bfind\b/);
 });

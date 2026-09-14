@@ -19,6 +19,7 @@ from .runner import RunnerCode, RunnerReceipt, run_tests
 PROTOCOL_VERSION = 1
 OPERATIONS = ("check", "replace", "test")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+BASE_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 
 _MUTATION_TO_EXIT: dict[MutationCode, ExitCode] = {
     MutationCode.OK: ExitCode.OK,
@@ -71,12 +72,13 @@ class ReplaceRequest:
 
 @dataclass(frozen=True, slots=True)
 class RunTestsRequest:
-    """A contract-declared test-command protocol request."""
+    """A contract-declared self-test protocol request."""
 
     operation: Literal["test"]
     repo: Path
     contract: Path
-    command: str
+    command: str | None
+    base_commit: str | None = None
 
 
 type ProtocolRequest = CheckRequest | ReplaceRequest | RunTestsRequest
@@ -177,11 +179,22 @@ def parse_request(data: str | bytes) -> ProtocolRequest:
         case "check":
             return CheckRequest(operation=operation, repo=repo, contract=contract)
         case "test":
+            command = payload.get("command")
+            if command is not None:
+                command = _required_string(payload, "command")
+            base_commit = payload.get("base_commit")
+            if base_commit is not None and (
+                not isinstance(base_commit, str) or BASE_COMMIT_PATTERN.fullmatch(base_commit) is None
+            ):
+                raise ProtocolError(
+                    "request field 'base_commit' must be null or 40 lowercase hexadecimal characters"
+                )
             return RunTestsRequest(
                 operation=operation,
                 repo=repo,
                 contract=contract,
-                command=_required_string(payload, "command"),
+                command=command,
+                base_commit=base_commit,
             )
         case "replace":
             if not repo.is_absolute() or not contract.is_absolute():
@@ -307,7 +320,9 @@ def handle_protocol(data: str | bytes) -> tuple[str, int]:
                     _render_test_check_failure(checked.code, checked.message),
                     int(checked.code),
                 )
-            test_receipt = run_tests(request.repo, checked.contract, request.command)
+            test_receipt = run_tests(
+                request.repo, checked.contract, request.command, base_commit=request.base_commit
+            )
             return render_test_response(test_receipt), int(_RUNNER_TO_EXIT[test_receipt.code])
         case _:  # pragma: no cover - ProtocolRequest union closes here
             raise AssertionError(request)

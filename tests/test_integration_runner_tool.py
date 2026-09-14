@@ -53,7 +53,13 @@ def _node() -> str:
     pytest.skip("Node is required for the runner integration tier")
 
 
-def _fixture(tmp_path: Path, *, test_command: list[str] | None) -> Fixture:
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+
+def _fixture(
+    tmp_path: Path, *, test_command: list[str] | None, preserve: list[str] | None = None
+) -> Fixture:
     repo = tmp_path / "repo"
     repo.mkdir()
     contract = tmp_path / "contract.yaml"
@@ -61,6 +67,9 @@ def _fixture(tmp_path: Path, *, test_command: list[str] | None) -> Fixture:
     if test_command is not None:
         rendered = "\n".join(f"  - {json.dumps(token)}" for token in test_command)
         lines.append(f"test_command:\n{rendered}")
+    if preserve:
+        rendered = "\n".join(f"  - {json.dumps(token)}" for token in preserve)
+        lines.append(f"preserve:\n{rendered}")
     contract.write_text("\n".join(lines) + "\n", encoding="utf-8")
     context = tmp_path / "context.json"
     context.write_text(
@@ -70,9 +79,12 @@ def _fixture(tmp_path: Path, *, test_command: list[str] | None) -> Fixture:
     return Fixture(repo, contract, context)
 
 
-def _run(fixture: Fixture, command: str) -> tuple[subprocess.CompletedProcess[str], ExerciseBody]:
+def _run(fixture: Fixture) -> tuple[subprocess.CompletedProcess[str], ExerciseBody]:
+    # `self_test`'s schema is open and the model's argument is ignored
+    # (Ruling 1), so `exercise_runner.mjs` takes only the context file --
+    # there is no longer a command to pass through.
     completed = subprocess.run(
-        [_node(), "--experimental-strip-types", str(EXERCISE), str(fixture.context), command],
+        [_node(), "--experimental-strip-types", str(EXERCISE), str(fixture.context)],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -86,7 +98,7 @@ def test_shipped_tool_reports_a_passing_suite(tmp_path: Path) -> None:
     test_command = [sys.executable, "-c", "print('all good')"]
     fixture = _fixture(tmp_path, test_command=test_command)
 
-    completed, body = _run(fixture, " ".join(test_command))
+    completed, body = _run(fixture)
 
     assert completed.returncode == 0, completed.stderr
     assert body["details"]["ok"] is True
@@ -99,7 +111,7 @@ def test_shipped_tool_reports_a_failing_suite_as_a_result_not_an_error(tmp_path:
     test_command = [sys.executable, "-c", "assert 1 == 2, 'boom'"]
     fixture = _fixture(tmp_path, test_command=test_command)
 
-    completed, body = _run(fixture, " ".join(test_command))
+    completed, body = _run(fixture)
 
     assert completed.returncode == 0, completed.stderr
     assert body["details"]["ok"] is True
@@ -111,7 +123,7 @@ def test_shipped_tool_reports_a_failing_suite_as_a_result_not_an_error(tmp_path:
 def test_shipped_tool_reports_a_missing_test_command_as_a_named_refusal(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path, test_command=None)
 
-    completed, body = _run(fixture, "pytest")
+    completed, body = _run(fixture)
 
     assert completed.returncode == 0, completed.stderr
     assert body["details"]["ok"] is False
@@ -119,16 +131,36 @@ def test_shipped_tool_reports_a_missing_test_command_as_a_named_refusal(tmp_path
     assert body["details"]["result"] is None
 
 
-def test_shipped_tool_refuses_a_command_that_does_not_match_the_contract(tmp_path: Path) -> None:
-    test_command = [sys.executable, "-c", "print('all good')"]
-    fixture = _fixture(tmp_path, test_command=test_command)
+def test_shipped_tool_restores_a_tampered_preserve_path_before_running(tmp_path: Path) -> None:
+    """The carried set (steering C3/N2), driven through the real TS tool
+    and the real engine child, in a real git fixture: a `preserve` path
+    edited in the worktree after the base commit is restored before the
+    self-test's second (preserve) invocation ever sees it. No `base_commit`
+    travels through this JSON mutation context yet (Task 5), so the
+    restore falls back to `HEAD` -- exactly the commit made here."""
+    code = (
+        "import sys, pathlib\n"
+        "args = sys.argv[1:]\n"
+        "print(pathlib.Path(args[0]).read_text() if args else 'NO_PRESERVE_ARG')\n"
+    )
+    test_command = [sys.executable, "-c", code]
+    fixture = _fixture(tmp_path, test_command=test_command, preserve=["preserve.txt"])
+    preserve = fixture.repo / "preserve.txt"
+    preserve.write_text("original\n", encoding="utf-8")
+    _git(fixture.repo, "init", "-q")
+    _git(fixture.repo, "config", "user.email", "test@example.com")
+    _git(fixture.repo, "config", "user.name", "Test")
+    _git(fixture.repo, "add", "-A")
+    _git(fixture.repo, "commit", "-q", "-m", "base")
+    preserve.write_text("tampered\n", encoding="utf-8")  # uncommitted edit in the worktree
 
-    completed, body = _run(fixture, "rm -rf /")
+    completed, body = _run(fixture)
 
     assert completed.returncode == 0, completed.stderr
-    assert body["details"]["ok"] is False
-    assert body["details"]["code"] == "TEST_COMMAND_NOT_ALLOWED"
-    assert body["details"]["result"] is None
+    assert body["details"]["ok"] is True
+    assert "original" in body["details"]["result"]["output"]
+    assert "tampered" not in body["details"]["result"]["output"]
+    assert preserve.read_text(encoding="utf-8") == "original\n"
 
 
 def test_exercise_harness_has_distinct_usage_failure() -> None:

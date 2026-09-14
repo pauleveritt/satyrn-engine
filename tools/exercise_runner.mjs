@@ -6,11 +6,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-	DEFAULT_DEADLINE_MS,
 	exchange,
 } from "../packages/engine/orchestrator.ts";
 import {
 	createRunner,
+	SELF_TEST_DEADLINE_MS,
 } from "../packages/engine/runner.ts";
 import { parseMutationContext } from "../packages/engine/mutator.ts";
 
@@ -18,24 +18,23 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function usage(stream) {
 	stream.write(
-		"usage: node --experimental-strip-types tools/exercise_runner.mjs CONTEXT.json COMMAND\n",
+		"usage: node --experimental-strip-types tools/exercise_runner.mjs CONTEXT.json\n",
 	);
 }
 
 export async function main(arguments_, output = process.stdout, error = process.stderr) {
-	if (arguments_.length !== 2) {
+	if (arguments_.length !== 1) {
 		usage(error);
 		return 2;
 	}
 	try {
 		const [contextPath] = [arguments_[0]].map((path) => resolve(path));
-		const command = arguments_[1];
 		const context = parseMutationContext(await readFile(contextPath, "utf8"));
 		const runner = createRunner(
 			context,
-			(request) => exchange(spawn, request, root, DEFAULT_DEADLINE_MS),
+			(request) => exchange(spawn, request, root, SELF_TEST_DEADLINE_MS),
 		);
-		const result = await runner.execute("fixture", { command });
+		const result = await runner.execute("fixture", {});
 		output.write(`${JSON.stringify(result)}\n`);
 		return 0;
 	} catch (failure) {

@@ -29,7 +29,10 @@ executed, and it is always the contract's own argv that runs, never the
 model's string.
 """
 
+import os
+import re
 import subprocess
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -39,6 +42,18 @@ from .contract import Contract
 DEFAULT_TEST_TIMEOUT_SECONDS = 120.0
 TAIL_BYTES = 8192
 _TRUNCATION_MARKER = f"...[output truncated; showing final {TAIL_BYTES} bytes]...\n"
+COMPACT_TAIL_LINES = 20
+# The Interfaces prose regex (R2): the code-block version in the brief omits
+# the optional `(0:01:15)`-style duration suffix pytest appends past 60s
+# (m7), which would otherwise drop a summary line for a slow suite.
+_SUMMARY = re.compile(r"^=*\s*(\d+ \w+(, )?)+ in [\d.]+s(\s*\(\d+:\d{2}:\d{2}\))?\s*=*$")
+INFRASTRUCTURE = ("pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini")
+_QUIET: dict[str, object] = {
+    "stdin": subprocess.DEVNULL,
+    "stdout": subprocess.PIPE,
+    "stderr": subprocess.DEVNULL,
+    "check": False,
+}
 
 
 class RunnerCode(StrEnum):
@@ -114,24 +129,100 @@ def command_matches(command: str, declared: tuple[str, ...]) -> bool:
     return command.strip() == " ".join(declared)
 
 
+def compact_output(text: str) -> str:
+    """Failed and errored test ids with their first assertion line, plus the
+    summary line.
+
+    Against real ``pytest -q`` output: keep every line starting with
+    ``FAILED `` or ``ERROR `` and the final summary line (fenced or not,
+    with or without pytest's ``(H:MM:SS)`` suffix past 60s -- m7). When
+    nothing matches, the last `COMPACT_TAIL_LINES` lines stand in, so a
+    passing ``-q`` run keeps its progress dots (m3).
+    """
+    lines = text.splitlines()
+    kept = [line for line in lines if line.startswith(("FAILED ", "ERROR "))]
+    summary = next((line for line in reversed(lines) if _SUMMARY.match(line)), None)
+    if kept:
+        return "\n".join([*kept, *([summary] if summary else [])]) + "\n"
+    return "\n".join(lines[-COMPACT_TAIL_LINES:]) + ("\n" if lines else "")
+
+
+def carried_paths(repo: Path, contract: Contract, base: str) -> list[str]:
+    """`preserve` + `checks` + tracked test infrastructure, as they exist at
+    `base`: every tracked `conftest.py` and any of `INFRASTRUCTURE` that is
+    tracked. Order-preserving, deduplicated, filtered to what `base` really
+    tracks -- a path named in `preserve`/`checks` but absent at `base` is
+    silently dropped here (R3); `run_tests` reports it separately.
+    """
+    listed = subprocess.run(["git", "ls-tree", "-r", "--name-only", base], cwd=repo, **_QUIET)
+    tracked = set(listed.stdout.decode("utf-8", errors="replace").splitlines()) if listed.returncode == 0 else set()
+    wanted = [
+        *contract.preserve,
+        *contract.checks,
+        *sorted(p for p in tracked if p == "conftest.py" or p.endswith("/conftest.py")),
+        *(p for p in INFRASTRUCTURE if p in tracked),
+    ]
+    return [p for p in dict.fromkeys(wanted) if p in tracked]
+
+
+def restore_carried(repo: Path, contract: Contract, base: str) -> tuple[str, ...]:
+    """Restore the carried set from the accepted base before every
+    self-test, so a model's edits to it never count (steering C3/N2).
+    """
+    present = carried_paths(repo, contract, base)
+    if present:
+        subprocess.run(["git", "checkout", base, "--", *present], cwd=repo, **_QUIET)
+    return tuple(present)
+
+
+def _run_once(argv: list[str], repo: Path, timeout: float) -> tuple[int, str, bool, bool]:
+    env = {**os.environ, "COLUMNS": "500"}
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=repo,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=max(timeout, 0.1),
+            check=False,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        text, truncated = tail_output(exc.output if isinstance(exc.output, bytes) else b"")
+        return -1, compact_output(text), truncated, True
+    text, truncated = tail_output(completed.stdout)
+    return completed.returncode, compact_output(text), truncated, False
+
+
 def run_tests(
     repo: Path,
     contract: Contract,
-    command: str,
+    command: str | None,
     *,
+    base_commit: str | None = None,
     timeout: float = DEFAULT_TEST_TIMEOUT_SECONDS,
 ) -> RunnerReceipt:
-    """Run the contract's declared command, verbatim, with no shell.
+    """Restore the carried set from `base_commit` (or ``HEAD``), then run
+    the contract's declared command, verbatim, with no shell -- followed by
+    one more run each for `preserve` and `checks`, whichever of them the
+    carried set actually found tracked at the base (R3).
 
-    `command` is what the model's `bash` tool call supplied. It is never
-    executed itself: it is only compared (`command_matches`) against the
-    contract's own `test_command`. A mismatch is refused as
-    `TEST_COMMAND_NOT_ALLOWED`, naming the one command that is allowed so
-    the model's next call can succeed. A missing or non-executable declared
-    command is `TEST_COMMAND_UNAVAILABLE`, `ok: false`. A timeout is `OK`,
-    `ok: true`, with `result.timed_out` set. A non-zero exit is `OK`,
-    `ok: true`, with `result.exit_code` set -- a failing suite is a result,
-    not an error.
+    `command` is what the model's tool call supplied; `self_test`'s schema
+    is open and the argument is ignored (Ruling 1), so the TS side always
+    sends ``None`` here and every run uses the contract's own argv
+    regardless. When `command` is not ``None`` it is still compared
+    (`command_matches`) against the contract's `test_command`, kept for the
+    integration tier's direct calls and for any future caller that does
+    supply one; a mismatch is refused as `TEST_COMMAND_NOT_ALLOWED`, naming
+    the one command that is allowed. A missing or non-executable declared
+    command is `TEST_COMMAND_UNAVAILABLE`, `ok: false`. Every run shares one
+    deadline (m1): each gets `timeout` minus what has already elapsed, so
+    the whole self-test stays under `DEFAULT_TEST_TIMEOUT_SECONDS`, and a
+    timed-out run stops the remaining ones. `RunnerResult.output` is the
+    compact form of the runs concatenated; `exit_code` is the first
+    non-zero one, else 0.
     """
     declared = contract.test_command
     if not declared:
@@ -139,41 +230,54 @@ def run_tests(
             RunnerCode.TEST_COMMAND_UNAVAILABLE,
             "contract does not declare a test_command",
         )
-    if not command_matches(command, declared):
+    if command is not None and not command_matches(command, declared):
         allowed = " ".join(declared)
         return RunnerReceipt(
             RunnerCode.TEST_COMMAND_NOT_ALLOWED,
             f'only this exact command is allowed: "{allowed}"',
         )
-    try:
-        completed = subprocess.run(
-            list(declared),
-            cwd=repo,
-            shell=False,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        text, truncated = tail_output(exc.output if isinstance(exc.output, bytes) else b"")
-        return RunnerReceipt(
-            RunnerCode.OK,
-            result=RunnerResult(exit_code=-1, output=text, truncated=truncated, timed_out=True),
-        )
-    except OSError as exc:
-        return RunnerReceipt(
-            RunnerCode.TEST_COMMAND_UNAVAILABLE,
-            f"cannot run test command {list(declared)!r}: {exc}",
-        )
-    text, truncated = tail_output(completed.stdout)
+
+    base = base_commit or "HEAD"
+    present = restore_carried(repo, contract, base)
+    present_preserve = [path for path in contract.preserve if path in present]
+    present_checks = [path for path in contract.checks if path in present]
+
+    runs: list[list[str]] = [list(declared)]
+    if present_preserve:
+        runs.append([*declared, *present_preserve])
+    if present_checks:
+        runs.append([*declared, *present_checks])
+
+    started = time.monotonic()
+    exit_code = 0
+    exit_code_set = False
+    outputs: list[str] = []
+    truncated = False
+    timed_out = False
+    for argv in runs:
+        remaining = timeout - (time.monotonic() - started)
+        try:
+            code, text, run_truncated, run_timed_out = _run_once(argv, repo, remaining)
+        except OSError as exc:
+            return RunnerReceipt(
+                RunnerCode.TEST_COMMAND_UNAVAILABLE,
+                f"cannot run test command {argv!r}: {exc}",
+            )
+        outputs.append(text)
+        truncated = truncated or run_truncated
+        timed_out = timed_out or run_timed_out
+        if not exit_code_set and code != 0:
+            exit_code = code
+            exit_code_set = True
+        if run_timed_out:
+            break
+
     return RunnerReceipt(
         RunnerCode.OK,
         result=RunnerResult(
-            exit_code=completed.returncode,
-            output=text,
+            exit_code=exit_code,
+            output="".join(outputs),
             truncated=truncated,
-            timed_out=False,
+            timed_out=timed_out,
         ),
     )

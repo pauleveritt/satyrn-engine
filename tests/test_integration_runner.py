@@ -8,6 +8,7 @@ pure `command_matches` comparison, and the command-mismatch refusal (which
 also never spawns).
 """
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,6 +18,15 @@ from satyrn_engine.contract import Contract
 from satyrn_engine.runner import TAIL_BYTES, RunnerCode, run_tests
 
 pytestmark = pytest.mark.integration
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+
+def _git_output(repo: Path, *args: str) -> str:
+    result = subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+    return result.stdout
 
 
 def _contract(*command: str) -> Contract:
@@ -99,6 +109,45 @@ def test_a_missing_command_is_refused_as_unavailable_not_an_exception(tmp_path: 
     assert receipt.code is RunnerCode.TEST_COMMAND_UNAVAILABLE
     assert receipt.ok is False
     assert receipt.result is None
+
+
+def test_a_tampered_preserve_path_is_restored_from_base_before_the_extra_run(tmp_path: Path) -> None:
+    """The carried set (steering C3/N2): a `preserve` path is restored from
+    the accepted base into the worktree before every self-test, so a
+    model's edit to it in between never counts. The test command's second
+    invocation (with the preserve path appended, per R3) reads that path's
+    own content, so what it prints proves which content actually ran."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    preserve = repo / "preserve.txt"
+    preserve.write_text("original\n", encoding="utf-8")
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    base = _git_output(repo, "rev-parse", "HEAD").strip()
+    preserve.write_text("tampered\n", encoding="utf-8")  # uncommitted edit in the worktree
+
+    code = (
+        "import sys, pathlib\n"
+        "args = sys.argv[1:]\n"
+        "print(pathlib.Path(args[0]).read_text() if args else 'NO_PRESERVE_ARG')\n"
+    )
+    contract = Contract(
+        id="e7-preserve",
+        task="restore",
+        test_command=(sys.executable, "-c", code),
+        preserve=("preserve.txt",),
+    )
+
+    receipt = run_tests(repo, contract, None, base_commit=base)
+
+    assert receipt.ok and receipt.result is not None
+    assert "NO_PRESERVE_ARG" in receipt.result.output
+    assert "original" in receipt.result.output
+    assert "tampered" not in receipt.result.output
+    assert preserve.read_text(encoding="utf-8") == "original\n"
 
 
 def test_the_command_runs_with_cwd_set_to_the_repo(tmp_path: Path) -> None:

@@ -443,15 +443,38 @@ def test_parses_test_request() -> None:
     )
 
 
-def test_test_request_without_a_command_field_is_a_refused_invalid_request() -> None:
-    request = {
+def test_test_request_accepts_a_null_or_absent_command() -> None:
+    """`self_test`'s schema is open and the model's argument is ignored
+    (Ruling 1): both an absent and an explicit ``null`` `command` parse to
+    `command=None`, not a refusal."""
+    base_request = {
         "version": 1,
         "operation": "test",
         "repo": str(Path(__file__).parents[1]),
         "contract": str(CONTRACTS / "valid.yaml"),
     }
-    with pytest.raises(ProtocolError, match="command"):
-        parse_request(json.dumps(request))
+    absent = parse_request(json.dumps(base_request))
+    explicit_null = parse_request(json.dumps({**base_request, "command": None}))
+    assert absent.command is None
+    assert explicit_null.command is None
+
+
+def test_test_request_carries_an_optional_base_commit() -> None:
+    base_request = {
+        "version": 1,
+        "operation": "test",
+        "repo": str(Path(__file__).parents[1]),
+        "contract": str(CONTRACTS / "valid.yaml"),
+    }
+    forty_hex = "b" * 40
+    absent = parse_request(json.dumps(base_request))
+    present = parse_request(json.dumps({**base_request, "base_commit": forty_hex}))
+    assert absent.base_commit is None
+    assert present.base_commit == forty_hex
+    with pytest.raises(ProtocolError, match="base_commit"):
+        parse_request(json.dumps({**base_request, "base_commit": "not-40-hex"}))
+    with pytest.raises(ProtocolError, match="base_commit"):
+        parse_request(json.dumps({**base_request, "base_commit": 1}))
 
 
 def test_test_operation_without_declared_command_is_a_typed_refusal_not_a_crash(

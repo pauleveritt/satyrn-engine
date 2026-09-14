@@ -52,14 +52,36 @@ import {
 // since pi validates before `beforeToolCall` -- but it was not what the
 // smoke measured. See `attempt.py`'s `--tools` comment.
 
+// **Correction, 2026-09-14 (Phase 1 Task 4).** Renamed `bash` to
+// `self_test` (Ruling 1): native `bash` is now Pi's own built-in, restored
+// alongside this tool rather than overridden by it, so the two names must
+// not collide. The `command` parameter stays in the schema -- a model's
+// prior still expects one on a tool it can call with arguments -- but it
+// is now optional, described as ignored, and the schema is open
+// (`additionalProperties: true`): a guessed argument is accepted at the
+// schema layer rather than refused before any hook can observe the call.
+// The contract's own declared command always runs regardless of what is
+// supplied, exactly as before; `run_tests` also restores the carried set
+// (`preserve`, `checks`, and tracked test infrastructure) from the
+// mutation's accepted base immediately before every run, so edits to any
+// of it never count.
+
 const TestParameters = {
 	type: "object",
 	properties: {
-		command: { type: "string", minLength: 1 },
+		command: { type: "string", description: "ignored; the contract's own command always runs" },
 	},
-	required: ["command"],
-	additionalProperties: false,
+	additionalProperties: true,
 } as const;
+
+/**
+ * The TS exchange deadline for `self_test`. `runner.py:39`
+ * (`DEFAULT_TEST_TIMEOUT_SECONDS = 120.0`) owns the self-test bound; this
+ * is only its ceiling -- the 120s the runner itself may spend plus the
+ * `uv run satyrn-engine protocol` child's own start-up -- never a second
+ * independent number (I4).
+ */
+export const SELF_TEST_DEADLINE_MS = 130_000;
 
 export interface TestResult {
 	readonly exit_code: number;
@@ -117,13 +139,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-export function buildTestRequest(context: MutationContext, command: string): string {
+export function buildTestRequest(context: MutationContext): string {
+	// `context.base_commit` is added to `MutationContext` in Task 5; until
+	// then it is read structurally and defaults to `null` (R4).
+	const baseCommit = (context as MutationContext & { base_commit?: string }).base_commit ?? null;
 	return JSON.stringify({
 		version: PROTOCOL_VERSION,
 		operation: "test",
 		repo: context.repo,
 		contract: context.contract,
-		command,
+		command: null,
+		base_commit: baseCommit,
 	});
 }
 
@@ -186,19 +212,14 @@ function refusalResult(code: RunnerToolRefusalCode, message: string): RunnerTool
 	};
 }
 
-function readCommand(rawInput: unknown): string {
-	if (!isRecord(rawInput) || typeof rawInput.command !== "string" || rawInput.command.length === 0) {
-		throw new AdapterRefusal("INVALID_REQUEST", "bash tool call requires a non-empty 'command' string");
-	}
-	return rawInput.command;
-}
-
 export function createRunner(context: MutationContext, exchangeRequest: ExchangeRequest): Runner {
 	return {
-		async execute(_toolCallId: string, rawInput: unknown): Promise<RunnerToolResult> {
+		async execute(_toolCallId: string, _rawInput: unknown): Promise<RunnerToolResult> {
+			// Ruling 1: the schema is open and `command` is ignored -- any
+			// argument the model supplies is accepted, never inspected. The
+			// contract's own declared command always runs.
 			try {
-				const command = readCommand(rawInput);
-				const request = buildTestRequest(context, command);
+				const request = buildTestRequest(context);
 				const response = parseTestResponse(await exchangeRequest(request));
 				if (!response.ok || response.result === null) {
 					return refusalResult(response.code, response.message);
@@ -218,23 +239,24 @@ export function createRunner(context: MutationContext, exchangeRequest: Exchange
 export function registerRunner(pi: ExtensionAPI, context: MutationContext, exchangeRequest: ExchangeRequest): void {
 	const runner = createRunner(context, exchangeRequest);
 	pi.registerTool({
-		name: "bash",
-		label: "Run the contract's test command",
+		name: "self_test",
+		label: "Run the contract's self-test",
 		// pi lists a tool under "Available tools" only when its registration
-		// supplies this, and its default guidelines tell the model to "use bash
-		// for file operations like ls, rg, find" whenever bash is selected and
-		// no grep/find/ls tool is (system-prompt.js). This tool refuses all of
-		// that, so this line is the model's only warning before it tries.
+		// supplies this. `self_test` no longer shadows native `bash`, so pi's
+		// "use bash for ls, rg, find" guideline does not apply here -- this
+		// line only needs to say what the tool actually runs.
 		promptSnippet:
-			"runs only the contract's exact declared test command; every other command is refused",
+			"runs the contract's declared self-test command (tests carried from the base are restored first) and " +
+			"returns failed test ids; any argument is ignored",
 		description:
-			"Run a shell command. Only the contract's exact declared test command is ever executed; any other " +
-			"command is refused with a message naming the one command that is allowed, verbatim.",
+			"Run the contract's declared self-test command. Tests carried from the accepted base -- preserve " +
+			"paths, checks, and tracked test infrastructure -- are restored first, so edits to them never count. " +
+			"Any argument supplied is ignored; the contract's own command always runs.",
 		parameters: TestParameters,
 		execute: runner.execute,
 	});
 	pi.on("tool_result", async (event) => {
-		if (event.toolName !== "bash" || !isRecord(event.details) || event.details.satyrn !== true) {
+		if (event.toolName !== "self_test" || !isRecord(event.details) || event.details.satyrn !== true) {
 			return undefined;
 		}
 		return event.details.ok === true ? undefined : { isError: true };
@@ -245,6 +267,7 @@ export default function runnerExtension(
 	pi: ExtensionAPI,
 	environment: MutationEnvironment = process.env,
 	exchangeRequest?: ExchangeRequest,
+	engineExchangeFactory: typeof createEngineExchange = createEngineExchange,
 ): void {
 	const contextText = environment[MUTATION_CONTEXT_ENV];
 	const engineRepo = environment.SATYRN_ENGINE_REPO;
@@ -258,6 +281,6 @@ export default function runnerExtension(
 	registerRunner(
 		pi,
 		context,
-		exchangeRequest ?? createEngineExchange(spawn, engineRepo),
+		exchangeRequest ?? engineExchangeFactory(spawn, engineRepo, SELF_TEST_DEADLINE_MS),
 	);
 }
