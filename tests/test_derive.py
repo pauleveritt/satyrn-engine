@@ -52,6 +52,23 @@ def test_a_request_naming_nothing_is_refused() -> None:
         derive_contract("make it faster", FACTS)
 
 
+def test_a_request_naming_only_a_preserved_test_is_refused() -> None:
+    with pytest.raises(DeriveError, match="name at least one tracked file"):
+        derive_contract("Fix tests/test_cli.py", FACTS)
+
+
+def test_a_new_test_file_under_a_tracked_directory_is_writable_alone() -> None:
+    contract = derive_contract("Create tests/test_new.py", FACTS)
+    assert contract.writable_paths == ("tests/test_new.py",)
+
+
+def test_a_flat_layout_derives_the_sibling_test_and_preserves_the_existing_one() -> None:
+    tracked = ("app.py", "tests/test_value.py", "pyproject.toml")
+    contract = derive_contract("Make value() return 2 in app.py", RepoFacts(tracked, PYPROJECT, HEAD))
+    assert contract.writable_paths == ("app.py", "tests/test_app.py")
+    assert contract.preserve == ("tests/test_value.py",)
+
+
 def test_a_repo_without_a_pyproject_is_refused() -> None:
     with pytest.raises(DeriveError, match="pyproject"):
         derive_contract("Fix src/app/gate.py", RepoFacts(TRACKED, "", HEAD))

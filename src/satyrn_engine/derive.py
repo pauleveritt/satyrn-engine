@@ -71,6 +71,11 @@ def _test_for(module: str, tracked: tuple[str, ...]) -> str:
     return next((p for p in tracked if p.endswith(f"/test_{stem}.py")), f"tests/test_{stem}.py")
 
 
+def _is_test_file(token: str) -> bool:
+    basename = token.rsplit("/", 1)[-1]
+    return basename.startswith("test_") or basename.endswith("_test.py")
+
+
 def _writable_paths(request: str, tracked: tuple[str, ...], preserve: tuple[str, ...]) -> tuple[str, ...]:
     files, directories = set(tracked), _directories(tracked)
     chosen: list[str] = []
@@ -78,12 +83,13 @@ def _writable_paths(request: str, tracked: tuple[str, ...], preserve: tuple[str,
         token = raw if raw in files else raw.strip("./").rstrip("/")
         candidates: list[str] = []
         if token in files:
-            candidates.append(token)
+            if token not in preserve:
+                candidates.append(token)
         elif token in directories:
             candidates.append(f"{token}/*")
-        elif "/" in token and token.rsplit("/", 1)[0] in directories:
+        elif "/" in token and token.rsplit("/", 1)[0] in directories and token not in preserve:
             candidates.append(token)                       # a file the task will create
-        if candidates and token.endswith(".py"):
+        if candidates and token.endswith(".py") and not _is_test_file(token):
             test = _test_for(token, tracked)
             if test not in preserve:
                 candidates.append(test)
