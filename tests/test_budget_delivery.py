@@ -55,6 +55,8 @@ def test_an_undeclared_budget_payload_is_not_declared() -> None:
         "seconds_used": 0.0,
         "turn_limit": None,
         "deadline_seconds": None,
+        "token_limit": None,
+        "tokens_used": 0,
     }
 
 
@@ -72,6 +74,8 @@ def test_a_declared_budget_receipt_reports_within_and_the_declaration() -> None:
         "seconds_used": 1.5,
         "turn_limit": 3,
         "deadline_seconds": 5.0,
+        "token_limit": None,
+        "tokens_used": 0,
     }
 
 
@@ -114,6 +118,7 @@ def _stub_validation_run(
     monkeypatch: pytest.MonkeyPatch, result: delivery._TestRunResult
 ) -> None:
     monkeypatch.setattr(delivery, "_checkout_candidate", lambda *args: None)
+    monkeypatch.setattr(delivery, "restore_carried_at", lambda *args, **kwargs: delivery.Carried())
     monkeypatch.setattr(delivery, "_run_test_command", lambda *args, **kwargs: result)
 
 
@@ -239,7 +244,7 @@ def test_token_exhaustion_keeps_the_candidate_and_says_so(
                 return delivery._GitResult(0, context.base_commit.encode() + b"\n", b"")
             case ("symbolic-ref", "--quiet", "HEAD"):
                 return delivery._GitResult(1, b"", b"")
-            case ("add", "-A"):
+            case ("add", "-A", *_):
                 return delivery._GitResult(0, b"", b"")
             case ("write-tree",):
                 return delivery._GitResult(0, b"b" * 40 + b"\n", b"")

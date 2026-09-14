@@ -4,6 +4,7 @@ import io
 import json
 import os
 import signal
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,9 +13,12 @@ import pytest
 import satyrn_engine.cli as cli
 import satyrn_engine.delivery as delivery
 from satyrn_engine.attempt import AttemptCode, AttemptResult
+from satyrn_engine.budget import GUARD_KINDS, TurnCounter
 from satyrn_engine.cli import parse_args
+from satyrn_engine.contract import Contract
 from satyrn_engine.delivery import (
     DEFAULT_TIMEOUT,
+    Carried,
     DeliveryCode,
     DeliveryOutcome,
     DeliveryReceipt,
@@ -144,6 +148,12 @@ def test_receipt_matches_committed_fixture(code: DeliveryCode, fixture: str) -> 
         "validation_output",
         "worktree_path",
         "budget",
+        "turns",
+        "tool_calls",
+        "tokens_in",
+        "tokens_out",
+        "guard_firings",
+        "carried",
     ]
 
 
@@ -222,6 +232,38 @@ def test_delivery_payload_always_carries_a_validation_outcome() -> None:
     assert refused["validation"] is ValidationOutcome.NOT_APPLICABLE
 
 
+def test_guard_firings_come_from_the_counter_and_render_every_kind() -> None:
+    counter = TurnCounter()
+    for kind in ("loop_broken", "command_bounded", "command_bounded"):
+        counter.feed(json.dumps({"type": "entry_appended", "entry": {"type": "custom", "customType": kind, "data": {}}}))
+    firings = delivery.GuardFirings.from_counter(counter)
+    assert firings == delivery.GuardFirings(loop_broken=1, command_bounded=2)
+    assert firings.payload() == {
+        "loop_broken": 1,
+        "scope_refused": 0,
+        "symbol_preserved": 0,
+        "command_bounded": 2,
+        "command_timed_out": 0,
+    }
+
+
+def test_count_spool_feeds_a_finished_stream_through_the_one_counter() -> None:
+    with tempfile.TemporaryFile() as spool:
+        spool.write(
+            b'{"type":"turn_start"}\n{"type":"message_end","message":{"role":"assistant","usage":{"input":7,"output":9}}}\n'
+        )
+        counter = delivery.count_spool(spool)
+    assert (counter.turns, counter.tokens_in, counter.tokens_out) == (1, 7, 9)
+
+
+def test_receipt_payload_carries_counts_firings_and_carried_sets() -> None:
+    payload = _receipt(DeliveryCode.OK).payload()
+    assert (payload["turns"], payload["tool_calls"], payload["tokens_in"], payload["tokens_out"]) == (0, 0, 0, 0)
+    assert payload["guard_firings"] == dict.fromkeys(GUARD_KINDS, 0)
+    assert payload["carried"] == {"preserve": [], "checks": [], "infrastructure": [], "absent": [], "tampered": []}
+    assert payload["budget"]["token_limit"] is None and payload["budget"]["tokens_used"] == 0
+
+
 def test_non_candidate_receipt_records_not_applicable() -> None:
     """A refused/discarded receipt has no candidate to validate, so its
     validation is NOT_APPLICABLE -- not NOT_REQUESTED, which is reserved for
@@ -237,7 +279,7 @@ def test_receipt_rejects_a_non_validation_outcome() -> None:
 
 
 def _validation_context(
-    tmp_path: Path, test_command: tuple[str, ...]
+    tmp_path: Path, test_command: tuple[str, ...], contract: Contract | None = None
 ) -> delivery._DeliveryContext:
     return delivery._DeliveryContext(
         repository=str(tmp_path),
@@ -247,6 +289,7 @@ def _validation_context(
         base_commit="a" * 40,
         candidate_ref="refs/satyrn/candidates/validation/head",
         test_command=test_command,
+        contract=contract,
     )
 
 
@@ -269,6 +312,7 @@ def _stub_validation_run(
     monkeypatch: pytest.MonkeyPatch, result: delivery._TestRunResult
 ) -> None:
     monkeypatch.setattr(delivery, "_checkout_candidate", lambda *args: None)
+    monkeypatch.setattr(delivery, "restore_carried_at", lambda *args, **kwargs: delivery.Carried())
     monkeypatch.setattr(delivery, "_run_test_command", lambda *args, **kwargs: result)
 
 
@@ -410,6 +454,206 @@ def test_validation_checkout_failure_is_unavailable(
     assert receipt.validation is ValidationOutcome.UNAVAILABLE
     assert receipt.validation_exit is None
     assert receipt.validation_output == "cannot check out candidate commit for validation: boom"
+    assert not ran
+    assert receipt.candidate_commit == "c" * 40
+
+
+def test_validation_restores_the_carried_set_then_runs_suite_preserve_and_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R9 at validation: the carried set (preserve, checks, tracked test
+    infrastructure) is restored from the base before the suite runs, and
+    ``preserve``/``checks`` are then passed as explicit file arguments so
+    they are collected regardless of ``python_files`` or ``collect_ignore``.
+    A preserve/checks path absent at base lands in ``carried.absent``; a
+    candidate that changed a carried (or infrastructure-shaped) path is
+    named in ``carried.tampered``."""
+    contract = Contract(
+        id="validation",
+        task="t",
+        preserve=("tests/test_keep.py",),
+        checks=("checks/check_x.py", "checks/absent.py"),
+    )
+    context = _validation_context(tmp_path, ("pytest",), contract=contract)
+    git_calls: list[tuple[str, ...]] = []
+
+    def fake_git(
+        worktree: Path, environment: dict[str, str], *args: str, input_bytes: bytes | None = None
+    ) -> delivery._GitResult:
+        git_calls.append(args)
+        if args[:3] == ("ls-tree", "-r", "--name-only"):
+            return delivery._GitResult(
+                0,
+                b"app.py\npyproject.toml\ntests/conftest.py\ntests/test_keep.py\nchecks/check_x.py\n",
+                b"",
+            )
+        if args[0] == "checkout":
+            return delivery._GitResult(0, b"", b"")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(delivery, "_checkout_candidate", lambda *args: None)
+    monkeypatch.setattr(delivery, "_git", fake_git)
+
+    run_calls: list[tuple[tuple[str, ...], dict[str, str] | None]] = []
+
+    def fake_run(
+        command: tuple[str, ...],
+        cwd: Path,
+        environment: dict[str, str],
+        timeout: float,
+        *,
+        extra_env: dict[str, str] | None = None,
+    ) -> delivery._TestRunResult:
+        run_calls.append((tuple(command), extra_env))
+        return delivery._TestRunResult(returncode=0, output=b"1 passed\n")
+
+    monkeypatch.setattr(delivery, "_run_test_command", fake_run)
+
+    pending = delivery._context_receipt(
+        context,
+        DeliveryCode.OK,
+        "candidate created",
+        candidate_commit="c" * 40,
+        changed_paths=("app.py", "tests/conftest.py", "tests/test_keep.py"),
+        command_exit=0,
+    )
+
+    receipt = delivery._validate_candidate(context, _validation_state(tmp_path), pending, 30.0)
+
+    checkout_calls = [args for args in git_calls if args[0] == "checkout"]
+    assert checkout_calls == [
+        (
+            "checkout",
+            "a" * 40,
+            "--",
+            "tests/test_keep.py",
+            "checks/check_x.py",
+            "tests/conftest.py",
+            "pyproject.toml",
+        )
+    ]
+    assert run_calls == [
+        (("pytest",), {"COLUMNS": "500"}),
+        (("pytest", "tests/test_keep.py"), {"COLUMNS": "500"}),
+        (("pytest", "checks/check_x.py"), {"COLUMNS": "500"}),
+    ]
+    assert receipt.carried == Carried(
+        ("tests/test_keep.py",),
+        ("checks/check_x.py",),
+        ("tests/conftest.py", "pyproject.toml"),
+        ("checks/absent.py",),
+        ("tests/conftest.py", "tests/test_keep.py"),
+    )
+    assert receipt.validation is ValidationOutcome.PASSED
+
+
+def test_validation_with_no_preserve_or_checks_runs_one_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sibling: a contract with neither ``preserve`` nor ``checks``, in a
+    repo tracking no ``conftest.py`` or test-infrastructure config, restores
+    nothing and runs exactly the one declared command."""
+    contract = Contract(id="validation", task="t")
+    context = _validation_context(tmp_path, ("pytest",), contract=contract)
+
+    def fake_git(
+        worktree: Path, environment: dict[str, str], *args: str, input_bytes: bytes | None = None
+    ) -> delivery._GitResult:
+        if args[:3] == ("ls-tree", "-r", "--name-only"):
+            return delivery._GitResult(0, b"app.py\n", b"")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(delivery, "_checkout_candidate", lambda *args: None)
+    monkeypatch.setattr(delivery, "_git", fake_git)
+
+    run_calls: list[tuple[str, ...]] = []
+
+    def fake_run(
+        command: tuple[str, ...], cwd: Path, environment: dict[str, str], timeout: float, **kwargs: object
+    ) -> delivery._TestRunResult:
+        run_calls.append(tuple(command))
+        return delivery._TestRunResult(returncode=0, output=b"1 passed\n")
+
+    monkeypatch.setattr(delivery, "_run_test_command", fake_run)
+
+    receipt = delivery._validate_candidate(
+        context, _validation_state(tmp_path), _validation_pending(context), 30.0
+    )
+
+    assert run_calls == [("pytest",)]
+    assert receipt.carried == Carried()
+    assert receipt.validation is ValidationOutcome.PASSED
+
+
+def test_validation_ls_tree_failure_is_unavailable_and_keeps_the_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R9 applies at validation too: a base whose carried set cannot even be
+    read must not let the suite run silently without it. The candidate stays
+    kept, reported the same way an unrunnable candidate already is."""
+    contract = Contract(id="validation", task="t", preserve=("tests/test_keep.py",))
+    context = _validation_context(tmp_path, ("pytest",), contract=contract)
+    monkeypatch.setattr(delivery, "_checkout_candidate", lambda *args: None)
+    monkeypatch.setattr(
+        delivery, "_git", lambda *args, **kwargs: delivery._GitResult(128, b"", b"bad base")
+    )
+    ran = False
+
+    def unexpected_run(*args: object, **kwargs: object) -> delivery._TestRunResult:
+        nonlocal ran
+        ran = True
+        raise AssertionError("a base whose carried set cannot be read must not run a test")
+
+    monkeypatch.setattr(delivery, "_run_test_command", unexpected_run)
+
+    receipt = delivery._validate_candidate(
+        context, _validation_state(tmp_path), _validation_pending(context), 30.0
+    )
+
+    assert receipt.code is DeliveryCode.OK
+    assert receipt.validation is ValidationOutcome.UNAVAILABLE
+    assert receipt.validation_exit is None
+    assert context.base_commit in str(receipt.validation_output)
+    assert not ran
+    assert receipt.candidate_commit == "c" * 40
+
+
+def test_validation_carried_checkout_failure_is_unavailable_and_keeps_the_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sibling failure: the carried set is readable but a non-empty
+    restoration fails to check out -- also UNAVAILABLE, candidate kept."""
+    contract = Contract(id="validation", task="t", preserve=("tests/test_keep.py",))
+    context = _validation_context(tmp_path, ("pytest",), contract=contract)
+    monkeypatch.setattr(delivery, "_checkout_candidate", lambda *args: None)
+
+    def fake_git(
+        worktree: Path, environment: dict[str, str], *args: str, input_bytes: bytes | None = None
+    ) -> delivery._GitResult:
+        if args[:3] == ("ls-tree", "-r", "--name-only"):
+            return delivery._GitResult(0, b"tests/test_keep.py\n", b"")
+        if args[0] == "checkout":
+            return delivery._GitResult(128, b"", b"cannot checkout")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(delivery, "_git", fake_git)
+    ran = False
+
+    def unexpected_run(*args: object, **kwargs: object) -> delivery._TestRunResult:
+        nonlocal ran
+        ran = True
+        raise AssertionError("a carried set that cannot be restored must not run a test")
+
+    monkeypatch.setattr(delivery, "_run_test_command", unexpected_run)
+
+    receipt = delivery._validate_candidate(
+        context, _validation_state(tmp_path), _validation_pending(context), 30.0
+    )
+
+    assert receipt.code is DeliveryCode.OK
+    assert receipt.validation is ValidationOutcome.UNAVAILABLE
+    assert receipt.validation_exit is None
+    assert context.base_commit in str(receipt.validation_output)
     assert not ran
     assert receipt.candidate_commit == "c" * 40
 

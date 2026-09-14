@@ -286,9 +286,9 @@ def test_run_and_commit_reports_internal_git_failures(
                 return git_result(128, stderr=b"attachment unreadable")
             case ("symbolic-ref", "--quiet", "HEAD"):
                 return git_result(1)
-            case ("add", "-A") if failure == "add":
+            case ("add", "-A", *_) if failure == "add":
                 return git_result(128, stderr=b"add failed")
-            case ("add", "-A"):
+            case ("add", "-A", *_):
                 return git_result()
             case ("write-tree",) if failure == "write-tree":
                 return git_result(128, stderr=b"write-tree failed")
@@ -1089,7 +1089,7 @@ def test_exhausted_attempt_with_no_diff_reports_no_changes_with_exhausted_state(
                 return git_result(stdout=ctx.base_commit.encode() + b"\n")
             case ("symbolic-ref", "--quiet", "HEAD"):
                 return git_result(1)
-            case ("add", "-A"):
+            case ("add", "-A", *_):
                 return git_result()
             case ("write-tree",):
                 return git_result(stdout=b"a" * 40 + b"\n")
@@ -1138,7 +1138,7 @@ def test_exhausted_attempt_with_diff_retains_partial_candidate(
                 return git_result(stdout=ctx.base_commit.encode() + b"\n")
             case ("symbolic-ref", "--quiet", "HEAD"):
                 return git_result(1)
-            case ("add", "-A"):
+            case ("add", "-A", *_):
                 return git_result()
             case ("write-tree",):
                 return git_result(stdout=b"b" * 40 + b"\n")

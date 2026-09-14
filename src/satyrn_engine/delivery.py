@@ -16,11 +16,11 @@ from enum import Enum, StrEnum, auto
 from pathlib import Path
 from typing import BinaryIO, Literal, Protocol, TypedDict
 
-from .budget import Budget, BudgetState, BudgetUsage, TurnCounter, evaluate
+from .budget import GUARD_KINDS, Budget, BudgetState, BudgetUsage, TurnCounter, evaluate
 from .check import check
 from .contract import Contract
 from .exits import ExitCode
-from .runner import tail_output
+from .runner import INFRASTRUCTURE, select_carried, tail_output
 
 DEFAULT_TIMEOUT = 30.0
 RECEIPT_VERSION: Literal[1] = 1
@@ -146,6 +146,12 @@ class DeliveryPayload(TypedDict):
     validation_output: str | None
     worktree_path: str | None
     budget: BudgetPayload
+    turns: int
+    tool_calls: int
+    tokens_in: int
+    tokens_out: int
+    guard_firings: dict[str, int]
+    carried: dict[str, list[str]]
 
 
 class BudgetPayload(TypedDict):
@@ -156,6 +162,8 @@ class BudgetPayload(TypedDict):
     seconds_used: float
     turn_limit: int | None
     deadline_seconds: float | None
+    token_limit: int | None
+    tokens_used: int
 
 
 class _Registration(Enum):
@@ -203,6 +211,7 @@ class _DeliveryContext:
     candidate_ref: str
     test_command: tuple[str, ...] = ()
     budget: Budget = Budget()
+    contract: Contract | None = None
 
 
 @dataclass(slots=True)
@@ -240,6 +249,113 @@ class _TeardownResult:
 
 
 @dataclass(frozen=True, slots=True)
+class GuardFirings:
+    """One guard-firing count per :data:`~satyrn_engine.budget.GUARD_KINDS`.
+
+    Read from :class:`~satyrn_engine.budget.TurnCounter` -- the child's own
+    ``entry_appended`` stream, never a file the model's shell can reach
+    (Ruling 7)."""
+
+    loop_broken: int = 0
+    scope_refused: int = 0
+    symbol_preserved: int = 0
+    command_bounded: int = 0
+    command_timed_out: int = 0
+
+    @classmethod
+    def from_counter(cls, counter: TurnCounter) -> GuardFirings:
+        return cls(**{kind: counter.guard_firings[kind] for kind in GUARD_KINDS})
+
+    def payload(self) -> dict[str, int]:
+        return {kind: getattr(self, kind) for kind in GUARD_KINDS}
+
+
+@dataclass(frozen=True, slots=True)
+class Carried:
+    """R9's carried-set accounting for one validation run.
+
+    ``preserve``/``checks`` are the contract's own declared paths that were
+    tracked at the base and therefore restored; ``infrastructure`` is every
+    other restored path (tracked ``conftest.py`` files and tracked
+    :data:`~satyrn_engine.runner.INFRASTRUCTURE`); ``absent`` is a declared
+    ``preserve``/``checks`` path that was not tracked at the base, so
+    nothing was restored for it; ``tampered`` is every carried path (or any
+    infrastructure-shaped path) the candidate commit changed or added."""
+
+    preserve: tuple[str, ...] = ()
+    checks: tuple[str, ...] = ()
+    infrastructure: tuple[str, ...] = ()
+    absent: tuple[str, ...] = ()
+    tampered: tuple[str, ...] = ()
+
+    def payload(self) -> dict[str, list[str]]:
+        return {name: list(getattr(self, name)) for name in ("preserve", "checks", "infrastructure", "absent", "tampered")}
+
+
+_EMPTY_CONTRACT = Contract(id="", task="")
+_NO_GUARD_FIRINGS = GuardFirings()
+_NO_CARRIED = Carried()
+
+
+def count_spool(spool: BinaryIO) -> TurnCounter:
+    """Feed a finished spool (an anonymous temporary file) through the one
+    counter (Ruling 13): used only when no budget was declared, since a
+    declared budget already counted the same stream live."""
+    counter = TurnCounter()
+    spool.seek(0)
+    for raw in spool:
+        counter.feed(raw.decode("utf-8", errors="replace").rstrip("\n"))
+    return counter
+
+
+def _is_infrastructure(path: str) -> bool:
+    return path == "conftest.py" or path.endswith("/conftest.py") or path in INFRASTRUCTURE
+
+
+class _CarriedRestoreFailed(Exception):
+    """R9 at validation: the carried set could not be read or restored from
+    the accepted base, so validation must not silently run without it."""
+
+
+def restore_carried_at(
+    worktree: Path,
+    environment: dict[str, str],
+    base_commit: str,
+    contract: Contract | None,
+    changed_paths: tuple[str, ...],
+) -> Carried:
+    """Restore the carried set from the accepted base into the validation
+    checkout; name what the candidate touched.
+
+    Selection reuses :func:`~satyrn_engine.runner.select_carried` -- the one
+    place the carried-set rule (``preserve``, ``checks``, then tracked
+    ``conftest.py`` sorted, then tracked
+    :data:`~satyrn_engine.runner.INFRASTRUCTURE`, deduplicated and filtered
+    to what is tracked at ``base_commit``) is stated. Raises
+    :class:`_CarriedRestoreFailed` when ``git ls-tree`` on ``base_commit``
+    fails, or when restoring a non-empty carried set fails -- R9 applies at
+    validation exactly as it does before every ``self_test`` (Ruling 9)."""
+    listed = _git(worktree, environment, "ls-tree", "-r", "--name-only", base_commit)
+    if listed.returncode != 0:
+        raise _CarriedRestoreFailed(f"carried tests could not be read from base {base_commit}")
+    tracked = set(listed.stdout.decode("utf-8", errors="replace").splitlines())
+    declared = contract if contract is not None else _EMPTY_CONTRACT
+    preserve = tuple(p for p in declared.preserve if p in tracked)
+    checks = tuple(p for p in declared.checks if p in tracked)
+    selected = select_carried(declared, tracked)
+    infrastructure = tuple(p for p in selected if p not in preserve and p not in checks)
+    absent = tuple(p for p in (*declared.preserve, *declared.checks) if p not in tracked)
+    restore = [*preserve, *checks, *infrastructure]
+    if restore:
+        checked_out = _git(worktree, environment, "checkout", base_commit, "--", *restore)
+        if checked_out.returncode != 0:
+            raise _CarriedRestoreFailed(f"carried tests could not be restored from base {base_commit}")
+    carried_set = set(restore)
+    tampered = tuple(sorted(p for p in changed_paths if p in carried_set or _is_infrastructure(p)))
+    return Carried(preserve, checks, infrastructure, absent, tampered)
+
+
+@dataclass(frozen=True, slots=True)
 class DeliveryReceipt:
     """One stable machine-readable result from an accepted delivery operation."""
 
@@ -259,6 +375,12 @@ class DeliveryReceipt:
     version: Literal[1] = RECEIPT_VERSION
     budget: Budget = Budget()
     budget_usage: BudgetUsage = BudgetUsage(BudgetState.NOT_DECLARED, 0, 0.0)
+    turns: int = 0
+    tool_calls: int = 0
+    tokens_in: int = 0
+    tokens_out: int = 0
+    guard_firings: GuardFirings = GuardFirings()
+    carried: Carried = Carried()
 
     def __post_init__(self) -> None:
         if not isinstance(self.code, DeliveryCode):
@@ -269,6 +391,10 @@ class DeliveryReceipt:
             raise TypeError("budget must be a Budget")
         if not isinstance(self.budget_usage, BudgetUsage):
             raise TypeError("budget_usage must be a BudgetUsage")
+        if not isinstance(self.guard_firings, GuardFirings):
+            raise TypeError("guard_firings must be a GuardFirings")
+        if not isinstance(self.carried, Carried):
+            raise TypeError("carried must be a Carried")
 
     @property
     def outcome(self) -> DeliveryOutcome:
@@ -304,7 +430,15 @@ class DeliveryReceipt:
                 "seconds_used": self.budget_usage.seconds_used,
                 "turn_limit": self.budget.turn_limit,
                 "deadline_seconds": self.budget.deadline_seconds,
+                "token_limit": self.budget.token_limit,
+                "tokens_used": self.budget_usage.tokens_used,
             },
+            "turns": self.turns,
+            "tool_calls": self.tool_calls,
+            "tokens_in": self.tokens_in,
+            "tokens_out": self.tokens_out,
+            "guard_firings": self.guard_firings.payload(),
+            "carried": self.carried.payload(),
         }
 
     def render(self) -> str:
@@ -369,6 +503,7 @@ def deliver(
         base,
         test_command=contract.test_command,
         budget=budget,
+        contract=contract,
     )
     if isinstance(prepared, DeliveryReceipt):
         return prepared
@@ -404,6 +539,7 @@ def _preflight(
     *,
     test_command: tuple[str, ...] = (),
     budget: Budget = _NO_BUDGET,
+    contract: Contract | None = None,
 ) -> _DeliveryContext | DeliveryReceipt:
     environment_result = _sanitized_environment(repository)
     if isinstance(environment_result, str):
@@ -547,6 +683,7 @@ def _preflight(
         candidate_ref=candidate_ref,
         test_command=test_command,
         budget=budget,
+        contract=contract,
     )
 
 
@@ -605,6 +742,12 @@ def _attempt(context: _DeliveryContext, command: tuple[str, ...], timeout: float
                 validation_output=pending.validation_output,
                 budget=pending.budget,
                 budget_usage=pending.budget_usage,
+                turns=pending.turns,
+                tool_calls=pending.tool_calls,
+                tokens_in=pending.tokens_in,
+                tokens_out=pending.tokens_out,
+                guard_firings=pending.guard_firings,
+                carried=pending.carried,
             )
 
         if pending is None:  # pragma: no cover - lifecycle invariant
@@ -683,16 +826,14 @@ def _run_and_commit(
 
         exhausted: BudgetState | None = None
         timed_out = False
-        turns_used = 0
-        tokens_used = 0
         seconds_used = 0.0
+        stream_counter: TurnCounter | None = None
         try:
             if context.budget.declared:
                 stream = _stream_implementer(process, output, context.budget, timeout)
                 exhausted = stream.exhausted
                 timed_out = stream.command_timed_out
-                turns_used = stream.counter.turns
-                tokens_used = stream.counter.tokens_out
+                stream_counter = stream.counter
                 seconds_used = stream.seconds_used
             else:
                 try:
@@ -718,6 +859,12 @@ def _run_and_commit(
             # withholds `git worktree remove --force` against a live group.
             state.cleanup_gate = _CleanupGate.OPEN
             state.process_detail = None
+        # One counter either way (Ruling 13): a declared budget already ran
+        # one live over the streamed output; with none declared, the spool
+        # -- otherwise uninspected -- is fed through the same class here.
+        counter = stream_counter if stream_counter is not None else count_spool(output)
+        turns_used = counter.turns
+        tokens_used = counter.tokens_out
         if exhausted is not None:
             usage = BudgetUsage(exhausted, turns_used, seconds_used, tokens_used=tokens_used)
         elif context.budget.declared:
@@ -732,6 +879,11 @@ def _run_and_commit(
                 f"command exceeded timeout of {timeout:g} seconds",
                 budget=context.budget,
                 budget_usage=usage,
+                turns=counter.turns,
+                tool_calls=counter.tool_calls,
+                tokens_in=counter.tokens_in,
+                tokens_out=counter.tokens_out,
+                guard_firings=GuardFirings.from_counter(counter),
             )
         if exhausted is None and process.returncode != 0:
             return _context_receipt(
@@ -741,6 +893,11 @@ def _run_and_commit(
                 command_exit=process.returncode,
                 budget=context.budget,
                 budget_usage=usage,
+                turns=counter.turns,
+                tool_calls=counter.tool_calls,
+                tokens_in=counter.tokens_in,
+                tokens_out=counter.tokens_out,
+                guard_firings=GuardFirings.from_counter(counter),
             )
     finally:
         with suppress(OSError, ValueError):
@@ -758,6 +915,11 @@ def _run_and_commit(
             command_exit=0,
             budget=context.budget,
             budget_usage=usage,
+            turns=counter.turns,
+            tool_calls=counter.tool_calls,
+            tokens_in=counter.tokens_in,
+            tokens_out=counter.tokens_out,
+            guard_firings=GuardFirings.from_counter(counter),
         )
     symbolic_head = _git(state.worktree, context.environment, "symbolic-ref", "--quiet", "HEAD")
     if symbolic_head.returncode not in {0, 1}:
@@ -768,6 +930,11 @@ def _run_and_commit(
             command_exit=0,
             budget=context.budget,
             budget_usage=usage,
+            turns=counter.turns,
+            tool_calls=counter.tool_calls,
+            tokens_in=counter.tokens_in,
+            tokens_out=counter.tokens_out,
+            guard_firings=GuardFirings.from_counter(counter),
         )
     if head.stdout.strip() != context.base_commit.encode("ascii") or symbolic_head.returncode == 0:
         return _context_receipt(
@@ -777,9 +944,24 @@ def _run_and_commit(
             command_exit=0,
             budget=context.budget,
             budget_usage=usage,
+            turns=counter.turns,
+            tool_calls=counter.tool_calls,
+            tokens_in=counter.tokens_in,
+            tokens_out=counter.tokens_out,
+            guard_firings=GuardFirings.from_counter(counter),
         )
 
-    added = _git(state.worktree, context.environment, "add", "-A")
+    added = _git(
+        state.worktree,
+        context.environment,
+        "add",
+        "-A",
+        "--",
+        ".",
+        ":(exclude,glob)**/.venv/**",
+        ":(exclude,glob)**/.pytest_cache/**",
+        ":(exclude,glob)**/__pycache__/**",
+    )
     if added.returncode != 0:
         return _context_receipt(
             context,
@@ -788,6 +970,11 @@ def _run_and_commit(
             command_exit=0,
             budget=context.budget,
             budget_usage=usage,
+            turns=counter.turns,
+            tool_calls=counter.tool_calls,
+            tokens_in=counter.tokens_in,
+            tokens_out=counter.tokens_out,
+            guard_firings=GuardFirings.from_counter(counter),
         )
     tree = _git(state.worktree, context.environment, "write-tree")
     base_tree = _git(state.worktree, context.environment, "rev-parse", f"{context.base_commit}^{{tree}}")
@@ -800,6 +987,11 @@ def _run_and_commit(
             command_exit=0,
             budget=context.budget,
             budget_usage=usage,
+            turns=counter.turns,
+            tool_calls=counter.tool_calls,
+            tokens_in=counter.tokens_in,
+            tokens_out=counter.tokens_out,
+            guard_firings=GuardFirings.from_counter(counter),
         )
     if tree.stdout.strip() == base_tree.stdout.strip():
         # Decision (pinned): an exhausted attempt that produced no diff is
@@ -815,6 +1007,11 @@ def _run_and_commit(
             command_exit=0,
             budget=context.budget,
             budget_usage=usage,
+            turns=counter.turns,
+            tool_calls=counter.tool_calls,
+            tokens_in=counter.tokens_in,
+            tokens_out=counter.tokens_out,
+            guard_firings=GuardFirings.from_counter(counter),
         )
 
     commit_environment = context.environment | {
@@ -843,6 +1040,11 @@ def _run_and_commit(
             command_exit=0,
             budget=context.budget,
             budget_usage=usage,
+            turns=counter.turns,
+            tool_calls=counter.tool_calls,
+            tokens_in=counter.tokens_in,
+            tokens_out=counter.tokens_out,
+            guard_firings=GuardFirings.from_counter(counter),
         )
     candidate_commit = committed.stdout.strip().decode("ascii")
     changed = _git(
@@ -867,6 +1069,11 @@ def _run_and_commit(
             command_exit=0,
             budget=context.budget,
             budget_usage=usage,
+            turns=counter.turns,
+            tool_calls=counter.tool_calls,
+            tokens_in=counter.tokens_in,
+            tokens_out=counter.tokens_out,
+            guard_firings=GuardFirings.from_counter(counter),
         )
     raw_paths = [path for path in changed.stdout.split(b"\0") if path]
     try:
@@ -880,6 +1087,11 @@ def _run_and_commit(
             command_exit=0,
             budget=context.budget,
             budget_usage=usage,
+            turns=counter.turns,
+            tool_calls=counter.tool_calls,
+            tokens_in=counter.tokens_in,
+            tokens_out=counter.tokens_out,
+            guard_firings=GuardFirings.from_counter(counter),
         )
     if exhausted is not None:
         message = f"candidate created; whole-attempt {_budget_exhaustion_detail(exhausted, usage)}"
@@ -891,6 +1103,11 @@ def _run_and_commit(
             changed_paths=changed_paths,
             budget=context.budget,
             budget_usage=usage,
+            turns=counter.turns,
+            tool_calls=counter.tool_calls,
+            tokens_in=counter.tokens_in,
+            tokens_out=counter.tokens_out,
+            guard_firings=GuardFirings.from_counter(counter),
         )
     return _context_receipt(
         context,
@@ -901,6 +1118,11 @@ def _run_and_commit(
         command_exit=0,
         budget=context.budget,
         budget_usage=usage,
+        turns=counter.turns,
+        tool_calls=counter.tool_calls,
+        tokens_in=counter.tokens_in,
+        tokens_out=counter.tokens_out,
+        guard_firings=GuardFirings.from_counter(counter),
     )
 
 
@@ -1077,6 +1299,12 @@ def _publish(context: _DeliveryContext, pending: DeliveryReceipt) -> DeliveryRec
             validation_output=pending.validation_output,
             budget=pending.budget,
             budget_usage=pending.budget_usage,
+            turns=pending.turns,
+            tool_calls=pending.tool_calls,
+            tokens_in=pending.tokens_in,
+            tokens_out=pending.tokens_out,
+            guard_firings=pending.guard_firings,
+            carried=pending.carried,
         )
     return _context_receipt(
         context,
@@ -1090,6 +1318,12 @@ def _publish(context: _DeliveryContext, pending: DeliveryReceipt) -> DeliveryRec
         validation_output=pending.validation_output,
         budget=pending.budget,
         budget_usage=pending.budget_usage,
+        turns=pending.turns,
+        tool_calls=pending.tool_calls,
+        tokens_in=pending.tokens_in,
+        tokens_out=pending.tokens_out,
+        guard_firings=pending.guard_firings,
+        carried=pending.carried,
     )
 
 
@@ -1113,6 +1347,8 @@ def _run_test_command(
     cwd: Path,
     environment: dict[str, str],
     timeout: float,
+    *,
+    extra_env: dict[str, str] | None = None,
 ) -> _TestRunResult:
     """Run the contract's own command verbatim and shell-free, once.
 
@@ -1121,16 +1357,20 @@ def _run_test_command(
     must not orphan descendants into the isolated worktree, which would block
     its removal. On timeout the whole group is torn down with
     ``_teardown_process_group`` before the partial output is returned.
+    ``extra_env`` overlays ``environment`` (used to widen ``COLUMNS`` for a
+    validation run without touching the base environment every other caller
+    shares).
 
     This module-level function is the test seam (and therefore the extension
     seam): the default tier monkeypatches it exactly as it does ``_git``.
     The real subprocess behaviour belongs to the integration tier.
     """
+    env = environment if not extra_env else {**environment, **extra_env}
     try:
         process = subprocess.Popen(
             list(command),
             cwd=cwd,
-            env=environment,
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -1239,51 +1479,89 @@ def _validate_candidate(
             validation_output=checkout_error,
         )
 
-    result = _run_test_command(test_command, state.worktree, context.environment, timeout)
-    if result.unavailable is not None:
+    # R9 applies at validation too: the carried set (preserve, checks, and
+    # tracked test infrastructure) is restored from the accepted base before
+    # the suite runs, exactly as it is before every self_test. A restoration
+    # that could not be trusted -- ls-tree on the base failed, or checkout of
+    # a non-empty carried set failed -- must not let validation run silently
+    # without it; that is reported the same way an unrunnable candidate
+    # already is (UNAVAILABLE), keeping the candidate.
+    try:
+        carried = restore_carried_at(
+            state.worktree,
+            context.environment,
+            context.base_commit,
+            context.contract,
+            pending.changed_paths or (),
+        )
+    except _CarriedRestoreFailed as exc:
         return _validated(
             pending,
             validation=ValidationOutcome.UNAVAILABLE,
             validation_exit=None,
-            validation_output=result.unavailable,
+            validation_output=str(exc),
         )
-    if result.timed_out:
-        output, _ = tail_output(result.output)
-        return _validated(
-            pending,
-            validation=ValidationOutcome.TIMED_OUT,
-            validation_exit=None,
-            validation_output=output,
-        )
+    pending = replace(pending, carried=carried)
 
-    output, _ = tail_output(result.output)
-    match result.returncode:
-        case 0:
+    runs: list[tuple[str, ...]] = [test_command]
+    if carried.preserve:
+        runs.append((*test_command, *carried.preserve))
+    if carried.checks:
+        runs.append((*test_command, *carried.checks))
+
+    outputs: list[str] = []
+    exit_code: int | None = None
+    for argv in runs:
+        result = _run_test_command(
+            argv, state.worktree, context.environment, timeout, extra_env={"COLUMNS": "500"}
+        )
+        if result.unavailable is not None:
+            return _validated(
+                pending,
+                validation=ValidationOutcome.UNAVAILABLE,
+                validation_exit=None,
+                validation_output=result.unavailable,
+            )
+        output, _ = tail_output(result.output)
+        outputs.append(output)
+        if result.timed_out:
+            return _validated(
+                pending,
+                validation=ValidationOutcome.TIMED_OUT,
+                validation_exit=None,
+                validation_output="\n".join(outputs),
+            )
+        if exit_code is None and result.returncode != 0:
+            exit_code = result.returncode
+
+    joined_output = "\n".join(outputs)
+    match exit_code:
+        case None:
             return _validated(
                 pending,
                 validation=ValidationOutcome.PASSED,
                 validation_exit=0,
-                validation_output=output,
+                validation_output=joined_output,
             )
-        case exit_code:
+        case failed_exit_code:
             if pending.code is DeliveryCode.BUDGET_EXHAUSTED:
                 return _validated(
                     pending,
                     validation=ValidationOutcome.FAILED,
-                    validation_exit=exit_code,
-                    validation_output=output,
+                    validation_exit=failed_exit_code,
+                    validation_output=joined_output,
                     message=(
                         "candidate created (budget exhausted); "
-                        f"contract test_command failed with exit {exit_code}"
+                        f"contract test_command failed with exit {failed_exit_code}"
                     ),
                 )
             return _validated(
                 pending,
                 validation=ValidationOutcome.FAILED,
-                validation_exit=exit_code,
-                validation_output=output,
+                validation_exit=failed_exit_code,
+                validation_output=joined_output,
                 code=DeliveryCode.TESTS_FAILED,
-                message=f"candidate created; contract test_command failed with exit {exit_code}",
+                message=f"candidate created; contract test_command failed with exit {failed_exit_code}",
             )
 
 
@@ -1540,6 +1818,12 @@ def _context_receipt(
     validation_output: str | None = None,
     budget: Budget | None = None,
     budget_usage: BudgetUsage | None = None,
+    turns: int = 0,
+    tool_calls: int = 0,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+    guard_firings: GuardFirings = _NO_GUARD_FIRINGS,
+    carried: Carried = _NO_CARRIED,
 ) -> DeliveryReceipt:
     return _receipt(
         context.repository,
@@ -1557,6 +1841,12 @@ def _context_receipt(
         validation_output=validation_output,
         budget=context.budget if budget is None else budget,
         budget_usage=budget_usage,
+        turns=turns,
+        tool_calls=tool_calls,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        guard_firings=guard_firings,
+        carried=carried,
     )
 
 
@@ -1577,6 +1867,12 @@ def _receipt(
     validation_output: str | None = None,
     budget: Budget | None = None,
     budget_usage: BudgetUsage | None = None,
+    turns: int = 0,
+    tool_calls: int = 0,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+    guard_firings: GuardFirings = _NO_GUARD_FIRINGS,
+    carried: Carried = _NO_CARRIED,
 ) -> DeliveryReceipt:
     declared = budget if budget is not None else Budget()
     if budget_usage is not None:
@@ -1601,4 +1897,10 @@ def _receipt(
         validation_output=validation_output,
         budget=declared,
         budget_usage=usage,
+        turns=turns,
+        tool_calls=tool_calls,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        guard_firings=guard_firings,
+        carried=carried,
     )

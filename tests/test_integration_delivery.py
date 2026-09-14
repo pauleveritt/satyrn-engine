@@ -175,6 +175,26 @@ def test_clean_root_reaches_no_changes_without_touching_source(tmp_path: Path) -
             "seconds_used": 0.0,
             "turn_limit": None,
             "deadline_seconds": None,
+            "token_limit": None,
+            "tokens_used": 0,
+        },
+        "turns": 0,
+        "tool_calls": 0,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "guard_firings": {
+            "loop_broken": 0,
+            "scope_refused": 0,
+            "symbol_preserved": 0,
+            "command_bounded": 0,
+            "command_timed_out": 0,
+        },
+        "carried": {
+            "preserve": [],
+            "checks": [],
+            "infrastructure": [],
+            "absent": [],
+            "tampered": [],
         },
     }
     assert_source_unchanged(repo, before)
@@ -422,6 +442,26 @@ def test_success_creates_candidate_with_exact_parent_and_paths(tmp_path: Path) -
             "seconds_used": 0.0,
             "turn_limit": None,
             "deadline_seconds": None,
+            "token_limit": None,
+            "tokens_used": 0,
+        },
+        "turns": 0,
+        "tool_calls": 0,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "guard_firings": {
+            "loop_broken": 0,
+            "scope_refused": 0,
+            "symbol_preserved": 0,
+            "command_bounded": 0,
+            "command_timed_out": 0,
+        },
+        "carried": {
+            "preserve": [],
+            "checks": [],
+            "infrastructure": [],
+            "absent": [],
+            "tampered": [],
         },
     }
     assert git(repo, "rev-parse", candidate_ref).stdout.strip().decode() == candidate_commit
@@ -691,6 +731,26 @@ def test_failed_attempt_is_discarded_without_candidate(
             "seconds_used": 0.0,
             "turn_limit": None,
             "deadline_seconds": None,
+            "token_limit": None,
+            "tokens_used": 0,
+        },
+        "turns": 0,
+        "tool_calls": 0,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "guard_firings": {
+            "loop_broken": 0,
+            "scope_refused": 0,
+            "symbol_preserved": 0,
+            "command_bounded": 0,
+            "command_timed_out": 0,
+        },
+        "carried": {
+            "preserve": [],
+            "checks": [],
+            "infrastructure": [],
+            "absent": [],
+            "tampered": [],
         },
     }
     assert git(repo, "show-ref", "--verify", str(receipt["candidate_ref"])).returncode != 0
@@ -730,6 +790,26 @@ def test_timeout_kills_same_process_group_descendant(tmp_path: Path) -> None:
             "seconds_used": 0.0,
             "turn_limit": None,
             "deadline_seconds": None,
+            "token_limit": None,
+            "tokens_used": 0,
+        },
+        "turns": 0,
+        "tool_calls": 0,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "guard_firings": {
+            "loop_broken": 0,
+            "scope_refused": 0,
+            "symbol_preserved": 0,
+            "command_bounded": 0,
+            "command_timed_out": 0,
+        },
+        "carried": {
+            "preserve": [],
+            "checks": [],
+            "infrastructure": [],
+            "absent": [],
+            "tampered": [],
         },
     }
     time.sleep(1.0)
@@ -1359,4 +1439,183 @@ def test_exhausted_passed_validation_stays_exhausted_with_evidence(
     assert git(
         repo, "rev-parse", "--verify", f"{receipt['candidate_ref']}^{{commit}}"
     ).returncode == 0
+    assert_source_unchanged(repo, before)
+
+
+# --- Task 8: R9 at validation, and staging excludes residue -----------------
+
+
+def make_carried_repo(path: Path) -> Path:
+    """A fixture repo with a preserve test, a checks file, a conftest fixture
+    it depends on, a pytest config, and a ``.gitignore`` for ``.venv/`` (N1)."""
+    path.mkdir()
+    assert git(path, "init", "--quiet", "--initial-branch=master").returncode == 0
+    assert git(path, "config", "user.name", "E3 Test").returncode == 0
+    assert git(path, "config", "user.email", "e3@example.invalid").returncode == 0
+    (path / "app.py").write_text("value = 1\n", encoding="utf-8")
+    (path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\naddopts = "-p no:cacheprovider"\n', encoding="utf-8"
+    )
+    (path / "tests").mkdir()
+    (path / "tests" / "conftest.py").write_text(
+        "import pytest\n\n\n@pytest.fixture\ndef two():\n    return 2\n", encoding="utf-8"
+    )
+    (path / "tests" / "test_keep.py").write_text(
+        "import app\n\n\ndef test_keep(two):\n    assert two == 2\n    assert app.value == 1\n",
+        encoding="utf-8",
+    )
+    (path / "checks").mkdir()
+    (path / "checks" / "check_x.py").write_text(
+        "def test_check_x():\n    assert True\n", encoding="utf-8"
+    )
+    (path / ".gitignore").write_text(".venv/\n", encoding="utf-8")
+    assert git(path, "add", "-A").returncode == 0
+    assert git(path, "commit", "--quiet", "-m", "base").returncode == 0
+    return path
+
+
+def write_carried_contract(
+    path: Path,
+    candidate_id: str,
+    *,
+    test_command: Sequence[str] = (),
+    preserve: Sequence[str] = (),
+    checks: Sequence[str] = (),
+) -> Path:
+    data: dict[str, object] = {
+        "id": candidate_id,
+        "task": "make a bounded change",
+    }
+    if test_command:
+        data["test_command"] = list(test_command)
+    if preserve:
+        data["preserve"] = list(preserve)
+    if checks:
+        data["checks"] = list(checks)
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def test_validation_runs_with_the_carried_set_restored_and_checks_as_files(
+    tmp_path: Path,
+) -> None:
+    """The restored ``test_keep.py`` runs with the conftest fixture; the
+    model's overwrite of it never counts. ``checks/check_x.py`` runs as an
+    explicit file argument, collected regardless of default ``python_files``.
+    Residue the attempt creates (``.venv``, ``__pycache__``) never reaches the
+    candidate (N1)."""
+    repo = make_carried_repo(tmp_path / "repo")
+    contract = write_carried_contract(
+        tmp_path / "contract.yaml",
+        "carried-ok",
+        test_command=(sys.executable, "-m", "pytest", "-q"),
+        preserve=("tests/test_keep.py",),
+        checks=("checks/check_x.py",),
+    )
+    script = (
+        "from pathlib import Path; "
+        "p = Path('app.py'); p.write_text(p.read_text() + '\\n# appended\\n'); "
+        "Path('tests/test_keep.py').write_text('def test_keep(): assert False\\n'); "
+        "Path('.venv/marker').parent.mkdir(parents=True, exist_ok=True); "
+        "Path('.venv/marker').write_text(''); "
+        "Path('__pycache__').mkdir(exist_ok=True); Path('__pycache__/x.pyc').write_text(''); "
+        "Path('tests/__pycache__').mkdir(exist_ok=True); "
+        "Path('tests/__pycache__/y.pyc').write_text('')"
+    )
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", script))
+
+    assert proc.returncode == 0, receipt
+    assert receipt["code"] == "OK"
+    assert receipt["validation"] == "passed"
+    assert str(receipt["validation_output"]).count("passed") == 3
+    assert receipt["changed_paths"] == ["app.py", "tests/test_keep.py"]
+    assert receipt["carried"] == {
+        "preserve": ["tests/test_keep.py"],
+        "checks": ["checks/check_x.py"],
+        "infrastructure": ["tests/conftest.py", "pyproject.toml"],
+        "absent": [],
+        "tampered": ["tests/test_keep.py"],
+    }
+    assert_source_unchanged(repo, before)
+
+
+def test_a_written_conftest_cannot_hide_a_failing_preserve_test(tmp_path: Path) -> None:
+    """N2: a model that rewrites ``conftest.py`` to ``collect_ignore`` the
+    preserve test, and edits ``pyproject.toml`` to deselect it, cannot hide a
+    failure -- both are carried infrastructure, restored before the suite
+    runs, so the deselection never takes effect."""
+    repo = make_carried_repo(tmp_path / "repo")
+    contract = write_carried_contract(
+        tmp_path / "contract.yaml",
+        "carried-tampered",
+        test_command=(sys.executable, "-m", "pytest", "-q"),
+        preserve=("tests/test_keep.py",),
+        checks=("checks/check_x.py",),
+    )
+    script = (
+        "from pathlib import Path; "
+        "p = Path('app.py'); p.write_text(p.read_text() + 'value = 2\\n'); "
+        "Path('tests/conftest.py').write_text(\"collect_ignore = ['test_keep.py']\\n\"); "
+        "Path('pyproject.toml').write_text("
+        "'[tool.pytest.ini_options]\\naddopts = \\'--deselect tests/test_keep.py\\'\\n')"
+    )
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", script))
+
+    assert proc.returncode == 13, receipt
+    assert receipt["code"] == "TESTS_FAILED"
+    assert receipt["validation"] == "failed"
+    assert "FAILED tests/test_keep.py" in str(receipt["validation_output"])
+    assert receipt["carried"]["tampered"] == ["pyproject.toml", "tests/conftest.py"]
+    assert_source_unchanged(repo, before)
+
+
+def test_a_gitignored_venv_does_not_fail_staging(tmp_path: Path) -> None:
+    """N1: staging must not fail on a globally-ignored ``.venv`` -- this test
+    deliberately runs under the maintainer's own real global Git config
+    (no ``GIT_CONFIG_GLOBAL`` override) so a global ``core.excludesFile`` that
+    also ignores ``.venv`` is exercised, not just the repo's own
+    ``.gitignore``."""
+    repo = make_carried_repo(tmp_path / "repo")
+    contract = write_contract(tmp_path / "contract.yaml", "venv-residue")
+    script = (
+        "from pathlib import Path; "
+        "p = Path('app.py'); p.write_text(p.read_text() + '\\n# appended\\n'); "
+        "Path('.venv/bin').mkdir(parents=True, exist_ok=True); "
+        "Path('.venv/bin/python').write_text('#!/bin/sh\\n')"
+    )
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", script))
+
+    assert proc.returncode == 0, receipt
+    assert receipt["code"] == "OK"
+    assert receipt["changed_paths"] == ["app.py"]
+    assert ".venv/bin/python" not in (receipt["changed_paths"] or [])
+    assert_source_unchanged(repo, before)
+
+
+def test_a_preserve_path_absent_at_base_lands_in_carried_absent(tmp_path: Path) -> None:
+    """The sibling of the carried-restoration tests: a declared ``preserve``
+    path that was never tracked at the base is named in ``carried.absent``,
+    and validation still runs against whatever the carried set did find."""
+    repo = make_carried_repo(tmp_path / "repo")
+    contract = write_carried_contract(
+        tmp_path / "contract.yaml",
+        "carried-absent",
+        test_command=(sys.executable, "-m", "pytest", "-q"),
+        preserve=("tests/test_missing.py",),
+    )
+    script = "from pathlib import Path; p = Path('app.py'); p.write_text(p.read_text() + '\\n# noop\\n')"
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", script))
+
+    assert proc.returncode == 0, receipt
+    assert receipt["code"] == "OK"
+    assert receipt["validation"] == "passed"
+    assert receipt["carried"]["absent"] == ["tests/test_missing.py"]
     assert_source_unchanged(repo, before)
