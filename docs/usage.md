@@ -16,6 +16,13 @@ Run the engine from the command line with the `check` subcommand:
 satyrn-engine check --repo REPO CONTRACT
 ```
 
+The `derive` subcommand writes a contract from a developer's request and the
+repository, rather than requiring one to be hand-written:
+
+```console
+satyrn-engine derive --repo REPO -- REQUEST...
+```
+
 The command accepts exactly two things:
 
 | Argument | Kind | Meaning |
@@ -31,6 +38,10 @@ required fields, both non-empty strings, plus an optional mutation scope:
 | `id`   | a stable identifier for the contract (names receipts and candidates in later phases) |
 | `task` | the description of the change to make |
 | `writable_paths` | optional list of non-empty workspace-relative patterns; an omitted list permits no E4 mutation |
+| `preserve` | optional list of tracked test-file paths restored from the base before every `self_test` run and before validation; never writable |
+| `checks` | optional list of paths under `checks/` restored and run alongside `preserve`, the same way |
+| `token_budget` | optional output-token budget; when declared, `deliver` defaults `token_limit` to it and the receipt's `budget.state` becomes `token_exhausted` if the model spends past it |
+| `turn_budget` | optional turn-count budget enforced the same way as `token_budget` |
 
 Patterns use Python `fnmatch` semantics, including `*` crossing `/`. Unknown
 extra fields remain ignored, so later phases can extend a contract by adding
@@ -218,6 +229,42 @@ spooled to temporary storage
 to bound engine memory and avoid a descendant-held pipe; E3 does not impose a
 byte quota on that storage, just as it does not limit files written by the
 trusted command itself.
+
+## `/implement`
+
+Inside Pi with the package installed (`pi install <engine>/packages/engine`,
+`SATYRN_ENGINE_REPO` and `SATYRN_MODEL` set):
+
+    /implement add --check to src/app/cli.py
+
+derives a contract from the request and the repository — `writable_paths`
+from the files, directories and new files the request names, `test_command`
+from `[tool.satyrn] self_test` in `pyproject.toml` or the default
+`uv run python -m pytest -q`, `preserve` (every tracked test file) and
+`checks` (`checks/`), budgets of 32,000 output tokens and 48 turns — writes it
+under `.git/satyrn/contracts/<id>.yaml`, and shows it. In the TUI, answer the
+confirmation to dispatch; in print mode run:
+
+    /implement --go implement-0123456789ab
+
+One fresh Pi runs in a worktree branched from `HEAD` with the guards loaded
+(they register only in that child): the loop breaker; `edit`/`write` refused
+outside `writable_paths`; an `edit` or `write` that would remove a symbol the
+base defines refused with what to do instead; bash `timeout` set to 120 s
+when absent and clamped at 300 s, the result naming the bound and the
+self-test. `preserve` and `checks` are restored from the base into the
+worktree before every `self_test` run and before validation, so the model's
+edits to them never count. The receipt is written to stdout and, verbatim, to
+`.git/satyrn/receipts/<id>.json`; it adds `turns`, `tool_calls`, `tokens_in`,
+`tokens_out`, `guard_firings` and `carried`; `validation` is the engine's own
+run and is authoritative; `budget.state` is `token_exhausted` when the model
+spent past its token budget and the candidate is kept. The `/implement`
+notification reads as `error` unless the receipt's `code` is `OK` and
+`validation` is `passed` — `OK` with validation unavailable, timed out, not
+run, or failed still reads as an error, since a developer must never mistake
+that for a clean pass. `self_test` itself refuses with
+`TEST_COMMAND_UNAVAILABLE` when the carried `preserve`/`checks` set cannot be
+read or restored from the base.
 
 ## Run one model attempt
 

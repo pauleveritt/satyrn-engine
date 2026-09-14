@@ -14,7 +14,8 @@ The engine owns:
 - contract parsing and validation;
 - contract-aware writable-path and revision enforcement for one replacement;
 - candidate worktree, commit-or-discard, and receipt behavior;
-- the Pi-side loop breaker for repeated identical tool calls;
+- the Pi-side guards: loop breaker, writable-path scope, symbol preservation,
+  command bounds — the last three only inside `/implement`;
 - the Pi package and its thin TypeScript adapter;
 - one real Pi attempt that connects isolation to bounded replacement;
 - the internal Pi-adapter protocol and its compatibility fixtures.

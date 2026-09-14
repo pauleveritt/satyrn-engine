@@ -27,6 +27,12 @@ check
   with a named cause. Exposed as the ``check`` subcommand and the
   ``check()`` library seam.
 
+carried
+  ``preserve`` and ``checks`` paths (plus tracked test infrastructure)
+  restored from the accepted base into the worktree before every
+  {term}`self_test` run and before validation, so the model's edits to them
+  never count.
+
 candidate
   A commit produced by one successful delivery attempt and published at
   ``refs/satyrn/candidates/<contract-id>/head``. It has the captured base
@@ -44,7 +50,8 @@ contract
   YAML file. Its top level is a mapping with two required fields, ``id``
   and ``task`` (both non-empty strings). E4 adds optional ``writable_paths``
   patterns; omitting them permits no bounded replacement. Unknown fields are
-  ignored. See {doc}`usage` for the accepted shape.
+  ignored. See {doc}`usage` for the accepted shape. The spec's ``objective``
+  and ``self_test_command`` are this file's ``task`` and ``test_command``.
 
 engine
   The Python core of satyrn-engine: a library and command-line tool that
@@ -68,6 +75,11 @@ guard
   in that window. Its state belongs to one extension registration. It is not a
   mutation policy or a Python engine operation.
 
+guard firing
+  A ``pi.appendEntry`` custom entry a guard records when it acts. The receipt
+  counts these from the child's json stream as ``entry_appended`` events; no
+  file the model's shell can reach is evidence.
+
 integration tier
   The marked test tier (``@pytest.mark.integration``) that starts real
   subprocesses and, for delivery, real local Git repositories and commands.
@@ -88,6 +100,11 @@ revision
   equals the current file. A successful replacement returns the next revision;
   a determinate engine refusal never advances it. A transport failure poisons
   the context because the publication result is unknown.
+
+self_test
+  The engine's registered tool that restores {term}`carried` tests, runs the
+  contract's ``test_command`` and the checks, and returns failed ids with
+  their first assertion line.
 
 receipt
   The one versioned UTF-8 JSON result written by an accepted ``deliver``
