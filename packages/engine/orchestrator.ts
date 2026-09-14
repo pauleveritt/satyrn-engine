@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -171,6 +171,8 @@ export function isEngineRefusalCode(value: unknown): value is EngineRefusalCode 
 
 export const DELIVERY_CODE_OUTCOMES = {
 	OK: "candidate-created",
+	TESTS_FAILED: "candidate-created",
+	BUDGET_EXHAUSTED: "candidate-created",
 	CONTRACT_UNREADABLE: "refused",
 	CONTRACT_INVALID_YAML: "refused",
 	CONTRACT_MISSING_FIELD: "refused",
@@ -189,7 +191,10 @@ export const DELIVERY_CODE_OUTCOMES = {
 } as const;
 
 export type DeliveryCode = keyof typeof DELIVERY_CODE_OUTCOMES;
-export type DeliveryRefusalCode = Exclude<DeliveryCode, "OK">;
+export type DeliveryCandidateCode = {
+	[K in DeliveryCode]: (typeof DELIVERY_CODE_OUTCOMES)[K] extends "candidate-created" ? K : never;
+}[DeliveryCode];
+export type DeliveryRefusalCode = Exclude<DeliveryCode, DeliveryCandidateCode>;
 export type DeliveryRefusalOutcome =
 	(typeof DELIVERY_CODE_OUTCOMES)[DeliveryRefusalCode];
 
@@ -201,11 +206,16 @@ interface DeliveryReceiptBase {
 	readonly base_commit: string | null;
 	readonly command_exit: number | null;
 	readonly worktree_path: string | null;
+	/** Task 8 fields: present on candidate-created receipts, absent otherwise. */
+	readonly validation?: string;
+	readonly tokens_out?: number;
+	readonly turns?: number;
+	readonly guard_firings?: Record<string, number>;
 }
 
 export interface CandidateCreatedReceipt extends DeliveryReceiptBase {
 	readonly outcome: "candidate-created";
-	readonly code: "OK";
+	readonly code: DeliveryCandidateCode;
 	readonly candidate_ref: string;
 	readonly candidate_commit: string;
 	readonly changed_paths: readonly string[];
@@ -227,6 +237,21 @@ export interface DeliveryInvocation {
 	readonly command: "uv";
 	readonly args: readonly string[];
 	readonly cwd: string;
+}
+
+export interface DeriveInvocation {
+	readonly command: "uv";
+	readonly args: readonly string[];
+	readonly cwd: string;
+}
+
+/** Build the invocation that derives a contract from a request (M4). */
+export function buildDeriveInvocation(repo: string, request: string, engineRepo: string): DeriveInvocation {
+	return {
+		command: "uv",
+		cwd: engineRepo,
+		args: ["run", "--project", engineRepo, "satyrn-engine", "derive", "--repo", repo, "--", request],
+	};
 }
 
 export type DiagnosticSink = (chunk: string) => void;
@@ -305,6 +330,24 @@ function isNullableInteger(value: unknown): value is number | null {
 	return value === null || (typeof value === "number" && Number.isInteger(value));
 }
 
+function isOptionalString(value: unknown): value is string | undefined {
+	return value === undefined || typeof value === "string";
+}
+
+function isOptionalNumber(value: unknown): value is number | undefined {
+	return value === undefined || typeof value === "number";
+}
+
+function isOptionalGuardFirings(value: unknown): value is Record<string, number> | undefined {
+	return (
+		value === undefined ||
+		(typeof value === "object" &&
+			value !== null &&
+			!Array.isArray(value) &&
+			Object.values(value).every((count) => typeof count === "number"))
+	);
+}
+
 export function parseDeliveryReceipt(text: string): DeliveryReceipt {
 	let parsed: unknown;
 	try {
@@ -328,7 +371,11 @@ export function parseDeliveryReceipt(text: string): DeliveryReceipt {
 		!isNullableString(body.candidate_commit) ||
 		!isNullableStringArray(body.changed_paths) ||
 		!isNullableInteger(body.command_exit) ||
-		!isNullableString(body.worktree_path)
+		!isNullableString(body.worktree_path) ||
+		!isOptionalString(body.validation) ||
+		!isOptionalNumber(body.tokens_out) ||
+		!isOptionalNumber(body.turns) ||
+		!isOptionalGuardFirings(body.guard_firings)
 	) {
 		throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "delivery receipt has an unexpected shape");
 	}
@@ -340,8 +387,12 @@ export function parseDeliveryReceipt(text: string): DeliveryReceipt {
 		base_commit: body.base_commit,
 		command_exit: body.command_exit,
 		worktree_path: body.worktree_path,
+		...(body.validation !== undefined ? { validation: body.validation } : {}),
+		...(body.tokens_out !== undefined ? { tokens_out: body.tokens_out } : {}),
+		...(body.turns !== undefined ? { turns: body.turns } : {}),
+		...(body.guard_firings !== undefined ? { guard_firings: body.guard_firings as Record<string, number> } : {}),
 	};
-	if (body.code === "OK") {
+	if (DELIVERY_CODE_OUTCOMES[body.code] === "candidate-created") {
 		if (
 			typeof body.candidate_ref !== "string" ||
 			typeof body.candidate_commit !== "string" ||
@@ -352,7 +403,7 @@ export function parseDeliveryReceipt(text: string): DeliveryReceipt {
 		return {
 			...base,
 			outcome: "candidate-created",
-			code: "OK",
+			code: body.code as DeliveryCandidateCode,
 			candidate_ref: body.candidate_ref,
 			candidate_commit: body.candidate_commit,
 			changed_paths: body.changed_paths,
@@ -382,7 +433,8 @@ export function buildDeliveryInvocation(
 	const innerContract =
 		relativeContract !== "" &&
 		relativeContract !== ".." &&
-		!relativeContract.startsWith(`..${sep}`)
+		!relativeContract.startsWith(`..${sep}`) &&
+		relativeContract.split(sep)[0] !== ".git"
 			? relativeContract
 			: resolvedContract;
 	return {
@@ -421,29 +473,38 @@ function physicalPath(path: string): string {
 	}
 }
 
+export interface CollectedOutput {
+	readonly stdout: string;
+	readonly stderr: string;
+	readonly code: number | null;
+}
+
 /**
- * Run one request/response exchange against the engine. The JSON response
- * is authoritative; a nonzero exit with no parseable response is a crash;
- * the deadline is the adapter's own, because Pi imposes no host deadline.
+ * Spawn one process, write `stdin` (if any), and collect its stdout/stderr
+ * until it closes. The child-lifecycle handling (termination on timeout or
+ * stream failure, escalating from SIGTERM to SIGKILL) is shared by every
+ * one-shot command the adapter runs: the engine's `protocol` exchange,
+ * `derive`, and the `git rev-parse` that locates the git dir.
  */
-export async function exchange(
+export async function collect(
 	spawner: Spawner,
-	request: string,
-	engineRepo: string,
+	command: string,
+	args: readonly string[],
+	cwd: string,
 	deadlineMs: number,
-): Promise<EngineResponse> {
+	stdin = "",
+): Promise<CollectedOutput> {
 	return new Promise((resolvePromise, rejectPromise) => {
 		let child: SpawnedChild;
 		try {
-			child = spawner("uv", ["run", "--project", engineRepo, "satyrn-engine", "protocol"], {
-				cwd: engineRepo,
-			});
+			child = spawner(command, args, { cwd });
 		} catch (err) {
-			rejectPromise(new AdapterRefusal("ENGINE_START_FAILED", `could not start the engine: ${String(err)}`));
+			rejectPromise(new AdapterRefusal("ENGINE_START_FAILED", `could not start ${command}: ${String(err)}`));
 			return;
 		}
 
 		let stdout = "";
+		let stderr = "";
 		let settled = false;
 		let pendingRefusal: AdapterRefusal | undefined;
 		let terminationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -483,21 +544,11 @@ export async function exchange(
 					rejectPromise(pendingRefusal);
 					return;
 				}
-				try {
-					resolvePromise(parseResponse(stdout));
-				} catch (refusal) {
-					if (code !== 0) {
-						rejectPromise(
-							new AdapterRefusal("ENGINE_CRASHED", `engine exited ${code} with no valid response`),
-						);
-					} else {
-						rejectPromise(refusal as AdapterRefusal);
-					}
-				}
+				resolvePromise({ stdout, stderr, code });
 			});
 			child.on("error", (err) => {
 				requestTermination(
-					new AdapterRefusal("ENGINE_START_FAILED", `engine failed to start: ${err.message}`),
+					new AdapterRefusal("ENGINE_START_FAILED", `${command} failed to start: ${err.message}`),
 				);
 			});
 			child.stdout.on("data", (chunk) => {
@@ -505,30 +556,59 @@ export async function exchange(
 			});
 			child.stdout.on("error", (err) => {
 				requestTermination(
-					new AdapterRefusal("ENGINE_START_FAILED", `could not read the engine response: ${err.message}`),
+					new AdapterRefusal("ENGINE_START_FAILED", `could not read ${command} output: ${err.message}`),
 				);
 			});
-			child.stderr.on("data", () => {
-				// Drain diagnostics so an unexpected engine failure cannot fill the pipe.
+			child.stderr.on("data", (chunk) => {
+				stderr += chunk;
 			});
 			child.stderr.on("error", (err) => {
 				requestTermination(
-					new AdapterRefusal("ENGINE_START_FAILED", `could not read engine diagnostics: ${err.message}`),
+					new AdapterRefusal("ENGINE_START_FAILED", `could not read ${command} diagnostics: ${err.message}`),
 				);
 			});
 			child.stdin.on?.("error", (err) => {
 				requestTermination(
-					new AdapterRefusal("ENGINE_START_FAILED", `could not write the request: ${err.message}`),
+					new AdapterRefusal("ENGINE_START_FAILED", `could not write to ${command}: ${err.message}`),
 				);
 			});
-			child.stdin.write(request);
+			child.stdin.write(stdin);
 			child.stdin.end();
 		} catch (err) {
 			requestTermination(
-				new AdapterRefusal("ENGINE_START_FAILED", `could not write the request: ${String(err)}`),
+				new AdapterRefusal("ENGINE_START_FAILED", `could not close ${command} stdin: ${String(err)}`),
 			);
 		}
 	});
+}
+
+/**
+ * Run one request/response exchange against the engine. The JSON response
+ * is authoritative; a nonzero exit with no parseable response is a crash;
+ * the deadline is the adapter's own, because Pi imposes no host deadline.
+ */
+export async function exchange(
+	spawner: Spawner,
+	request: string,
+	engineRepo: string,
+	deadlineMs: number,
+): Promise<EngineResponse> {
+	const { stdout, code } = await collect(
+		spawner,
+		"uv",
+		["run", "--project", engineRepo, "satyrn-engine", "protocol"],
+		engineRepo,
+		deadlineMs,
+		request,
+	);
+	try {
+		return parseResponse(stdout);
+	} catch (refusal) {
+		if (code !== 0) {
+			throw new AdapterRefusal("ENGINE_CRASHED", `engine exited ${code} with no valid response`);
+		}
+		throw refusal;
+	}
 }
 
 export async function runDelivery(
@@ -729,17 +809,88 @@ export async function runDelivery(
 	});
 }
 
+/** The context Pi's `registerCommand` handler receives. */
+export interface ImplementContext {
+	readonly cwd: string;
+	readonly hasUI?: boolean;
+	readonly ui: {
+		notify(message: string, level: "info" | "error"): void;
+		confirm(title: string, message: string): Promise<boolean>;
+	};
+}
+
+/** Summarize a delivery receipt's Task 8 fields for one notification line. */
+export function receiptSummary(receipt: DeliveryReceipt): string {
+	const firings = Object.entries(receipt.guard_firings ?? {})
+		.filter(([, count]) => count > 0)
+		.map(([kind, count]) => `${kind}=${count}`);
+	return `validation=${receipt.validation ?? "unknown"} tokens_out=${receipt.tokens_out ?? 0} turns=${receipt.turns ?? 0} guards: ${firings.join(" ") || "none"}`;
+}
+
+const CONTRACT_ID = /^implement-[0-9a-f]{12}$/;
+
 /** The command surface, with process dependencies injected as test seams. */
 export function createAdapter(
 	spawner: DeliverySpawner,
 	deadlineMs: number = DEFAULT_DELIVERY_DEADLINE_MS,
 	processControl: ProcessControl = defaultProcessControl(),
+	writeReceipt: (path: string, text: string) => void = (path, text) => {
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, text);
+	},
 ) {
+	const dispatch = async (id: string, ctx: ImplementContext, model: string, engineRepo: string): Promise<void> => {
+		try {
+			const gitDir = await collect(
+				spawner as unknown as Spawner,
+				"git",
+				["-C", ctx.cwd, "rev-parse", "--path-format=absolute", "--git-dir"],
+				ctx.cwd,
+				DEFAULT_DEADLINE_MS,
+			);
+			if (gitDir.code !== 0) {
+				ctx.ui.notify(`satyrn-engine: REPO_UNAVAILABLE: ${gitDir.stderr.trim()}`, "error");
+				return;
+			}
+			const contractPath = resolve(gitDir.stdout.trim(), "satyrn", "contracts", `${id}.yaml`);
+			const invocation = buildDeliveryInvocation(ctx.cwd, contractPath, model, engineRepo);
+			const receipt = await runDelivery(
+				spawner,
+				invocation,
+				deadlineMs,
+				undefined,
+				DELIVERY_TERMINATION_GRACE_MS,
+				processControl,
+			);
+			try {
+				writeReceipt(resolve(gitDir.stdout.trim(), "satyrn", "receipts", `${id}.json`), `${JSON.stringify(receipt)}\n`);
+			} catch (err) {
+				ctx.ui.notify(`satyrn-engine: ADAPTER_ERROR: could not write the receipt: ${String(err)}`, "error");
+			}
+			if (receipt.outcome === "candidate-created") {
+				// R13: code OK is only "info" when the carried tests actually
+				// passed. OK with validation unavailable/timed_out/not_run (or
+				// TESTS_FAILED/BUDGET_EXHAUSTED) must read as an error, because
+				// the engine keeps code OK in those cases and a developer must
+				// never mistake that for a clean pass.
+				const level = receipt.code === "OK" && receipt.validation === "passed" ? "info" : "error";
+				ctx.ui.notify(
+					`satyrn-engine: ${receipt.code}: ${receipt.candidate_ref} ${receipt.candidate_commit} ${receiptSummary(receipt)}`,
+					level,
+				);
+			} else {
+				ctx.ui.notify(`satyrn-engine: ${receipt.code}: ${receipt.message}`, "error");
+			}
+		} catch (err) {
+			const refusal =
+				err instanceof AdapterRefusal
+					? err
+					: new AdapterRefusal("ADAPTER_ERROR", err instanceof Error ? err.message : String(err));
+			ctx.ui.notify(`satyrn-engine: ${refusal.code}: ${refusal.message}`, "error");
+		}
+	};
 	return {
-		async implement(
-			args: string,
-			ctx: { cwd: string; ui: { notify(message: string, level: "info" | "error"): void } },
-		): Promise<void> {
+		async implement(args: string, ctx: ImplementContext): Promise<void> {
 			const engineRepo = process.env.SATYRN_ENGINE_REPO;
 			const model = process.env.SATYRN_MODEL;
 			if (!engineRepo) {
@@ -750,37 +901,51 @@ export function createAdapter(
 				ctx.ui.notify("satyrn-engine: ENGINE_START_FAILED: SATYRN_MODEL is not set", "error");
 				return;
 			}
-			const contractArg = args.trim();
-			if (!contractArg) {
-				ctx.ui.notify("satyrn-engine: USAGE: expected a CONTRACT path", "error");
+			const trimmed = args.trim();
+			if (trimmed.startsWith("--go")) {
+				const id = trimmed.slice(4).trim();
+				if (!CONTRACT_ID.test(id)) {
+					ctx.ui.notify("satyrn-engine: USAGE: --go takes a contract id like implement-0123456789ab", "error");
+					return;
+				}
+				await dispatch(id, ctx, model, engineRepo);
 				return;
 			}
-			const invocation = buildDeliveryInvocation(ctx.cwd, contractArg, model, engineRepo);
-			try {
-				const receipt = await runDelivery(
-					spawner,
-					invocation,
-					deadlineMs,
-					undefined,
-					DELIVERY_TERMINATION_GRACE_MS,
-					processControl,
+			if (!trimmed) {
+				ctx.ui.notify(
+					"satyrn-engine: USAGE: /implement <request> derives a contract; /implement --go <id> dispatches it",
+					"error",
 				);
-				if (receipt.code === "OK") {
-					ctx.ui.notify(
-						`satyrn-engine: OK: ${receipt.candidate_ref} ${receipt.candidate_commit}`,
-						"info",
-					);
-				} else {
-					ctx.ui.notify(`satyrn-engine: ${receipt.code}: ${receipt.message}`, "error");
+				return;
+			}
+			const derive = buildDeriveInvocation(ctx.cwd, trimmed, engineRepo);
+			try {
+				const derived = await collect(spawner as unknown as Spawner, derive.command, derive.args, derive.cwd, DEFAULT_DEADLINE_MS);
+				if (derived.code !== 0) {
+					ctx.ui.notify(derived.stderr.trim() || `satyrn-engine: DERIVE: exit ${derived.code}`, "error");
+					return;
 				}
+				ctx.ui.notify(derived.stdout, "info");
+				const id = /^id: (implement-[0-9a-f]{12})$/m.exec(derived.stdout)?.[1];
+				if (id === undefined) {
+					ctx.ui.notify("satyrn-engine: ENGINE_MALFORMED_RESPONSE: derived contract has no id", "error");
+					return;
+				}
+				if (ctx.hasUI === true && (await ctx.ui.confirm("Dispatch this contract?", derived.stdout))) {
+					await dispatch(id, ctx, model, engineRepo);
+					return;
+				}
+				ctx.ui.notify(
+					ctx.hasUI === true
+						? `satyrn-engine: not dispatched; run /implement --go ${id} to dispatch later`
+						: `${derived.stderr.trim()}; run /implement --go ${id} to dispatch`,
+					"info",
+				);
 			} catch (err) {
 				const refusal =
 					err instanceof AdapterRefusal
 						? err
-						: new AdapterRefusal(
-								"ADAPTER_ERROR",
-								err instanceof Error ? err.message : String(err),
-							);
+						: new AdapterRefusal("ADAPTER_ERROR", err instanceof Error ? err.message : String(err));
 				ctx.ui.notify(`satyrn-engine: ${refusal.code}: ${refusal.message}`, "error");
 			}
 		},
@@ -790,7 +955,7 @@ export function createAdapter(
 export default function (pi: ExtensionAPI) {
 	const adapter = createAdapter(spawn, DEFAULT_DELIVERY_DEADLINE_MS);
 	pi.registerCommand("implement", {
-		description: "Run one isolated model attempt and create or discard a candidate",
+		description: "Derive a contract from a request (/implement <request>) and dispatch it (confirm, or /implement --go <id>)",
 		handler: adapter.implement,
 	});
 }
