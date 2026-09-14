@@ -61,9 +61,12 @@ def tracked(root: Path) -> list[str]:
                 continue
             files.append(path.relative_to(root).as_posix())
     for path in sorted(root.iterdir()):
-        if path.is_file() and (path.suffix in TRACKED_ROOT_SUFFIXES or path.name in TRACKED_ROOT_NAMES):
-            if path.name != "PROVENANCE.md":
-                files.append(path.name)
+        if (
+            path.is_file()
+            and (path.suffix in TRACKED_ROOT_SUFFIXES or path.name in TRACKED_ROOT_NAMES)
+            and path.name != "PROVENANCE.md"
+        ):
+            files.append(path.name)
     return files
 
 

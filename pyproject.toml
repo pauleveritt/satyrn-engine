@@ -1,0 +1,78 @@
+[project]
+name = "satyrn-engine"
+version = "0.1.0"
+description = "Turns a bounded contract into a candidate change without modifying the caller's working tree"
+license = "Apache-2.0"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = ["pyyaml>=6.0.3"]
+
+[project.scripts]
+satyrn-engine = "satyrn_engine.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/satyrn_engine"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.12.8",
+    "pyrefly>=1.1.1",
+    "types-pyyaml>=6.0.12.20260815",
+]
+
+[tool.pytest.ini_options]
+# docs/_build is the docs build output, never project tests. `.worktrees`
+# holds git worktrees of this same repository, whose tests share their
+# module basenames with `tests/` -- collecting both makes pytest abort with
+# "import file mismatch" on every file, so the suite does not run at all.
+# Found 2026-09-06: a landed worktree left in place broke collection of all
+# 250 tests while every one of them passed.
+norecursedirs = ["docs/_build", ".worktrees"]
+# The integration tier spawns the engine as a subprocess; keep it out of
+# the hermetic default run (and out of CI). Run it explicitly with
+# `uv run pytest -m integration`.
+addopts = ["-m", "not integration"]
+markers = [
+    "integration: starts real local subprocesses or Git; excluded from the hermetic default run and CI",
+]
+
+[tool.ruff]
+# docs/ is the research record, not project source. Its markdown embeds
+# Python quoted as it was *proposed* in a plan or *recorded* in a result;
+# `ruff format` rewrites those code blocks, which silently edits history
+# this project deliberately preserves.
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+# Proportionate, not maximalist: correctness and clarity rules a
+# 5-h/wk contributor benefits from, without a style debate.
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # import sorting
+    "UP",   # pyupgrade -- keeps us on modern syntax for the pinned version
+    "B",    # bugbear
+    "SIM",  # simplify
+]
+# Line length is the one rule we decline. Several tests carry literal
+# fixture content and contract strings where a wrap would hurt readability
+# rather than help it.
+ignore = ["E501"]
+
+[tool.pyrefly]
+project-includes = ["src", "tests"]
+
+[tool.coverage.run]
+branch = true
+patch = ["subprocess"]
+source = ["satyrn_engine"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true

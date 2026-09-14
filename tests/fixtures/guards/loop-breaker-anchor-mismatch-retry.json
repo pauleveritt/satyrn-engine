@@ -1,0 +1,695 @@
+{
+  "name": "loop-breaker-anchor-mismatch-retry",
+  "source": "phase-7 Experiment B r2. An `edit` whose anchor text no longer matched, retried without re-reading until the turn budget went. These calls are schema-valid -- all 60 reach the hook -- so this loop IS reachable by a tool_call guard.",
+  "calls": [
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "grep -r \"get(\" . | grep -v \"node_modules\" | grep -v \"venv\""
+      }
+    },
+    {
+      "toolName": "read",
+      "input": {
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "python3 -c \"\nfrom unittest.mock import MagicMock, AsyncMock\nfrom collections.abc import AbstractContextManager, AbstractAsyncContextManager\nimport inspect\n\ndef test_mock_behavior():\n    m = MagicMock()\n    print(f'isinstance(m, AbstractContextManager): {isinstance(m, AbstractContextManager)}')\n    print(f'isinstance(m, AbstractAsyncContextManager): {isinstance(m, AbstractAsyncContextManager)}')\n    print(f'isawaitable(m): {inspect.isawaitable(m)}')\n    \n    am = AsyncMock()\n    print(f'isinstance(am, AbstractContextManager): {isinstance(am, AbstractContextManager)}')\n    print(f'isinstance(am, AbstractAsyncContextManager): {isinstance(am, AbstractAsyncContextManager)}')\n    print(f'isawaitable(am): {inspect.isawaitable(am)}')\n\ntest_mock_behavior()\n\""
+      }
+    },
+    {
+      "toolName": "bash",
+      "input": {
+        "command": "python3 -c \"\nfrom contextlib import AbstractContextManager, AbstractAsyncContextManager\nfrom unittest.mock import MagicMock, AsyncMock\nimport inspect\n\ndef test_mock_behavior():\n    m = MagicMock()\n    print(f'MagicMock - isinstance(AbstractContextManager): {isinstance(m, AbstractContextManager)}')\n    print(f'MagicMock - isinstance(AbstractAsyncContextManager): {isinstance(m, AbstractAsyncContextManager)}')\n    print(f'MagicMock - isawaitable: {inspect.isawaitable(m)}')\n    \n    am = AsyncMock()\n    print(f'AsyncMock - isinstance(AbstractContextManager): {isinstance(am, AbstractContextManager)}')\n    print(f'AsyncMock - isinstance(AbstractAsyncContextManager): {isinstance(am, AbstractAsyncContextManager)}')\n    print(f'AsyncMock - isawaitable: {inspect.isawaitable(am)}')\n\ntest_mock_behavior()\n\""
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "read",
+      "input": {
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "read",
+      "input": {
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    },
+    {
+      "toolName": "edit",
+      "input": {
+        "edits": [
+          {
+            "newText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\ntry:\n    from unittest.mock import Mock, AsyncMock\n    _MOCKS = (Mock, AsyncMock)\nexcept ImportError:\n    _MOCKS = ()\n\n",
+            "oldText": "from inspect import (\n    isasyncgenfunction,\n    isawaitable,\n    iscoroutine,\n    iscoroutinefunction,\n    isgeneratorfunction,\n)\nfrom typing import Any, TypeVar, overload\n\n"
+          }
+        ],
+        "path": "src/svcs/_core.py"
+      }
+    }
+  ],
+  "expected": {
+    "blocked": 46,
+    "entries": 46,
+    "firstBlock": 14
+  }
+}

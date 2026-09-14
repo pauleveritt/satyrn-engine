@@ -1,0 +1,5 @@
+id: e4-smoke
+task: Replace the greeting text
+writable_paths:
+  - src/*.py
+  - tests/fixtures/app.py
