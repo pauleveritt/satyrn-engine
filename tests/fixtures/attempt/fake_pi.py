@@ -26,8 +26,12 @@ def main() -> int:
         Path(os.environ["SATYRN_FAKE_PI_MARKER"]).write_text("late", encoding="utf-8")
         time.sleep(30)
         return 0
-    if mode == "implement":
-        return implement(os.environ["SATYRN_MUTATION_CONTEXT"], Path(os.environ["SATYRN_ENGINE_REPO"]))
+    if mode in ("implement", "implement_slow"):
+        return implement(
+            os.environ["SATYRN_MUTATION_CONTEXT"],
+            Path(os.environ["SATYRN_ENGINE_REPO"]),
+            slow=mode == "implement_slow",
+        )
 
     context_text = os.environ["SATYRN_MUTATION_CONTEXT"]
     context = json.loads(context_text)
@@ -67,9 +71,17 @@ def main() -> int:
     return completed.returncode
 
 
-def implement(context_text: str, engine_repo: Path) -> int:
+def implement(context_text: str, engine_repo: Path, *, slow: bool = False) -> int:
     """E11 integration: drive the shipped mutator and runner once each,
-    emitting the turn/usage/tool-call events a real Pi run would stream."""
+    emitting the turn/usage/tool-call events a real Pi run would stream.
+
+    ``slow`` (``SATYRN_FAKE_PI_MODE=implement_slow``, final fix wave item 1):
+    emit the same events, past a declared token budget, then block in a long
+    sleep before exiting -- proving live budget enforcement needs `attempt`
+    to forward each line as Pi writes it. A fake that exits at once (plain
+    ``implement``) cannot tell a live trip from a post-exit one; this one
+    only passes if `deliver` returns well before the sleep ends.
+    """
     context = json.loads(context_text)
     [path] = list(context["revisions"])
     per_turn = int(os.environ.get("SATYRN_FAKE_PI_TOKENS", "0"))
@@ -111,6 +123,13 @@ def implement(context_text: str, engine_repo: Path) -> int:
         emit({"type": "entry_appended", "entry": {"type": "custom", "customType": "command_bounded", "data": {"action": "set", "timeout": 120}}})
         emit({"type": "turn_start"})
         assistant(300)
+        if slow:
+            # Every message_end line above is already on the wire (each
+            # `emit` flushes); a budget past 600 tokens has everything it
+            # needs to trip right now. `attempt` must forward these lines
+            # to its own stdout as they are written, not only after this
+            # sleep ends, or deliver's live counter never sees them in time.
+            time.sleep(float(os.environ.get("SATYRN_FAKE_PI_SLEEP_SECONDS", "20")))
     emit({"type": "session_shutdown", "reason": "implement"})
     return 0
 

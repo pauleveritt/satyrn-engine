@@ -92,14 +92,20 @@ class FakePi:
         command: Sequence[str],
         cwd: Path,
         environment: Mapping[str, str],
-        stdout: BinaryIO,
+        transcript: BinaryIO,
+        forward: BinaryIO,
         stderr: BinaryIO,
     ) -> int:
         del stderr
         assert cwd.is_dir()
         self.command = tuple(command)
         self.environment = dict(environment)
-        stdout.write(self.output)
+        # R18: a real Pi writes one stream that a pump tees live to both
+        # destinations; this fake has no real streaming to simulate, so it
+        # just writes the same bytes to both, matching what the pump would
+        # have produced by the time it returns.
+        transcript.write(self.output)
+        forward.write(self.output)
         return self.exit_code
 
 
@@ -1612,32 +1618,40 @@ def test_transcript_preexisting_destination_is_refused_before_pi_starts(tmp_path
     assert pi.command is None
 
 
-def test_transcript_patch_and_git_diff_publication_failures_are_named(
+def test_transcript_forward_and_git_diff_publication_failures_are_named(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Corrected 2026-09-07 (E10): the transcript failure here used to be
-    injected into `_publish_file`, the spool-to-destination copy. E10
-    replaced that with `_forward_transcript`, which only copies the
-    already-published destination back to stdout -- the injection point
-    moves with it, but the wrapping message (`cannot publish transcript`)
-    and the caller-facing behavior it proves are unchanged.
+    """Corrected 2026-09-14 (R18/final fix wave item 1): the transcript is no
+    longer copied to stdout only after Pi exits (that used to be
+    `_forward_transcript`, injected here); the live pump inside `pi.run`
+    writes to `stdout` itself while Pi runs, so a write failure there now
+    surfaces the same way any other Pi-run failure does -- wrapped as
+    "cannot run Pi" -- rather than as a separate post-exit publish step.
     """
     output = tmp_path / "out"
     output.mkdir()
-    original_forward_transcript = attempt_module._forward_transcript
-    monkeypatch.setattr(
-        attempt_module,
-        "_forward_transcript",
-        lambda *args: (_ for _ in ()).throw(OSError("transcript")),
-    )
+
+    class BrokenForwardPi(FakePi):
+        def run(
+            self,
+            command: Sequence[str],
+            cwd: Path,
+            environment: Mapping[str, str],
+            transcript: BinaryIO,
+            forward: BinaryIO,
+            stderr: BinaryIO,
+        ) -> int:
+            del forward
+            raise OSError("transcript")
+
     result, *_ = _run(
         tmp_path,
+        pi=BrokenForwardPi(),
         environment={attempt_module.TRANSCRIPT_ENV: str(output / "transcript")},
     )
-    assert "publish transcript" in result.message
+    assert "cannot run Pi" in result.message
 
-    monkeypatch.setattr(attempt_module, "_forward_transcript", original_forward_transcript)
     repo = tmp_path / "second" / "repo"
     repo.parent.mkdir()
     git = FakeGit(repo)

@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -191,14 +192,25 @@ class GitRunner(Protocol):
 
 
 class PiRunner(Protocol):
-    """The production and test seam for the one Pi child."""
+    """The production and test seam for the one Pi child.
+
+    R18: Pi's stdout is forwarded to *both* ``transcript`` and ``forward``
+    while Pi runs, not copied from one to the other after it exits --
+    budget enforcement in ``deliver`` (``_stream_implementer``) only sees
+    ``turn_start``/``message_end``/``entry_appended`` lines through
+    ``forward`` (attempt's own stdout, which ``deliver`` pipes and reads
+    live), so a post-exit copy would leave a budget unable to trip during
+    the run. ``transcript`` keeps the exact same bytes ``attempt`` has
+    always written there (a file, or the E10 destination descriptor).
+    """
 
     def run(
         self,
         command: Sequence[str],
         cwd: Path,
         environment: Mapping[str, str],
-        stdout: BinaryIO,
+        transcript: BinaryIO,
+        forward: BinaryIO,
         stderr: BinaryIO,
     ) -> int: ...
 
@@ -264,7 +276,8 @@ class SubprocessPiRunner:
         command: Sequence[str],
         cwd: Path,
         environment: Mapping[str, str],
-        stdout: BinaryIO,
+        transcript: BinaryIO,
+        forward: BinaryIO,
         stderr: BinaryIO,
     ) -> int:
         process = subprocess.Popen(
@@ -272,16 +285,50 @@ class SubprocessPiRunner:
             cwd=cwd,
             env=environment,
             stdin=subprocess.DEVNULL,
-            stdout=stdout,
+            stdout=subprocess.PIPE,
             stderr=stderr,
             start_new_session=os.name == "posix",
         )
         self._process = process
         self._forward_termination()
+        pump_error: BaseException | None = None
+
+        def pump() -> None:
+            # R18: a reader thread over Popen.stdout, not a post-exit copy --
+            # every line Pi writes reaches `transcript` and `forward` while
+            # Pi is still running, each flushed immediately so a budget
+            # counter reading `forward` live (deliver's `_stream_implementer`)
+            # sees it as soon as Pi does. Iterating the buffered pipe reads
+            # line by line and naturally returns any unterminated final
+            # line (no trailing "\n") once the child closes stdout, so a
+            # partial last line is forwarded rather than lost, and iteration
+            # simply ends -- no deadlock -- once the pipe reaches EOF.
+            nonlocal pump_error
+            assert process.stdout is not None
+            try:
+                for line in process.stdout:
+                    transcript.write(line)
+                    transcript.flush()
+                    forward.write(line)
+                    forward.flush()
+            except BaseException as exc:  # noqa: BLE001 - surfaced by run(), not swallowed
+                pump_error = exc
+
+        reader = threading.Thread(target=pump, name="satyrn-attempt-pi-pump", daemon=True)
+        reader.start()
         try:
-            return process.wait()
+            exit_code = process.wait()
         finally:
+            # Join before returning: the pipe's write end can outlive
+            # `process.wait()` returning by a few scheduler ticks, and the
+            # transcript must be complete before `_run` flushes/closes it.
+            reader.join()
             self._process = None
+            if process.stdout is not None:
+                process.stdout.close()
+        if pump_error is not None:
+            raise pump_error
+        return exit_code
 
 
 BASH_BOUND_SECONDS = 120  # pinned to packages/engine/bounds.ts DEFAULT_TIMEOUT_SECONDS by tests/test_bounds_pin.py
@@ -813,10 +860,11 @@ def _run(
     transcript_destination = artifacts.transcript
     # E10: when a transcript destination was requested, its file was
     # already created exclusively during `_prepare` (see
-    # `_artifact_destinations`), and Pi writes directly into that
-    # descriptor -- there is nothing left to spool or publish afterward.
-    # The spool below exists only to give Pi somewhere to write, and
-    # stdout something to forward, when no destination was requested.
+    # `_artifact_destinations`); the pump thread inside `pi.run` (R18)
+    # writes Pi's stdout into that descriptor as it arrives, so there is
+    # nothing to publish afterward. The spool below exists only to give
+    # Pi's pump somewhere to write when no destination was requested --
+    # `stdout` is forwarded live either way, direct from the same pump.
     transcript_spool: Path | None = None
 
     try:
@@ -834,15 +882,24 @@ def _run(
             transcript_output = transcript_spool.open("xb")
         active_exception: BaseException | None = None
         try:
+            # R18: `pi.run` pumps Pi's stdout to `transcript_output` and to
+            # `stdout` (attempt's own stdout) line by line while Pi runs, so
+            # a caller reading `stdout` live -- `deliver`'s
+            # `_stream_implementer` when a budget is declared -- sees
+            # `turn_start`/`message_end`/`entry_appended` lines as they
+            # happen and can trip a budget mid-run instead of only after Pi
+            # exits. There is nothing left to forward here afterward.
             command_exit = pi.run(
                 command,
                 context.repo,
                 child_environment,
                 transcript_output,
+                stdout,
                 stderr,
             )
             transcript_output.flush()
             os.fsync(transcript_output.fileno())
+            stdout.flush()
         except BaseException as exc:
             active_exception = exc
             raise
@@ -860,15 +917,6 @@ def _run(
                     _raise_cleanup_failure(cleanup_error, detail)
     except OSError as exc:
         return _failed(context.model, f"cannot run Pi: {_exception_detail(exc)}")
-
-    try:
-        _forward_transcript(transcript_spool, transcript_destination, stdout)
-    except (OSError, ValueError) as exc:
-        return _failed(
-            context.model,
-            f"cannot publish transcript: {_exception_detail(exc)}",
-            command_exit=command_exit,
-        )
 
     try:
         patch = git.run(
@@ -1173,44 +1221,6 @@ def _merge_attempt_cleanup(
     return pending, cleanup_exception
 
 
-def _forward_transcript(
-    spool: Path | None,
-    destination: _ArtifactDestination | None,
-    output: BinaryIO,
-) -> None:
-    """Copy the transcript to stdout.
-
-    E10: the transcript is no longer spooled-then-linked, so there is
-    nothing to publish here -- ``destination``, when present, already
-    holds the complete file (Pi wrote directly into it). This only
-    forwards the bytes to stdout, reading back through the still-open
-    parent descriptor so a symlink swapped in after preparation is never
-    followed. When no destination was requested, ``spool`` is the file Pi
-    wrote into instead.
-    """
-    if destination is not None:
-        content_descriptor = os.open(
-            destination.path.name,
-            os.O_RDONLY | os.O_NOFOLLOW,
-            dir_fd=destination.descriptor(),
-        )
-        try:
-            input_file = os.fdopen(content_descriptor, "rb")
-        except BaseException:
-            os.close(content_descriptor)
-            raise
-        try:
-            while chunk := input_file.read(64 * 1024):
-                output.write(chunk)
-        finally:
-            input_file.close()
-        output.flush()
-        return
-    if spool is None:  # pragma: no cover - invariant
-        raise AssertionError("transcript has neither a destination nor a spool")
-    _copy_file(spool, output)
-
-
 def _publish_bytes(content: bytes, destination: _ArtifactDestination) -> None:
     def write(output: BinaryIO) -> None:
         output.write(content)
@@ -1306,13 +1316,6 @@ def _create_artifact_temporary(parent_descriptor: int) -> tuple[str, int]:
         except FileExistsError:
             continue
     raise FileExistsError("cannot allocate an exclusive artifact temporary")
-
-
-def _copy_file(source: Path, output: BinaryIO) -> None:
-    with source.open("rb") as input_file:
-        while chunk := input_file.read(64 * 1024):
-            output.write(chunk)
-    output.flush()
 
 
 def _exception_detail(error: BaseException) -> str:

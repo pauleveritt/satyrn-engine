@@ -6,6 +6,7 @@ Integration tier only; no real model is involved (Ruling: no inference)."""
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -85,3 +86,28 @@ def test_a_fake_model_that_exceeds_the_token_budget_is_budget_exhausted_with_the
     assert payload["budget"]["tokens_used"] > 500
     assert payload["candidate_commit"] is not None
     assert payload["message"].startswith("candidate created; whole-attempt token budget exhausted after")
+
+
+def test_a_slow_fake_model_past_budget_trips_the_budget_without_waiting_for_it_to_exit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Final review fix wave item 1 (Ruling: R18): `attempt` must forward Pi's
+    stdout to `deliver` line by line while Pi runs, not only after Pi exits.
+    ``implement_slow`` emits every ``message_end`` line past the token
+    budget and then sleeps for 20s before exiting; if `attempt` only copied
+    the transcript after Pi exited (the pre-fix behaviour), `deliver` would
+    not see the budget trip until that sleep ended. Asserting deliver
+    returns in well under 10s wall-clock time is the proof that budgets can
+    now trip during the run, not just label the attempt afterwards.
+    """
+    repo, contract_path, _environment = _implement_fixture(tmp_path, capsys, monkeypatch, token_budget=500)
+    monkeypatch.setenv("SATYRN_FAKE_PI_MODE", "implement_slow")
+    monkeypatch.setenv("SATYRN_FAKE_PI_SLEEP_SECONDS", "20")
+
+    started = time.monotonic()
+    receipt = deliver(repo, contract_path, _attempt_command(contract_path), timeout=120.0)
+    elapsed = time.monotonic() - started
+    payload = receipt.payload()
+    assert payload["code"] == "BUDGET_EXHAUSTED"
+    assert payload["budget"]["state"] == "token_exhausted" and payload["budget"]["token_limit"] == 500
+    assert elapsed < 10.0, f"deliver waited {elapsed:.1f}s -- budget did not trip until the fake's sleep ended"
