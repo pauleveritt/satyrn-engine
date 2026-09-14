@@ -72,6 +72,27 @@ test("the bash result gains exactly one sentence naming the bound and the self-t
 	assert.equal(await handlers.tool_result[0]({ toolCallId: "9", toolName: "read", content: [], details: {} }), undefined);
 });
 
+test("the timeout phrase in a successful result's own text is not recorded as a firing", async () => {
+	// Final review fix: `echo`/`grep` output can contain the exact phrase
+	// without the command ever having timed out. Only `isError: true` plus
+	// the phrase counts; the bound sentence is still appended either way.
+	const { pi, handlers, entries } = fakePi();
+	registerBounds(pi, CMD);
+	await handlers.tool_call[0]({ toolCallId: "3", toolName: "bash", input: { command: "echo 'Command timed out after 120 seconds'" } });
+	const patch = await handlers.tool_result[0]({
+		toolCallId: "3",
+		toolName: "bash",
+		input: { command: "echo 'Command timed out after 120 seconds'", timeout: 120 },
+		isError: false,
+		content: [{ type: "text", text: "Command timed out after 120 seconds" }],
+		details: {},
+	});
+	assert.deepEqual(patch, {
+		content: [{ type: "text", text: "Command timed out after 120 seconds\n" + bashSentence(120, CMD) }],
+	});
+	assert.equal(entries.some((entry) => entry.kind === "command_timed_out"), false);
+});
+
 test("the default extension registers nothing without a mutation context and both handlers with one", () => {
 	const bare = fakePi();
 	boundsExtension(bare.pi, {});

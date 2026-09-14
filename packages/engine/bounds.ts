@@ -59,7 +59,14 @@ export function registerBounds(pi: ExtensionAPI, testCommand: readonly string[])
 		const content = Array.isArray(event.content) ? [...event.content] : [];
 		const last = content.length > 0 ? content[content.length - 1] : undefined;
 		if (isRecord(last) && last.type === "text" && typeof last.text === "string") {
-			if (last.text.includes(TIMED_OUT)) await note("command_timed_out", { toolCallId: event.toolCallId, timeout: seconds });
+			// Final review fix: the phrase alone is not proof of a timeout --
+			// output from `echo` or `grep` can put it in a *successful*
+			// result's own text. Pi's bash tool only produces this sentence
+			// on a real timeout, and marks that result `isError: true`;
+			// require both before recording the firing.
+			if (event.isError === true && last.text.includes(TIMED_OUT)) {
+				await note("command_timed_out", { toolCallId: event.toolCallId, timeout: seconds });
+			}
 			content[content.length - 1] = { ...last, text: `${last.text}\n${bashSentence(seconds, testCommand)}` };
 		} else {
 			content.push({ type: "text", text: bashSentence(seconds, testCommand) });
