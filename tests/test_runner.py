@@ -225,3 +225,40 @@ def test_run_tests_skips_carried_paths_absent_at_base_and_defaults_to_head(
 def test_run_tests_still_refuses_a_string_command_that_does_not_match(tmp_path: Path) -> None:
     receipt = run_tests(tmp_path, _contract(), "rm -rf /")
     assert receipt.code is RunnerCode.TEST_COMMAND_NOT_ALLOWED and "only this exact command" in receipt.message
+
+
+def test_run_tests_refuses_when_ls_tree_fails_for_an_explicit_base(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Sibling of `test_run_tests_restores_the_carried_set_from_base_then_runs_suite_preserve_and_checks`:
+    same explicit `base_commit`, but `git ls-tree` on it exits non-zero (a
+    bad or missing base, or a shallow worktree) instead of succeeding.
+    """
+    contract = _contract()
+    calls = _fake_runs(monkeypatch, {("git", "ls-tree", "-r", "--name-only", BASE): (128, b"")})
+    receipt = run_tests(tmp_path, contract, None, base_commit=BASE)
+    assert receipt.code is RunnerCode.TEST_COMMAND_UNAVAILABLE
+    assert receipt.result is None
+    assert receipt.message == f"carried tests could not be read from base {BASE}"
+    assert [argv for argv, _ in calls] == [["git", "ls-tree", "-r", "--name-only", BASE]]
+
+
+def test_run_tests_refuses_when_checkout_fails_to_restore_the_carried_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Sibling of the same success test: `git ls-tree` succeeds and finds a
+    non-empty carried set, but the `git checkout` that restores it exits
+    non-zero. No test command runs.
+    """
+    contract = _contract(preserve=("tests/test_keep.py",))
+    checkout = ("git", "checkout", BASE, "--", "tests/test_keep.py", "tests/conftest.py", "pyproject.toml")
+    calls = _fake_runs(monkeypatch, {
+        ("git", "ls-tree", "-r", "--name-only", BASE): (0, LS_TREE),
+        checkout: (1, b""),
+    })
+    receipt = run_tests(tmp_path, contract, None, base_commit=BASE)
+    assert receipt.code is RunnerCode.TEST_COMMAND_UNAVAILABLE
+    assert receipt.result is None
+    assert receipt.message == f"carried tests could not be restored from base {BASE}"
+    argvs = [argv for argv, _ in calls]
+    assert argvs == [["git", "ls-tree", "-r", "--name-only", BASE], list(checkout)]

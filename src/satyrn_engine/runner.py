@@ -147,32 +147,47 @@ def compact_output(text: str) -> str:
     return "\n".join(lines[-COMPACT_TAIL_LINES:]) + ("\n" if lines else "")
 
 
-def carried_paths(repo: Path, contract: Contract, base: str) -> list[str]:
+def carried_paths(repo: Path, contract: Contract, base: str) -> tuple[list[str], bool]:
     """`preserve` + `checks` + tracked test infrastructure, as they exist at
     `base`: every tracked `conftest.py` and any of `INFRASTRUCTURE` that is
     tracked. Order-preserving, deduplicated, filtered to what `base` really
     tracks -- a path named in `preserve`/`checks` but absent at `base` is
     silently dropped here (R3); `run_tests` reports it separately.
+
+    Returns `(paths, ok)`, where `ok` is `False` when `git ls-tree` itself
+    exited non-zero (a bad or missing `base`, or a shallow worktree) -- in
+    that case `paths` is always `[]`, never a guess. Absent paths are never
+    reported here; the receipt's `carried.absent` (Task 8) does that.
     """
     listed = subprocess.run(["git", "ls-tree", "-r", "--name-only", base], cwd=repo, **_QUIET)
-    tracked = set(listed.stdout.decode("utf-8", errors="replace").splitlines()) if listed.returncode == 0 else set()
+    ok = listed.returncode == 0
+    tracked = set(listed.stdout.decode("utf-8", errors="replace").splitlines()) if ok else set()
     wanted = [
         *contract.preserve,
         *contract.checks,
         *sorted(p for p in tracked if p == "conftest.py" or p.endswith("/conftest.py")),
         *(p for p in INFRASTRUCTURE if p in tracked),
     ]
-    return [p for p in dict.fromkeys(wanted) if p in tracked]
+    return [p for p in dict.fromkeys(wanted) if p in tracked], ok
 
 
-def restore_carried(repo: Path, contract: Contract, base: str) -> tuple[str, ...]:
+def restore_carried(repo: Path, contract: Contract, base: str) -> tuple[tuple[str, ...], bool, bool]:
     """Restore the carried set from the accepted base before every
     self-test, so a model's edits to it never count (steering C3/N2).
+
+    Returns `(present, ls_ok, checkout_ok)`: `ls_ok` mirrors
+    `carried_paths`'s second element; `checkout_ok` is `False` only when a
+    non-empty `present` was found but `git checkout` itself exited non-zero
+    (`True` when there was nothing to restore). Callers that must never
+    silently skip a restoration -- an explicit `base_commit`, or any
+    checkout failure -- check these before trusting `present`.
     """
-    present = carried_paths(repo, contract, base)
+    present, ls_ok = carried_paths(repo, contract, base)
+    checkout_ok = True
     if present:
-        subprocess.run(["git", "checkout", base, "--", *present], cwd=repo, **_QUIET)
-    return tuple(present)
+        checked_out = subprocess.run(["git", "checkout", base, "--", *present], cwd=repo, **_QUIET)
+        checkout_ok = checked_out.returncode == 0
+    return tuple(present), ls_ok, checkout_ok
 
 
 def _run_once(argv: list[str], repo: Path, timeout: float) -> tuple[int, str, bool, bool]:
@@ -223,6 +238,17 @@ def run_tests(
     timed-out run stops the remaining ones. `RunnerResult.output` is the
     compact form of the runs concatenated; `exit_code` is the first
     non-zero one, else 0.
+
+    A restoration failure is a refusal, not a silent no-op that lets the
+    suite run against whatever the model left behind: when `base_commit` is
+    given explicitly and `git ls-tree` on it fails (a bad or missing base,
+    or a shallow worktree), or when `git checkout` fails to restore a
+    non-empty carried set (with an explicit base or the ``HEAD`` fallback
+    alike), this returns `TEST_COMMAND_UNAVAILABLE` naming the base and no
+    test command runs. Only when `base_commit` is ``None`` and `git ls-tree`
+    itself fails does this stay a silent no-op (the pre-existing behavior
+    the non-git-dir integration tests rely on) -- there, `base` is `HEAD`
+    and nothing was carried forward to begin with.
     """
     declared = contract.test_command
     if not declared:
@@ -238,7 +264,17 @@ def run_tests(
         )
 
     base = base_commit or "HEAD"
-    present = restore_carried(repo, contract, base)
+    present, ls_ok, checkout_ok = restore_carried(repo, contract, base)
+    if not checkout_ok:
+        return RunnerReceipt(
+            RunnerCode.TEST_COMMAND_UNAVAILABLE,
+            f"carried tests could not be restored from base {base}",
+        )
+    if base_commit is not None and not ls_ok:
+        return RunnerReceipt(
+            RunnerCode.TEST_COMMAND_UNAVAILABLE,
+            f"carried tests could not be read from base {base}",
+        )
     present_preserve = [path for path in contract.preserve if path in present]
     present_checks = [path for path in contract.checks if path in present]
 
