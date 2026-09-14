@@ -111,3 +111,11 @@
 | tests/fixtures/events/symbol-write-kept.json | created in release-one |
 | tests/fixtures/events/symbol-write-removed.json | created in release-one |
 | tests/test_replay_events.mjs | created in release-one |
+| packages/engine/bounds.ts | created in release-one |
+| tests/test_bounds.mjs | created in release-one |
+| tests/fixtures/events/bounds-absent.json | created in release-one |
+| tests/fixtures/events/bounds-clamped.json | created in release-one |
+| tests/fixtures/events/bounds-kept.json | created in release-one |
+| tests/fixtures/events/bounds-result-sentence.json | created in release-one |
+| tests/fixtures/events/bounds-timed-out.json | created in release-one |
+| tests/fixtures/events/bounds-no-context.json | created in release-one |

@@ -1,0 +1,20 @@
+{
+  "name": "bounds-clamped",
+  "extension": "bounds.ts",
+  "context": {
+    "version": 1,
+    "repo": "/w",
+    "contract": "/w/c.yaml",
+    "revisions": {},
+    "writable_paths": ["src/*"],
+    "test_command": ["uv", "run", "python", "-m", "pytest", "-q"],
+    "symbols": {},
+    "carried": [],
+    "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "events": [
+    {"type": "tool_call", "toolCallId": "c1", "toolName": "bash", "input": {"command": "sleep 1", "timeout": 900},
+     "expect": {"blocked": false, "input": {"command": "sleep 1", "timeout": 300}}}
+  ],
+  "expectedEntries": [{"kind": "command_bounded", "data": {"action": "clamped", "timeout": 300}}]
+}

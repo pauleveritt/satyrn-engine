@@ -1,0 +1,26 @@
+{
+  "name": "bounds-timed-out",
+  "extension": "bounds.ts",
+  "context": {
+    "version": 1,
+    "repo": "/w",
+    "contract": "/w/c.yaml",
+    "revisions": {},
+    "writable_paths": ["src/*"],
+    "test_command": ["uv", "run", "python", "-m", "pytest", "-q"],
+    "symbols": {},
+    "carried": [],
+    "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "events": [
+    {"type": "tool_call", "toolCallId": "c1", "toolName": "bash", "input": {"command": "find /"},
+     "expect": {"blocked": false, "input": {"command": "find /", "timeout": 120}}},
+    {"type": "tool_result", "toolCallId": "c1", "toolName": "bash", "input": {"command": "find /", "timeout": 120},
+     "isError": true, "content": [{"type": "text", "text": "partial\n\nCommand timed out after 120 seconds"}], "details": {},
+     "expect": {"contentEndsWith": "run it with the self_test tool."}}
+  ],
+  "expectedEntries": [
+    {"kind": "command_bounded", "data": {"action": "set", "timeout": 120}},
+    {"kind": "command_timed_out", "data": {"toolCallId": "c1", "timeout": 120}}
+  ]
+}

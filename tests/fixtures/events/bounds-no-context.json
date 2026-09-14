@@ -1,0 +1,7 @@
+{
+  "name": "bounds-no-context",
+  "extension": "bounds.ts",
+  "context": null,
+  "events": [],
+  "expectedHandlers": {"tool_call": 0, "tool_result": 0}
+}

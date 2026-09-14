@@ -1,0 +1,20 @@
+{
+  "name": "bounds-absent",
+  "extension": "bounds.ts",
+  "context": {
+    "version": 1,
+    "repo": "/w",
+    "contract": "/w/c.yaml",
+    "revisions": {},
+    "writable_paths": ["src/*"],
+    "test_command": ["uv", "run", "python", "-m", "pytest", "-q"],
+    "symbols": {},
+    "carried": [],
+    "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "events": [
+    {"type": "tool_call", "toolCallId": "c1", "toolName": "bash", "input": {"command": "find / -name x"},
+     "expect": {"blocked": false, "input": {"command": "find / -name x", "timeout": 120}}}
+  ],
+  "expectedEntries": [{"kind": "command_bounded", "data": {"action": "set", "timeout": 120}}]
+}
