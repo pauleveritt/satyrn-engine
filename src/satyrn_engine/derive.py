@@ -7,6 +7,15 @@ CLI hands in. The developer confirms the result; nobody hand-writes it.
 Two rules restate HP1's builder in satyrn-evals (engine_contract.py:33-84
 and :86-94 at 00c3c18): a directory renders as `dir/*`, and admission is
 fnmatch with `*` spanning `/`. Nothing is imported from that tree.
+
+When the request's tokens yield no writable path other than test files or
+test directories -- naming nothing, naming only a preserved test, or naming
+only tests/ -- `writable_paths` falls back to the repository's top-level
+entries (every top-level tracked file not preserved and not under `checks/`,
+plus `<dir>/*` for every top-level tracked directory except `checks`) so the
+model is never locked out of source by an R1-rung request that names only a
+test command. A request naming a source file or directory is unaffected.
+Only an empty repository (no tracked files) still raises `DeriveError`.
 """
 
 import hashlib
@@ -76,6 +85,36 @@ def _is_test_file(token: str) -> bool:
     return basename.startswith("test_") or basename.endswith("_test.py")
 
 
+def _is_test_only(chosen: tuple[str, ...], tracked: tuple[str, ...]) -> bool:
+    """True when every entry in `chosen` is a test file or a test directory
+    pattern (a directory whose tracked files are all test files) -- including
+    the vacuous case where `chosen` is empty. That is the trigger for the
+    top-level fallback: the request left the model nothing to write but
+    tests.
+    """
+    for entry in chosen:
+        if entry.endswith("/*"):
+            prefix = entry[:-2]
+            under = [p for p in tracked if p == prefix or p.startswith(f"{prefix}/")]
+            if not under or not all(_is_test_file(p) for p in under):
+                return False
+        elif not _is_test_file(entry):
+            return False
+    return True
+
+
+def _fallback_paths(tracked: tuple[str, ...], preserve: tuple[str, ...]) -> tuple[str, ...]:
+    """The repository's top-level entries: every top-level tracked file not
+    preserved and not under `checks/`, plus `<dir>/*` for every top-level
+    tracked directory except `checks` (test directories like `tests/*` stay
+    in, since the model may add tests). Kept to top-level entries only so the
+    prompt stays small on large repositories.
+    """
+    top_files = sorted(p for p in tracked if "/" not in p and p not in preserve)
+    top_dirs = sorted({p.split("/", 1)[0] for p in tracked if "/" in p} - {"checks"})
+    return tuple(sorted(top_files + [f"{d}/*" for d in top_dirs]))
+
+
 def _writable_paths(request: str, tracked: tuple[str, ...], preserve: tuple[str, ...]) -> tuple[str, ...]:
     files, directories = set(tracked), _directories(tracked)
     chosen: list[str] = []
@@ -94,8 +133,14 @@ def _writable_paths(request: str, tracked: tuple[str, ...], preserve: tuple[str,
             if test not in preserve:
                 candidates.append(test)
         chosen.extend(c for c in candidates if c not in chosen)
-    if not chosen:
-        raise DeriveError("name at least one tracked file, tracked directory, or new file under a tracked directory in the request")
+    if _is_test_only(tuple(chosen), tracked):
+        # The request named no source path -- either nothing at all, only a
+        # preserved test, or only test files/directories. Fall back to the
+        # repository's top-level entries so the model can still reach source.
+        fallback = _fallback_paths(tracked, preserve)
+        if not fallback:
+            raise DeriveError("name at least one tracked file, tracked directory, or new file under a tracked directory in the request")
+        return fallback
     return tuple(chosen)
 
 

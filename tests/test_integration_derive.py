@@ -55,10 +55,28 @@ def test_derive_writes_a_contract_under_the_git_dir_and_is_stable_across_reruns(
     assert contract_path_again == contract_path
 
 
-def test_a_request_naming_nothing_is_refused_at_the_cli(
+def test_a_request_naming_nothing_falls_back_to_top_level_entries_at_the_cli(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _init_repo(tmp_path)
+
+    exit_code = main(["derive", "--repo", str(tmp_path), "--", "make", "it", "faster"])
+    captured = capsys.readouterr()
+
+    assert exit_code == ExitCode.OK
+    writable_block = captured.out.split("writable_paths:", 1)[1].split("test_command:", 1)[0]
+    for entry in ("docs/*", "pyproject.toml", "src/*", "tests/*"):
+        assert entry in writable_block
+    assert "checks" not in writable_block
+
+
+def test_an_empty_repository_is_refused_at_the_cli(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True)
 
     exit_code = main(["derive", "--repo", str(tmp_path), "--", "make", "it", "faster"])
     captured = capsys.readouterr()

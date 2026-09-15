@@ -240,7 +240,15 @@ Inside Pi with the package installed (`pi install <engine>/packages/engine`,
 derives a contract from the request and the repository — `writable_paths`
 from the files, directories and new files the request names (naming a
 non-test `.py` file also makes its test file, `tests/test_<stem>.py`,
-writable, unless that test already exists — it is then preserved instead),
+writable, unless that test already exists — it is then preserved instead).
+When the named tokens yield no writable path other than test files or test
+directories (including naming nothing at all), `writable_paths` falls back
+to the repository's top-level entries instead: every top-level tracked file
+not preserved and not under `checks/`, plus `<dir>/*` for every top-level
+tracked directory except `checks` — so a request that only names `tests/`
+(or a preserved test file) still leaves the model free to touch source.
+A named source file or directory behaves exactly as before, with no
+fallback; an empty repository (no tracked files at all) is still refused.
 `test_command` from `[tool.satyrn] self_test` in `pyproject.toml`
 or the default `uv run python -m pytest -q`, `preserve` (tracked test files
 under `tests/`) and `checks` (`checks/`), budgets of 32,000 output tokens and
