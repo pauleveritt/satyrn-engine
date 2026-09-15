@@ -11,11 +11,16 @@ fnmatch with `*` spanning `/`. Nothing is imported from that tree.
 When the request's tokens yield no writable path other than test files or
 test directories -- naming nothing, naming only a preserved test, or naming
 only tests/ -- `writable_paths` falls back to the repository's top-level
-entries (every top-level tracked file not preserved and not under `checks/`,
-plus `<dir>/*` for every top-level tracked directory except `checks`) so the
-model is never locked out of source by an R1-rung request that names only a
-test command. A request naming a source file or directory is unaffected.
-Only an empty repository (no tracked files) still raises `DeriveError`.
+entries (every top-level tracked file that `runner.select_carried` would not
+carry -- `preserve`, `checks`, a tracked `conftest.py` at any depth, or a
+tracked `INFRASTRUCTURE` file -- plus `<dir>/*` for every top-level tracked
+directory except `checks`) so the model is never locked out of source by an
+R1-rung request that names only a test command. A directory whose only
+tracked files are test files and test-support files (`conftest.py`,
+`__init__.py`, a pytest config) still counts as test-only; a directory that
+also carries a real source module does not. A request naming a source file
+or directory is unaffected. Only an empty repository (no tracked files)
+still raises `DeriveError`.
 """
 
 import hashlib
@@ -27,12 +32,14 @@ from fnmatch import fnmatch
 import yaml
 
 from .contract import Contract
+from .runner import select_carried
 
 DEFAULT_TOKEN_BUDGET = 32000
 DEFAULT_TURN_BUDGET = 48
 DEFAULT_SELF_TEST = ("uv", "run", "python", "-m", "pytest", "-q")
 _TOKEN = re.compile(r"[A-Za-z0-9_./-]+")
 _PRESERVE_PATTERNS = ("tests/test_*.py", "tests/*/test_*.py", "tests/*_test.py", "tests/*/*_test.py")
+_TEST_SUPPORT_BASENAMES = ("conftest.py", "__init__.py", "pytest.ini", "setup.cfg", "tox.ini")
 
 
 class DeriveError(Exception):
@@ -85,37 +92,52 @@ def _is_test_file(token: str) -> bool:
     return basename.startswith("test_") or basename.endswith("_test.py")
 
 
+def _is_test_support(path: str) -> bool:
+    return path.rsplit("/", 1)[-1] in _TEST_SUPPORT_BASENAMES
+
+
 def _is_test_only(chosen: tuple[str, ...], tracked: tuple[str, ...]) -> bool:
     """True when every entry in `chosen` is a test file or a test directory
-    pattern (a directory whose tracked files are all test files) -- including
-    the vacuous case where `chosen` is empty. That is the trigger for the
-    top-level fallback: the request left the model nothing to write but
-    tests.
+    pattern -- a directory whose tracked files are all test files once test
+    support files (`conftest.py`, `__init__.py`, a pytest config) are set
+    aside -- including the vacuous case where `chosen` is empty, and the case
+    where a directory holds nothing but support files (e.g. `tests/conftest.py`
+    and `tests/__init__.py`, no `test_*.py` yet). That is the trigger for the
+    top-level fallback: the request left the model nothing to write but tests.
+    A directory that also carries a real source module is not test-only.
     """
     for entry in chosen:
         if entry.endswith("/*"):
             prefix = entry[:-2]
             under = [p for p in tracked if p == prefix or p.startswith(f"{prefix}/")]
-            if not under or not all(_is_test_file(p) for p in under):
+            if not under:
+                return False
+            non_support = [p for p in under if not _is_test_support(p)]
+            if not all(_is_test_file(p) for p in non_support):
                 return False
         elif not _is_test_file(entry):
             return False
     return True
 
 
-def _fallback_paths(tracked: tuple[str, ...], preserve: tuple[str, ...]) -> tuple[str, ...]:
-    """The repository's top-level entries: every top-level tracked file not
-    preserved and not under `checks/`, plus `<dir>/*` for every top-level
-    tracked directory except `checks` (test directories like `tests/*` stay
-    in, since the model may add tests). Kept to top-level entries only so the
-    prompt stays small on large repositories.
+def _fallback_paths(tracked: tuple[str, ...], preserve: tuple[str, ...], checks: tuple[str, ...]) -> tuple[str, ...]:
+    """The repository's top-level entries: every top-level tracked file that
+    `select_carried` (runner.py) would not carry -- `preserve`, `checks`, a
+    tracked `conftest.py` at any depth, or a tracked `INFRASTRUCTURE` file --
+    plus `<dir>/*` for every top-level tracked directory except `checks`
+    (test directories like `tests/*` stay in, since the model may add
+    tests). `dir/*` patterns are left as-is: scope.ts refuses a carried file
+    inside one regardless of what the pattern would otherwise admit. Kept to
+    top-level entries only so the prompt stays small on large repositories.
     """
-    top_files = sorted(p for p in tracked if "/" not in p and p not in preserve)
+    carried = set(select_carried(Contract(id="", task="", preserve=preserve, checks=checks), tracked))
+    top_files = sorted(p for p in tracked if "/" not in p and p not in carried)
     top_dirs = sorted({p.split("/", 1)[0] for p in tracked if "/" in p} - {"checks"})
     return tuple(sorted(top_files + [f"{d}/*" for d in top_dirs]))
 
 
-def _writable_paths(request: str, tracked: tuple[str, ...], preserve: tuple[str, ...]) -> tuple[str, ...]:
+def _writable_paths(request: str, tracked: tuple[str, ...], preserve: tuple[str, ...],
+                    checks: tuple[str, ...]) -> tuple[str, ...]:
     files, directories = set(tracked), _directories(tracked)
     chosen: list[str] = []
     for raw in _TOKEN.findall(request):
@@ -137,7 +159,7 @@ def _writable_paths(request: str, tracked: tuple[str, ...], preserve: tuple[str,
         # The request named no source path -- either nothing at all, only a
         # preserved test, or only test files/directories. Fall back to the
         # repository's top-level entries so the model can still reach source.
-        fallback = _fallback_paths(tracked, preserve)
+        fallback = _fallback_paths(tracked, preserve, checks)
         if not fallback:
             raise DeriveError("name at least one tracked file, tracked directory, or new file under a tracked directory in the request")
         return fallback
@@ -153,7 +175,7 @@ def derive_contract(request: str, facts: RepoFacts, *, token_budget: int = DEFAU
     preserve = tuple(sorted(p for p in facts.tracked if any(fnmatch(p, pat) for pat in _PRESERVE_PATTERNS)))
     checks = tuple(sorted(p for p in facts.tracked if p.startswith("checks/")))
     return Contract(id=contract_id(text, facts.head), task=text,
-                    writable_paths=_writable_paths(text, facts.tracked, preserve), test_command=command,
+                    writable_paths=_writable_paths(text, facts.tracked, preserve, checks), test_command=command,
                     turn_budget=turn_budget, preserve=preserve, checks=checks, token_budget=token_budget)
 
 

@@ -244,9 +244,13 @@ writable, unless that test already exists — it is then preserved instead).
 When the named tokens yield no writable path other than test files or test
 directories (including naming nothing at all), `writable_paths` falls back
 to the repository's top-level entries instead: every top-level tracked file
-not preserved and not under `checks/`, plus `<dir>/*` for every top-level
-tracked directory except `checks` — so a request that only names `tests/`
-(or a preserved test file) still leaves the model free to touch source.
+that `select_carried` would not carry (`preserve`, `checks`, a tracked
+`conftest.py` at any depth, or a tracked infrastructure file such as
+`pyproject.toml`), plus `<dir>/*` for every top-level tracked directory
+except `checks` — so a request that only names `tests/` (or a preserved
+test file) still leaves the model free to touch source. A directory whose
+only tracked files are test files and test-support files (`conftest.py`,
+`__init__.py`, a pytest config) still counts as naming nothing but tests.
 A named source file or directory behaves exactly as before, with no
 fallback; an empty repository (no tracked files at all) is still refused.
 `test_command` from `[tool.satyrn] self_test` in `pyproject.toml`

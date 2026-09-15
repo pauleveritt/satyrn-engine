@@ -47,7 +47,7 @@ def test_carried_sets_and_budgets_are_derived_from_the_repo() -> None:
     assert (contract.token_budget, contract.turn_budget) == (32000, 48)
 
 
-_FALLBACK_TOP_LEVEL = ("docs/*", "pyproject.toml", "src/*", "tests/*")
+_FALLBACK_TOP_LEVEL = ("docs/*", "src/*", "tests/*")          # pyproject.toml is carried, not writable
 
 
 def test_a_request_naming_nothing_falls_back_to_top_level_entries() -> None:
@@ -101,6 +101,36 @@ def test_a_new_test_file_named_alone_also_falls_back() -> None:
     # naming the tests/ directory or naming nothing.
     contract = derive_contract("Create tests/test_new.py", FACTS)
     assert contract.writable_paths == _FALLBACK_TOP_LEVEL
+
+
+def test_a_tests_directory_of_only_support_files_still_falls_back() -> None:
+    # tests/conftest.py and tests/__init__.py are test-support, not source --
+    # the directory has no non-test file, so naming only tests/ still counts
+    # as naming nothing but tests.
+    tracked = ("app.py", "tests/conftest.py", "tests/__init__.py")
+    contract = derive_contract("uv run python -m pytest tests/", RepoFacts(tracked, PYPROJECT, HEAD))
+    assert contract.writable_paths == ("app.py", "tests/*")
+
+
+def test_a_directory_with_a_real_module_alongside_tests_is_not_test_only() -> None:
+    # tests/helpers.py is a real source module living under tests/, so the
+    # directory is not test-only and naming it does not trigger the fallback.
+    tracked = ("app.py", "tests/helpers.py", "tests/test_app.py")
+    contract = derive_contract("Rework tests/", RepoFacts(tracked, PYPROJECT, HEAD))
+    assert contract.writable_paths == ("tests/*",)
+
+
+def test_the_fallback_omits_carried_top_level_files_but_keeps_uv_lock() -> None:
+    # pyproject.toml and a root conftest.py are carried (runner.select_carried:
+    # preserve, checks, conftest.py at any depth, INFRASTRUCTURE) and so are
+    # refused by scope even when writable_paths would otherwise admit them --
+    # listing them as writable would be a lie. uv.lock is not carried, so it
+    # stays in the fallback.
+    tracked = ("pyproject.toml", "conftest.py", "uv.lock", "src/app/gate.py", "tests/test_gate.py")
+    contract = derive_contract("make it faster", RepoFacts(tracked, PYPROJECT, HEAD))
+    assert contract.writable_paths == ("src/*", "tests/*", "uv.lock")
+    assert "pyproject.toml" not in contract.writable_paths
+    assert "conftest.py" not in contract.writable_paths
 
 
 def test_a_flat_layout_derives_the_sibling_test_and_preserves_the_existing_one() -> None:

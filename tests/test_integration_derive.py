@@ -65,9 +65,10 @@ def test_a_request_naming_nothing_falls_back_to_top_level_entries_at_the_cli(
 
     assert exit_code == ExitCode.OK
     writable_block = captured.out.split("writable_paths:", 1)[1].split("test_command:", 1)[0]
-    for entry in ("docs/*", "pyproject.toml", "src/*", "tests/*"):
+    for entry in ("docs/*", "src/*", "tests/*"):
         assert entry in writable_block
     assert "checks" not in writable_block
+    assert "pyproject.toml" not in writable_block          # carried, so refused if listed writable
 
 
 def test_an_empty_repository_is_refused_at_the_cli(
