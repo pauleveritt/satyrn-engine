@@ -122,3 +122,4 @@
 | tests/test_bounds_pin.py | created in release-one |
 | tests/test_integration_implement.py | created in release-one |
 | tests/fixtures/events/bounds-timeout-text-not-error.json | created in release-one |
+| tests/test_integration_pi_pump.py | created in release-one |

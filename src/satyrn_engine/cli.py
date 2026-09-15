@@ -45,10 +45,11 @@ def _attempt_termination_guard(runner: SubprocessPiRunner) -> Iterator[None]:
     """Keep SIGTERM/SIGHUP from bypassing artifact finalization.
 
     The temporary Python handlers forward a direct signal to Pi's separate
-    process group, then return. This Engine process waits for Pi to exit and
-    finishes forwarding the transcript -- already streamed straight into its
-    destination as Pi wrote it (E10) -- and publishing the patch, before
-    returning.
+    process group, then return. `attempt` forwards Pi's stdout live as it is
+    written (E10), and the pump keeps draining that stream into whichever
+    sink still works even if one sink fails (R21), so Pi never blocks on a
+    full pipe. This Engine process waits for Pi to exit, then publishes the
+    patch before returning.
     """
     def request_finalization(signum: int, frame: FrameType | None) -> None:
         del frame

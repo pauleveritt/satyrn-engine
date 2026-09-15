@@ -291,28 +291,30 @@ class SubprocessPiRunner:
         )
         self._process = process
         self._forward_termination()
-        pump_error: BaseException | None = None
+        sink_errors: dict[str, BaseException] = {}
 
         def pump() -> None:
             # R18: a reader thread over Popen.stdout, not a post-exit copy --
-            # every line Pi writes reaches `transcript` and `forward` while
-            # Pi is still running, each flushed immediately so a budget
-            # counter reading `forward` live (deliver's `_stream_implementer`)
-            # sees it as soon as Pi does. Iterating the buffered pipe reads
-            # line by line and naturally returns any unterminated final
-            # line (no trailing "\n") once the child closes stdout, so a
-            # partial last line is forwarded rather than lost, and iteration
-            # simply ends -- no deadlock -- once the pipe reaches EOF.
-            nonlocal pump_error
+            # every line reaches `transcript` and `forward` while Pi runs,
+            # flushed at once so deliver's live budget counter sees it.
+            # R21: a failing sink is dropped, never the read loop. If
+            # `forward` breaks (deliver killed, `attempt | head`) or the
+            # transcript cannot be written, the pump keeps draining Pi's
+            # stdout into the surviving sink, so Pi never blocks on a full
+            # pipe and `process.wait()` returns. The first error per sink is
+            # raised by run() after Pi exits.
             assert process.stdout is not None
+            sinks = {"transcript": transcript, "forward": forward}
             try:
                 for line in process.stdout:
-                    transcript.write(line)
-                    transcript.flush()
-                    forward.write(line)
-                    forward.flush()
+                    for name in [name for name in sinks if name not in sink_errors]:
+                        try:
+                            sinks[name].write(line)
+                            sinks[name].flush()
+                        except (OSError, ValueError) as exc:
+                            sink_errors[name] = exc
             except BaseException as exc:  # noqa: BLE001 - surfaced by run(), not swallowed
-                pump_error = exc
+                sink_errors.setdefault("pipe", exc)
 
         reader = threading.Thread(target=pump, name="satyrn-attempt-pi-pump", daemon=True)
         reader.start()
@@ -320,14 +322,16 @@ class SubprocessPiRunner:
             exit_code = process.wait()
         finally:
             # Join before returning: the pipe's write end can outlive
-            # `process.wait()` returning by a few scheduler ticks, and the
-            # transcript must be complete before `_run` flushes/closes it.
+            # `process.wait()` by a few scheduler ticks, and the transcript
+            # must be complete before `_run` flushes/closes it.
             reader.join()
             self._process = None
             if process.stdout is not None:
                 process.stdout.close()
-        if pump_error is not None:
-            raise pump_error
+        for name in ("pipe", "transcript", "forward"):
+            if name in sink_errors:
+                exc = sink_errors[name]
+                raise OSError(f"cannot {'read Pi output' if name == 'pipe' else 'write Pi output to ' + name}: {exc}") from exc
         return exit_code
 
 
