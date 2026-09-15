@@ -615,7 +615,11 @@ export async function exchange(
 	const { stdout, code } = await collect(
 		spawner,
 		"uv",
-		["run", "--project", engineRepo, "satyrn-engine", "protocol"],
+		// The protocol exchange only runs inside a Pi child that
+		// `uv run --project <engine> satyrn-engine attempt` started, so the
+		// engine environment is already synced; re-syncing there can only
+		// fail (a read-only export cannot be re-synced) or race.
+		["run", "--no-sync", "--project", engineRepo, "satyrn-engine", "protocol"],
 		engineRepo,
 		deadlineMs,
 		request,

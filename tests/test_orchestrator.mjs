@@ -277,6 +277,21 @@ test("delivery invocation classifies existing path aliases by filesystem identit
 	}
 });
 
+test("one-shot exchange runs the protocol subcommand with --no-sync (a read-only export cannot be re-synced)", async () => {
+	let seenArgs = null;
+	const recordingSpawner = (command, args, options) => {
+		seenArgs = args;
+		return child({ stdout: CHECK_OK });
+	};
+	assert.equal((await exchange(recordingSpawner, "{}", "/engine", 100)).code, "OK");
+	assert.deepEqual(seenArgs, ["run", "--no-sync", "--project", "/engine", "satyrn-engine", "protocol"]);
+});
+
+test("derive and delivery invocations still let uv sync (a developer's first /implement needs it)", () => {
+	assert.ok(!buildDeriveInvocation("/repo", "request", "/engine").args.includes("--no-sync"));
+	assert.ok(!buildDeliveryInvocation("/repo", "task.yaml", "m", "/engine").args.includes("--no-sync"));
+});
+
 test("one-shot exchange handles success and transport refusals", async () => {
 	const settledChild = child({ stdout: CHECK_OK, stderr: "ignored diagnostic" });
 	assert.equal((await exchange(spawnerFor(settledChild), "{}", "/engine", 100)).code, "OK");
