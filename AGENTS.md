@@ -12,3 +12,9 @@ sequences before they run live (`tools/replay_guards.mjs`, `tests/fixtures/guard
 Product code never imports a laboratory. One process per operation; no
 sidecar. Commit at plan-task boundaries; never merge or push; never run a
 model unless the plan's step names it. Every file has a row in `PROVENANCE.md`.
+
+An Engine component exists to act on a binding constraint that diagnosed
+admission in `satyrn-evals` found on the comparison's harness; its plan cites
+that diagnosis and the offline estimate that justified building it. If the
+harness that produced the diagnosis is later found defective, the component's
+justification is re-opened before more work goes into it.
