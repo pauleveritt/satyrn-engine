@@ -360,6 +360,20 @@ test("a self-test the model ran after its last change satisfies the gate; a land
 		{ kind: "self_test_enforced", data: { generation: 1, code: "OK", exit_code: 0, follow_up: false } },
 	]);
 	assert.deepEqual(gate.pi.sent, []);
+	// Silent rows: a refused Satyrn edit and an edit result lacking
+	// `details.satyrn` (some other edit tool) neither count as a landed
+	// mutation, so the gate the checked self-test already satisfied stays
+	// satisfied -- no re-arm, no further exchange.
+	await gate.result({ toolCallId: "e2", toolName: "edit", input: {}, isError: true, content: [],
+		details: { satyrn: true, ok: false, code: "SYMBOL_REMOVED", result: null } });
+	await gate.result({ toolCallId: "e3", toolName: "edit", input: {}, isError: false, content: [],
+		details: { ok: true } });
+	await gate.turnEnd(FINAL);
+	assert.equal(gate.exchanges(), 2);
+	assert.deepEqual(gate.pi.entries, [
+		{ kind: "self_test_enforced", data: { generation: 1, code: "OK", exit_code: 0, follow_up: false } },
+	]);
+	assert.deepEqual(gate.pi.sent, []);
 });
 
 test("a redirected bash test run satisfies the gate; a successful write re-arms it; a refused write does not", async () => {
