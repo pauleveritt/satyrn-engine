@@ -1,0 +1,13 @@
+{
+  "name": "self-test-enforced",
+  "extension": "runner.ts",
+  "context": {"version": 1, "repo": "/w", "contract": "/w/c.yaml", "revisions": {"app.py": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "writable_paths": ["app.py", "tests/*"], "test_command": ["uv", "run", "python", "-m", "pytest", "-q"], "symbols": {}, "carried": [], "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "expectedHandlers": {"tool_call": 1, "tool_result": 1, "turn_end": 1},
+  "events": [
+    {"type": "tool_result", "toolCallId": "e1", "toolName": "edit", "input": {"path": "app.py", "edits": [{"oldText": "a", "newText": "b"}]}, "isError": false, "content": [{"type": "text", "text": "1 b"}], "details": {"satyrn": true, "ok": true, "code": "OK", "result": {"path": "app.py", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "region": "1 b"}}, "expect": {"patched": false}},
+    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "toolUse", "content": [{"type": "toolCall", "id": "e1", "name": "edit", "arguments": {}}]}, "expect": {"followUp": false}},
+    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "The fix is in app.py."}]}, "expect": {"followUp": "Test command exited 1\nFAILED tests/test_app.py::test_home - assert 404 == 200"}},
+    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "The fix is in app.py."}]}, "expect": {"followUp": false}}
+  ],
+  "expectedEntries": [{"kind": "self_test_enforced", "data": {"generation": 1, "code": "OK", "exit_code": 1, "follow_up": true}}]
+}

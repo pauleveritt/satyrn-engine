@@ -262,6 +262,7 @@ class GuardFirings:
     command_bounded: int = 0
     command_timed_out: int = 0
     self_test_redirected: int = 0
+    self_test_enforced: int = 0
 
     @classmethod
     def from_counter(cls, counter: TurnCounter) -> GuardFirings:

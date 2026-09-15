@@ -267,7 +267,11 @@ One fresh Pi runs in a worktree branched from `HEAD` with the guards loaded
 child): the loop breaker; `edit`/`write` refused outside `writable_paths`; an
 `edit` or `write` that would remove a symbol the base defines refused with
 what to do instead; bash `timeout` set to 120 s when absent and clamped at
-300 s, the result naming the bound and the self-test. `preserve`, `checks`,
+300 s, the result naming the bound and the self-test; a bash command that
+only runs pytest answered by `self_test` instead (`self_test_redirected`);
+and, when the model stops with no self-test since its last `edit` or
+`write`, one run by the Engine whose failure goes back to the model as a
+single follow-up message (`self_test_enforced`). `preserve`, `checks`,
 tracked `conftest.py` files and tracked pytest configuration
 (`pyproject.toml`, `pytest.ini`, `setup.cfg`, `tox.ini`) are restored from the
 base into the worktree before every `self_test` run and before validation, so

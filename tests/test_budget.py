@@ -111,12 +111,13 @@ def test_counter_sums_assistant_usage_tool_calls_and_guard_firings_only() -> Non
         '{"type":"tool_execution_start","toolName":"bash"}', _assistant(20, 70),
         '{"type":"message_update","usage":{"output":5000}}',
         _entry("loop_broken"), _entry("command_bounded"), _entry("command_bounded"), _entry("unknown_kind"),
-        _entry("self_test_redirected"),
+        _entry("self_test_redirected"), _entry("self_test_enforced"),
     ):
         counter.feed(line)
     assert (counter.turns, counter.tokens_in, counter.tokens_out, counter.tool_calls) == (1, 120, 120, 1)
     assert counter.guard_firings == {"loop_broken": 1, "scope_refused": 0, "symbol_preserved": 0,
-                                     "command_bounded": 2, "command_timed_out": 0, "self_test_redirected": 1}
+                                     "command_bounded": 2, "command_timed_out": 0, "self_test_redirected": 1,
+                                     "self_test_enforced": 1}
 
 
 def test_a_token_limit_trips_on_the_limit_plus_one() -> None:

@@ -245,6 +245,7 @@ def test_guard_firings_come_from_the_counter_and_render_every_kind() -> None:
         "command_bounded": 2,
         "command_timed_out": 0,
         "self_test_redirected": 0,
+        "self_test_enforced": 0,
     }
 
 

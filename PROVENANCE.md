@@ -125,3 +125,5 @@
 | tests/test_integration_pi_pump.py | created in release-one |
 | tests/fixtures/events/self-test-redirected.json | created in release-one |
 | tests/fixtures/events/self-test-not-redirected.json | created in release-one |
+| tests/fixtures/events/self-test-enforced.json | created in release-one |
+| tests/fixtures/events/self-test-not-enforced.json | created in release-one |

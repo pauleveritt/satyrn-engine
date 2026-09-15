@@ -8,6 +8,8 @@ import runnerExtension, {
 	createRunner,
 	parseTestResponse,
 	REDIRECTED_COMMAND,
+	enforcedMessage,
+	isFinalTurn,
 	isTestRunCommand,
 	redirectSentence,
 	registerRunner,
@@ -290,6 +292,110 @@ test("a redirected run the engine refuses is an error result; any other bash cal
 	assert.deepEqual(pi.entries.map((entry) => entry.kind), ["self_test_redirected"]);
 });
 
+const FINAL = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Done." }] };
+const CALLING = { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "t", name: "read", arguments: {} }] };
+
+test("a final turn is an assistant message with no tool call that did not error or abort", () => {
+	assert.equal(isFinalTurn(FINAL), true);
+	assert.equal(isFinalTurn({ ...FINAL, stopReason: "length" }), true);
+	assert.equal(isFinalTurn(CALLING), false);
+	assert.equal(isFinalTurn({ ...FINAL, stopReason: "error" }), false);
+	assert.equal(isFinalTurn({ ...FINAL, stopReason: "aborted" }), false);
+	assert.equal(isFinalTurn({ role: "user", content: [] }), false);
+	assert.equal(isFinalTurn(undefined), false);
+});
+
+function gated(responses) {
+	const pi = fakePi();
+	let exchanges = 0;
+	registerRunner(pi.api, context(), async () => responses[Math.min(exchanges++, responses.length - 1)]);
+	return {
+		pi,
+		exchanges: () => exchanges,
+		turnEnd: (message) => pi.handlers.turn_end[0]({ type: "turn_end", turnIndex: 0, message, toolResults: [] }),
+		result: (event) => pi.handlers.tool_result[0](event),
+		call: (event) => pi.handlers.tool_call[0](event),
+	};
+}
+
+const LANDED_EDIT = { toolCallId: "e1", toolName: "edit", input: {}, isError: false, content: [],
+	details: { satyrn: true, ok: true, code: "OK", result: { path: "app.py", sha256: "1".repeat(64), region: "" } } };
+
+test("a session that ends without a self-test gets one enforced run, and a failure goes back as one follow-up", async () => {
+	const gate = gated([success({ exit_code: 1, output: "FAILED tests/test_app.py::test_home - assert 404 == 200" })]);
+	assert.equal(await gate.turnEnd(CALLING), undefined);
+	assert.equal(gate.exchanges(), 0);
+	await gate.turnEnd(FINAL);
+	assert.equal(gate.exchanges(), 1);
+	assert.deepEqual(gate.pi.entries, [
+		{ kind: "self_test_enforced", data: { generation: 0, code: "OK", exit_code: 1, follow_up: true } },
+	]);
+	assert.deepEqual(gate.pi.sent, [{
+		message: {
+			customType: "self_test_enforced",
+			content: enforcedMessage("Test command exited 1\nFAILED tests/test_app.py::test_home - assert 404 == 200"),
+			display: true,
+			details: undefined,
+		},
+		options: { deliverAs: "followUp" },
+	}]);
+	assert.equal(enforcedMessage("R"),
+		"Before you finish: the Engine ran self_test because nothing had run it since the last change, and it did not pass.\nR");
+	// Once per generation: ending again with no new change runs nothing.
+	await gate.turnEnd(FINAL);
+	assert.equal(gate.exchanges(), 1);
+	assert.equal(gate.pi.sent.length, 1);
+});
+
+test("a self-test the model ran after its last change satisfies the gate; a landed edit re-arms it and a pass sends nothing", async () => {
+	const gate = gated([success({ exit_code: 0, output: "3 passed" })]);
+	await gate.pi.tool.execute("s1", {});
+	await gate.turnEnd(FINAL);
+	assert.equal(gate.exchanges(), 1);
+	assert.deepEqual(gate.pi.entries, []);
+	await gate.result(LANDED_EDIT);
+	await gate.turnEnd(FINAL);
+	assert.equal(gate.exchanges(), 2);
+	assert.deepEqual(gate.pi.entries, [
+		{ kind: "self_test_enforced", data: { generation: 1, code: "OK", exit_code: 0, follow_up: false } },
+	]);
+	assert.deepEqual(gate.pi.sent, []);
+});
+
+test("a redirected bash test run satisfies the gate; a successful write re-arms it; a refused write does not", async () => {
+	const gate = gated([success({ exit_code: 0, output: "3 passed" })]);
+	await gate.call({ toolCallId: "b1", toolName: "bash", input: { command: "uv run pytest -q" } });
+	await gate.result({ toolCallId: "b1", toolName: "bash", input: { command: REDIRECTED_COMMAND }, isError: false, content: [], details: undefined });
+	await gate.result({ toolCallId: "w0", toolName: "write", input: { path: "app.py", content: "x" }, isError: true, content: [], details: undefined });
+	await gate.turnEnd(FINAL);
+	assert.equal(gate.exchanges(), 1);
+	await gate.result({ toolCallId: "w1", toolName: "write", input: { path: "app.py", content: "x" }, isError: false, content: [], details: undefined });
+	await gate.turnEnd(FINAL);
+	assert.equal(gate.exchanges(), 2);
+	assert.deepEqual(gate.pi.entries.map((entry) => entry.kind), ["self_test_redirected", "self_test_enforced"]);
+});
+
+test("an enforced run the engine refuses is recorded and sends nothing; an errored or aborted turn is never gated", async () => {
+	const gate = gated([{ version: 1, ok: false, code: "TEST_COMMAND_UNAVAILABLE", message: "gone", result: null }]);
+	await gate.turnEnd({ ...FINAL, stopReason: "error" });
+	await gate.turnEnd({ ...FINAL, stopReason: "aborted" });
+	assert.equal(gate.exchanges(), 0);
+	await gate.turnEnd(FINAL);
+	assert.deepEqual(gate.pi.entries, [
+		{ kind: "self_test_enforced", data: { generation: 0, code: "TEST_COMMAND_UNAVAILABLE", exit_code: null, follow_up: false } },
+	]);
+	assert.deepEqual(gate.pi.sent, []);
+	await gate.turnEnd(FINAL);
+	assert.equal(gate.exchanges(), 1);
+});
+
+test("a timed-out enforced run is a failure and goes back to the model", async () => {
+	const gate = gated([success({ exit_code: -1, output: "still running", timed_out: true })]);
+	await gate.turnEnd(FINAL);
+	assert.equal(gate.pi.entries[0].data.follow_up, true);
+	assert.match(gate.pi.sent[0].message.content, /timed out/);
+});
+
 test("default extension leaves the tool set alone without explicit context", () => {
 	const pi = fakePi();
 	runnerExtension(pi.api, {});
@@ -406,8 +512,12 @@ function fakePi() {
 	let tool;
 	const handlers = {};
 	const entries = [];
+	const sent = [];
 	return {
 		api: {
+			sendMessage(message, options) {
+				sent.push({ message, options });
+			},
 			registerTool(candidate) {
 				tool = candidate;
 			},
@@ -420,6 +530,7 @@ function fakePi() {
 		},
 		handlers,
 		entries,
+		sent,
 		get tool() {
 			return tool;
 		},

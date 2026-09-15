@@ -20,6 +20,7 @@ GUARD_KINDS: tuple[str, ...] = (
     "command_bounded",
     "command_timed_out",
     "self_test_redirected",
+    "self_test_enforced",
 )
 
 

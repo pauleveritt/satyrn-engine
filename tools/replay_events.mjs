@@ -4,7 +4,9 @@
 // fake engine exchange -- so no `uv run satyrn-engine protocol` is ever
 // spawned under `just gates` (M5). See tests/*-brief.md's fixture shape for
 // the event and expectation vocabulary this understands: `tool_call`,
-// `tool_result`, `tool_exec`, and `expectedEntries`.
+// `tool_result`, `tool_exec`, `turn_end` (Phase 3b: `expect.followUp` is
+// false, or a string the one queued follow-up message contains), and
+// `expectedEntries`.
 
 import { readFile, readdir } from "node:fs/promises";
 import assert from "node:assert/strict";
@@ -38,8 +40,12 @@ function fakePi() {
 	const handlers = {};
 	const tools = {};
 	const entries = [];
+	const sent = [];
 	return {
 		pi: {
+			sendMessage(message, options) {
+				sent.push({ message, options });
+			},
 			on(event, handler) {
 				(handlers[event] ??= []).push(handler);
 			},
@@ -53,6 +59,7 @@ function fakePi() {
 		handlers,
 		tools,
 		entries,
+		sent,
 	};
 }
 
@@ -195,6 +202,23 @@ async function replayToolExec(tools, event) {
 	return problems;
 }
 
+async function replayTurnEnd(handlers, sent, event) {
+	const before = sent.length;
+	for (const handler of handlers ?? []) await handler({ type: "turn_end", turnIndex: 0, message: event.message, toolResults: [] });
+	const queued = sent.slice(before);
+	const expect = event.expect ?? {};
+	const problems = [];
+	if (expect.followUp === false && queued.length > 0) {
+		problems.push(`expect.followUp false but ${queued.length} message(s) were queued`);
+	}
+	if (typeof expect.followUp === "string") {
+		if (queued.length !== 1 || queued[0].options?.deliverAs !== "followUp" || !String(queued[0].message?.content).includes(expect.followUp)) {
+			problems.push(`expect.followUp ${JSON.stringify(expect.followUp)} not one follow-up in ${JSON.stringify(queued)}`);
+		}
+	}
+	return problems;
+}
+
 function checkExpectedHandlers(fixture, handlers) {
 	const problems = [];
 	for (const [event, count] of Object.entries(fixture.expectedHandlers ?? {})) {
@@ -227,7 +251,7 @@ function checkExpectedEntries(fixture, entries) {
 export async function replayFixture(fixture) {
 	const extensionUrl = pathToFileURL(resolve(engineDirectory, fixture.extension));
 	const { default: registerExtension } = await import(extensionUrl);
-	const { pi, handlers, tools, entries } = fakePi();
+	const { pi, handlers, tools, entries, sent } = fakePi();
 	const environment =
 		fixture.context === null
 			? {}
@@ -246,6 +270,9 @@ export async function replayFixture(fixture) {
 				break;
 			case "tool_exec":
 				problems.push(...(await replayToolExec(tools, event)));
+				break;
+			case "turn_end":
+				problems.push(...(await replayTurnEnd(handlers.turn_end, sent, event)));
 				break;
 			default:
 				problems.push(`unknown event type ${event.type}`);

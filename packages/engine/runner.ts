@@ -397,9 +397,39 @@ export function redirectSentence(testCommand: readonly string[]): string {
 	return `The Engine ran self_test in place of this command: it runs "${testCommand.join(" ")}" over the whole suite, whatever paths or flags the command named.`;
 }
 
+/**
+ * The completion gate (Phase 3b). When the model's turn ends with no tool
+ * call -- Pi is about to stop -- and no self-test has completed through the
+ * Engine since the last landed `edit` or `write` (or none ever ran), the
+ * Engine runs `self_test` itself, once per mutation generation. A failing or
+ * timed-out run goes back to the model as one follow-up message; a pass, or
+ * a run the engine refuses, ends the session as it would have.
+ */
+export function enforcedMessage(resultText: string): string {
+	return `Before you finish: the Engine ran self_test because nothing had run it since the last change, and it did not pass.\n${resultText}`;
+}
+
+/** An assistant message that ends the agent loop: no tool call, and not an error or an abort. */
+export function isFinalTurn(message: unknown): boolean {
+	if (!isRecord(message) || message.role !== "assistant") return false;
+	if (message.stopReason === "error" || message.stopReason === "aborted") return false;
+	const content = Array.isArray(message.content) ? message.content : [];
+	return !content.some((part) => isRecord(part) && part.type === "toolCall");
+}
+
 export function registerRunner(pi: ExtensionAPI, context: MutationContext, exchangeRequest: ExchangeRequest): void {
 	const runner = createRunner(context, exchangeRequest);
 	const redirected = new Set<string>();
+	// A generation counts landed mutations; `checked` is the generation the
+	// last completed self-test ran against (null: none has).
+	let generation = 0;
+	let checked: number | null = null;
+	const run = async (toolCallId: string): Promise<RunnerToolResult> => {
+		const at = generation;
+		const result = await runner.execute(toolCallId, {});
+		if (result.details.ok) checked = at;
+		return result;
+	};
 	const note = async (kind: string, data: Record<string, unknown>): Promise<void> => {
 		try {
 			await pi.appendEntry(kind, data);
@@ -422,7 +452,7 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 			"paths, checks, and tracked test infrastructure -- are restored first, so edits to them never count. " +
 			"Any argument supplied is ignored; the contract's own command always runs.",
 		parameters: TestParameters,
-		execute: runner.execute,
+		execute: (toolCallId: string) => run(toolCallId),
 	});
 	pi.on("tool_call", async (event) => {
 		// Pi: `event.input` is mutable and later handlers and the tool see the
@@ -435,8 +465,16 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 		return undefined;
 	});
 	pi.on("tool_result", async (event) => {
+		if (event.toolName === "edit" && isRecord(event.details) && event.details.satyrn === true && event.details.ok === true) {
+			generation += 1;
+			return undefined;
+		}
+		if (event.toolName === "write" && event.isError !== true) {
+			generation += 1;
+			return undefined;
+		}
 		if (event.toolName === "bash" && redirected.delete(event.toolCallId)) {
-			const result = await runner.execute(event.toolCallId, {});
+			const result = await run(event.toolCallId);
 			return {
 				content: [{ type: "text", text: `${redirectSentence(context.test_command)}\n${result.content[0].text}` }],
 				isError: result.details.ok !== true,
@@ -446,6 +484,35 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 			return undefined;
 		}
 		return event.details.ok === true ? undefined : { isError: true };
+	});
+	pi.on("turn_end", async (event) => {
+		// Pi awaits turn_end listeners before it polls its steering and
+		// follow-up queues (pi-agent-core agent-loop.js runLoop), so a
+		// follow-up queued here continues the same run: one agent_end. A
+		// custom message, not `sendUserMessage`: that path emits
+		// `queue_update` events into the --mode json stream
+		// (agent-session.js _queueFollowUp), and the custom type names the
+		// Engine as the message's author; Pi hands it to the model as a
+		// user message (core/messages.js convertToLlm).
+		if (!isFinalTurn(event.message) || checked === generation) return;
+		const at = generation;
+		const result = await runner.execute("self_test_enforced", {});
+		checked = at;
+		const details = result.details;
+		const passed = details.ok && details.result.exit_code === 0 && !details.result.timed_out;
+		const followUp = details.ok && !passed;
+		await note("self_test_enforced", {
+			generation: at,
+			code: details.code,
+			exit_code: details.ok ? details.result.exit_code : null,
+			follow_up: followUp,
+		});
+		if (followUp) {
+			pi.sendMessage(
+				{ customType: "self_test_enforced", content: enforcedMessage(result.content[0].text), display: true, details: undefined },
+				{ deliverAs: "followUp" },
+			);
+		}
 	});
 }
 
