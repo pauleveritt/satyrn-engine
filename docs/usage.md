@@ -230,6 +230,18 @@ to bound engine memory and avoid a descendant-held pipe; E3 does not impose a
 byte quota on that storage, just as it does not limit files written by the
 trusted command itself.
 
+### Justification status (2026-09-15)
+
+The loop breaker, scope guard, symbol preservation, command bounds (guard 4),
+carried tests, `self_test` (its redirect and the completion gate) were
+designed from evidence gathered before release one's clean harness. On live
+isolated cells, guard 4 fired as designed and the `self_test` redirect
+replaced ad-hoc pytest runs, but none of these components has been shown to
+change outcomes, and the completion gate never fired in cells that end at the
+budget rather than stopping early. Their justification is re-opened for
+release two; see
+`satyrn-evals/docs/superpowers/specs/2026-09-15-release-one-outcome.md`.
+
 ## `/implement`
 
 Inside Pi with the package installed (`pi install <engine>/packages/engine`,

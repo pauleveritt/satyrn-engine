@@ -1,14 +1,20 @@
 # Brief: satyrn-engine
 
-**Read this first. Do not re-brainstorm the project.** The design in this file
-and in `ROADMAP.md` is the output of a long, twice-reviewed design session. The
-cuts were deliberate. Brainstorm *within* a phase; do not reopen the phase list
-or the architecture.
+**Read this first.** Release one concluded 2026-09-15 with a stated negative
+(`satyrn-evals/docs/superpowers/specs/2026-09-15-release-one-outcome.md`):
+every ceiling task failed for a reason the Engine could not reach, and the
+Engine's targets were chosen from evidence the harness later invalidated.
+Design decisions in this file and in `ROADMAP.md` are re-opened when the
+evidence behind them is — that is the "Evidence has a harness" rule in
+`satyrn-evals` `AGENTS.md`. Release two's constraints for what gets designed
+or built next are in `satyrn-evals`
+(`docs/superpowers/specs/2026-09-15-release-two-r0-constraints.md`).
 
 The prior project recorded a specific failure: a cycle spent a full spec,
 build, pilot and research record on a premise that two committed documents
-already refuted. The record existed and was never retrieved. Re-deriving this
-design is that failure in a new repository.
+already refuted. The record existed and was never retrieved. Records must be
+retrieved before re-deriving a design that already exists — that discipline
+still applies; it does not forbid re-opening a decision once its evidence is.
 
 ## What we are building
 

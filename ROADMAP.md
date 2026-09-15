@@ -1,10 +1,12 @@
 # Roadmap
 
-Parked 2026-09-14. This repository's roadmap is the release-one design in
-`satyrn-evals` (`docs/superpowers/specs/2026-09-13-release-one-design.md`) and
-the plan for the current phase; the phases E, HP3 and V this file used to
-narrate are recorded on the tag `pre-release-one-2026-09-13` (`git show
-pre-release-one-2026-09-13:ROADMAP.md`). Nothing here is planned separately.
+Release one concluded 2026-09-15 with a stated negative
+(`satyrn-evals/docs/superpowers/specs/2026-09-15-release-one-outcome.md`). The
+engine is frozen at `8049d73` for release one. The engine's roadmap is
+release two's, in `satyrn-evals` `ROADMAP.md` (R0 in progress); nothing here
+is planned separately. The phases E, HP3 and V this file used to narrate, and
+the release-one phase table below, are recorded on the tag
+`pre-release-one-2026-09-13` (`git show pre-release-one-2026-09-13:ROADMAP.md`).
 
 | # | Phase | Direction (one sentence) | Status |
 |---|-------|--------------------------|--------|
