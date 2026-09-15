@@ -58,9 +58,22 @@ function fakePi() {
 
 /** Resolves `{version:1, ok:true, code:"OK", message:"", result:{...}}` from
  * whatever `path` the request named, with a fixed digest -- exactly enough
- * shape for a guard fixture that never inspects the engine's real reply. */
+ * shape for a guard fixture that never inspects the engine's real reply. A
+ * `test` request (Phase 3b's redirected and enforced self-tests) gets one
+ * failing test with its assertion line. */
+export const FAKE_TEST_OUTPUT = "FAILED tests/test_app.py::test_home - assert 404 == 200";
+
 async function fakeExchange(request) {
 	const parsed = JSON.parse(request);
+	if (parsed.operation === "test") {
+		return {
+			version: 1,
+			ok: true,
+			code: "OK",
+			message: "",
+			result: { exit_code: 1, output: FAKE_TEST_OUTPUT, truncated: false, timed_out: false },
+		};
+	}
 	return {
 		version: 1,
 		ok: true,

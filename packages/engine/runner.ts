@@ -233,8 +233,180 @@ export function createRunner(context: MutationContext, exchangeRequest: Exchange
 	};
 }
 
+/**
+ * Guard 2, enforced (Phase 3b). The route proof's three Engine cells never
+ * called `self_test` although the prompt named it and every bash result
+ * repeated it (`bounds.ts`); Baseline admission cells ran pytest through
+ * bash 0-16 times per self-hosted cell. A bash command that only runs the
+ * repository's test runner is answered by `self_test` instead: the command
+ * becomes `true`, and its result is the self-test's compact result under
+ * one sentence saying so. A command that does anything else as well runs
+ * untouched -- the Engine never drops work the model asked for.
+ */
+export const REDIRECTED_COMMAND = "true";
+
+const RUNNER_PROGRAMS = new Set(["pytest", "py.test"]);
+const PYTHON = /^python(?:3(?:\.\d+)?)?$/;
+/** Segments that may accompany a test run anywhere: they change nothing a test reads. */
+const ALONGSIDE = new Set(["cd", "echo", "printf", "true"]);
+/** Output filters, allowed only on the receiving side of a pipe. */
+const FILTERS = new Set(["tail", "head", "grep", "egrep"]);
+/** `uv run` options that take a separate value. */
+const UV_RUN_VALUE_FLAGS = new Set([
+	"--with", "--with-requirements", "--project", "--directory", "--python", "-p", "--group",
+	"--extra", "--package", "--env-file", "--index",
+]);
+
+interface Segment {
+	readonly words: string[];
+	readonly piped: boolean;
+}
+
+/**
+ * Split a bash command into simple commands, quote-aware. Returns null for
+ * anything this reading cannot vouch for: command substitution (other than
+ * `$(pwd)`), backticks, subshells, input redirection, a background `&`, an
+ * output redirection to anything but `/dev/null` or another descriptor, or
+ * an unclosed quote. Null means "not a pure test run".
+ */
+export function shellSegments(command: string): Segment[] | null {
+	if (command.replaceAll("$(pwd)", "").includes("$(") || command.includes("`")) return null;
+	const segments: { words: string[]; piped: boolean }[] = [{ words: [], piped: false }];
+	let word = "";
+	let inWord = false;
+	let quote: "'" | '"' | null = null;
+	const endWord = () => {
+		if (inWord) segments[segments.length - 1].words.push(word);
+		word = "";
+		inWord = false;
+	};
+	const next = (piped: boolean) => {
+		endWord();
+		segments.push({ words: [], piped });
+	};
+	for (let i = 0; i < command.length; i++) {
+		const c = command[i];
+		if (quote === "'") {
+			if (c === "'") quote = null;
+			else word += c;
+			continue;
+		}
+		if (quote === '"') {
+			if (c === '"') quote = null;
+			else if (c === "\\" && i + 1 < command.length) word += command[++i];
+			else word += c;
+			continue;
+		}
+		if (c === "'" || c === '"') {
+			quote = c;
+			inWord = true;
+		} else if (c === "\\") {
+			if (command[i + 1] === "\n") i++;
+			else if (i + 1 < command.length) {
+				word += command[++i];
+				inWord = true;
+			}
+		} else if (c === " " || c === "\t") {
+			endWord();
+		} else if (c === "\n" || c === ";") {
+			next(false);
+		} else if (c === "|") {
+			if (command[i + 1] === "|") {
+				i++;
+				next(false);
+			} else next(true);
+		} else if (c === "&" && command[i + 1] === "&") {
+			i++;
+			next(false);
+		} else if (c === ">" || (c === "&" && command[i + 1] === ">")) {
+			if (inWord && !/^\d+$/.test(word)) return null;
+			word = "";
+			inWord = false;
+			let j = c === "&" ? i + 2 : i + 1;
+			if (command[j] === ">") j++;
+			if (command[j] === "&") {
+				j++;
+				const start = j;
+				while (j < command.length && /\d/.test(command[j])) j++;
+				if (j === start) return null;
+			} else {
+				while (command[j] === " " || command[j] === "\t") j++;
+				const start = j;
+				while (j < command.length && !" \t\n;|&".includes(command[j])) j++;
+				if (command.slice(start, j) !== "/dev/null") return null;
+			}
+			i = j - 1;
+		} else if (c === "&" || c === "<" || c === "(" || c === ")") {
+			return null;
+		} else {
+			word += c;
+			inWord = true;
+		}
+	}
+	if (quote !== null) return null;
+	endWord();
+	return segments.filter((segment) => segment.words.length > 0);
+}
+
+function basename(word: string): string {
+	return word.slice(word.lastIndexOf("/") + 1);
+}
+
+/** Leading `NAME=value` assignments, `env`, and a `timeout [flags] DURATION` wrapper. */
+function unwrap(words: readonly string[]): string[] {
+	let rest = [...words];
+	while (rest.length > 0 && (rest[0] === "env" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[0]))) rest = rest.slice(1);
+	if (rest[0] === "timeout") {
+		rest = rest.slice(1);
+		while (rest.length > 0 && rest[0].startsWith("-")) rest = rest.slice(1);
+		if (rest.length === 0 || !/^\d+(?:\.\d+)?[smhd]?$/.test(rest[0])) return [];
+		rest = rest.slice(1);
+	}
+	return rest;
+}
+
+/** `pytest`, `py.test`, `python[3[.N]] -m pytest`, each optionally under `uv run [options]`. */
+export function isTestRunner(words: readonly string[]): boolean {
+	let rest = unwrap(words);
+	if (rest.length >= 2 && basename(rest[0]) === "uv" && rest[1] === "run") {
+		rest = rest.slice(2);
+		while (rest.length > 0 && rest[0].startsWith("-")) {
+			const flag = rest[0];
+			rest = rest.slice(UV_RUN_VALUE_FLAGS.has(flag) ? 2 : 1);
+		}
+		rest = unwrap(rest);
+	}
+	if (rest.length === 0) return false;
+	if (RUNNER_PROGRAMS.has(basename(rest[0]))) return true;
+	return PYTHON.test(basename(rest[0])) && rest[1] === "-m" && rest[2] === "pytest";
+}
+
+/** True only for a command whose every segment is a test run, a harmless companion, or a filter after a pipe. */
+export function isTestRunCommand(command: string): boolean {
+	const segments = shellSegments(command);
+	if (segments === null) return false;
+	let runs = false;
+	for (const { words, piped } of segments) {
+		if (isTestRunner(words)) runs = true;
+		else if (!ALONGSIDE.has(words[0]) && !(piped && FILTERS.has(words[0]))) return false;
+	}
+	return runs;
+}
+
+export function redirectSentence(testCommand: readonly string[]): string {
+	return `The Engine ran self_test in place of this command: it runs "${testCommand.join(" ")}" over the whole suite, whatever paths or flags the command named.`;
+}
+
 export function registerRunner(pi: ExtensionAPI, context: MutationContext, exchangeRequest: ExchangeRequest): void {
 	const runner = createRunner(context, exchangeRequest);
+	const redirected = new Set<string>();
+	const note = async (kind: string, data: Record<string, unknown>): Promise<void> => {
+		try {
+			await pi.appendEntry(kind, data);
+		} catch {
+			// Evidence, not permission.
+		}
+	};
 	pi.registerTool({
 		name: "self_test",
 		label: "Run the contract's self-test",
@@ -252,7 +424,24 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 		parameters: TestParameters,
 		execute: runner.execute,
 	});
+	pi.on("tool_call", async (event) => {
+		// Pi: `event.input` is mutable and later handlers and the tool see the
+		// mutation (core/extensions/types.d.ts, ToolCallEvent).
+		if (event.toolName !== "bash" || !isRecord(event.input) || typeof event.input.command !== "string") return undefined;
+		if (!isTestRunCommand(event.input.command)) return undefined;
+		event.input.command = REDIRECTED_COMMAND;
+		redirected.add(event.toolCallId);
+		await note("self_test_redirected", { toolCallId: event.toolCallId });
+		return undefined;
+	});
 	pi.on("tool_result", async (event) => {
+		if (event.toolName === "bash" && redirected.delete(event.toolCallId)) {
+			const result = await runner.execute(event.toolCallId, {});
+			return {
+				content: [{ type: "text", text: `${redirectSentence(context.test_command)}\n${result.content[0].text}` }],
+				isError: result.details.ok !== true,
+			};
+		}
 		if (event.toolName !== "self_test" || !isRecord(event.details) || event.details.satyrn !== true) {
 			return undefined;
 		}

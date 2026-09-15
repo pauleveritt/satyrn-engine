@@ -7,6 +7,9 @@ import runnerExtension, {
 	buildTestRequest,
 	createRunner,
 	parseTestResponse,
+	REDIRECTED_COMMAND,
+	isTestRunCommand,
+	redirectSentence,
 	registerRunner,
 } from "../packages/engine/runner.ts";
 import { createEngineExchange, parseMutationContext } from "../packages/engine/mutator.ts";
@@ -202,6 +205,91 @@ test("registered tool marks a refusal as an error but not a failing suite", asyn
 	assert.equal(await pi.resultHandler({ toolName: "read", details: null }), undefined);
 });
 
+// Phase 3b: guard 2 enforced. Commands observed in the route-proof and
+// admission transcripts (~/satyrn-runs/2026-09-1[45]-*), worktree paths shortened.
+const TEST_RUNS = [
+	"uv run python -m pytest -q",
+	"pytest",
+	'cd "$(pwd)"; uv run pytest tests/test_lint_docs.py -q 2>&1 | tail -25',
+	"cd /w/worktree; timeout 115 uv run python -m pytest -q 2>&1 | tail -40",
+	"cd /w/worktree\nuv run pytest tests/ -q 2>&1 | tail -15",
+	"cd /w/worktree && uv run pytest tests/its.py -q 2>&1 | tail -6",
+	'uv run python -m pytest tests/_probe.py -v 2>&1 | grep -E "PASSED|FAILED|ERROR"',
+	"PYTHONPATH=src python3 -m pytest -x tests/test_a.py::test_b",
+	'.venv/bin/pytest -q >/dev/null 2>&1; echo "EXIT: $?"',
+	"uv run --frozen pytest -k lint",
+];
+
+const NOT_TEST_RUNS = [
+	'uv run pytest tests/test_review.py -q 2>&1 | tail -5; echo "===RUFF==="; uv run ruff check tools/review.py',
+	"cat tests/conftest.py; uv run pytest -q",
+	"head -20 tests/test_provenance.py; uv run pytest tests/test_provenance.py -q",
+	"cd /w && cat > /tmp/probe_test.py <<'EOF'\ndef test_x():\n    assert True\nEOF\nuv run pytest /tmp/probe_test.py",
+	'uv run python -c "import app; print(app)"',
+	"uv run pytest -q > out.txt",
+	"uv run pytest -q &",
+	"uv run pytest -q | tee log.txt",
+	"echo $(uv run pytest -q)",
+	"grep -rn pytest tests/",
+	"just test",
+	"timeout uv run pytest",
+	"uv run pytest 'tests/test_a.py",
+];
+
+test("a bash command that only runs the test runner is a test run; one doing anything else is not", () => {
+	for (const command of TEST_RUNS) assert.equal(isTestRunCommand(command), true, command);
+	for (const command of NOT_TEST_RUNS) assert.equal(isTestRunCommand(command), false, command);
+});
+
+test("a test run through bash becomes true, is recorded, and its result is the self-test's under one sentence", async () => {
+	const pi = fakePi();
+	const requests = [];
+	registerRunner(pi.api, context(), async (request) => {
+		requests.push(JSON.parse(request));
+		return success({ exit_code: 1, output: "FAILED tests/test_a.py::test_b - assert 1 == 2" });
+	});
+	const [onCall] = pi.handlers.tool_call;
+	const [onResult] = pi.handlers.tool_result;
+	const call = { toolCallId: "c1", toolName: "bash", input: { command: "uv run pytest tests/test_a.py -q 2>&1 | tail -5", timeout: 120 } };
+	assert.equal(await onCall(call), undefined);
+	assert.deepEqual(call.input, { command: REDIRECTED_COMMAND, timeout: 120 });
+	assert.deepEqual(pi.entries, [{ kind: "self_test_redirected", data: { toolCallId: "c1" } }]);
+	const patch = await onResult({ toolCallId: "c1", toolName: "bash", input: call.input, isError: false,
+		content: [{ type: "text", text: "(no output)" }], details: undefined });
+	assert.deepEqual(patch, {
+		content: [{ type: "text", text: `${redirectSentence(context().test_command)}\nTest command exited 1\nFAILED tests/test_a.py::test_b - assert 1 == 2` }],
+		isError: false,
+	});
+	assert.equal(redirectSentence(context().test_command),
+		'The Engine ran self_test in place of this command: it runs "uv run python -m pytest -q" over the whole suite, whatever paths or flags the command named.');
+	assert.equal(requests.length, 1);
+	assert.equal(requests[0].operation, "test");
+	// Consumed once: a second result for the same id is not redirected again.
+	assert.equal(await onResult({ toolCallId: "c1", toolName: "bash", content: [], details: undefined }), undefined);
+});
+
+test("a redirected run the engine refuses is an error result; any other bash call is untouched", async () => {
+	const pi = fakePi();
+	let exchanges = 0;
+	registerRunner(pi.api, context(), async () => {
+		exchanges += 1;
+		return { version: 1, ok: false, code: "TEST_COMMAND_UNAVAILABLE", message: "gone", result: null };
+	});
+	const [onCall] = pi.handlers.tool_call;
+	const [onResult] = pi.handlers.tool_result;
+	await onCall({ toolCallId: "r1", toolName: "bash", input: { command: "pytest" } });
+	const refused = await onResult({ toolCallId: "r1", toolName: "bash", content: [], details: undefined });
+	assert.equal(refused.isError, true);
+	assert.match(refused.content[0].text, /TEST_COMMAND_UNAVAILABLE: gone$/);
+	const other = { toolCallId: "o1", toolName: "bash", input: { command: "uv run ruff check" } };
+	assert.equal(await onCall(other), undefined);
+	assert.deepEqual(other.input, { command: "uv run ruff check" });
+	assert.equal(await onResult({ toolCallId: "o1", toolName: "bash", content: [{ type: "text", text: "ok" }], details: undefined }), undefined);
+	assert.equal(await onCall({ toolCallId: "x1", toolName: "read", input: { path: "pytest" } }), undefined);
+	assert.equal(exchanges, 1);
+	assert.deepEqual(pi.entries.map((entry) => entry.kind), ["self_test_redirected"]);
+});
+
 test("default extension leaves the tool set alone without explicit context", () => {
 	const pi = fakePi();
 	runnerExtension(pi.api, {});
@@ -316,22 +404,27 @@ test("base response parser rejects non-object JSON without leaking a type error"
 
 function fakePi() {
 	let tool;
-	let resultHandler;
+	const handlers = {};
+	const entries = [];
 	return {
 		api: {
 			registerTool(candidate) {
 				tool = candidate;
 			},
 			on(event, handler) {
-				assert.equal(event, "tool_result");
-				resultHandler = handler;
+				(handlers[event] ??= []).push(handler);
+			},
+			async appendEntry(kind, data) {
+				entries.push({ kind, data });
 			},
 		},
+		handlers,
+		entries,
 		get tool() {
 			return tool;
 		},
 		get resultHandler() {
-			return resultHandler;
+			return handlers.tool_result?.[0];
 		},
 	};
 }

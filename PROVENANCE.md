@@ -123,3 +123,5 @@
 | tests/test_integration_implement.py | created in release-one |
 | tests/fixtures/events/bounds-timeout-text-not-error.json | created in release-one |
 | tests/test_integration_pi_pump.py | created in release-one |
+| tests/fixtures/events/self-test-redirected.json | created in release-one |
+| tests/fixtures/events/self-test-not-redirected.json | created in release-one |

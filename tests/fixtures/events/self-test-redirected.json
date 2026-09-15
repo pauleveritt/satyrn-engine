@@ -1,0 +1,11 @@
+{
+  "name": "self-test-redirected",
+  "extension": "runner.ts",
+  "context": {"version": 1, "repo": "/w", "contract": "/w/c.yaml", "revisions": {}, "writable_paths": ["src/*"], "test_command": ["uv", "run", "python", "-m", "pytest", "-q"], "symbols": {}, "carried": [], "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "expectedHandlers": {"tool_call": 1, "tool_result": 1},
+  "events": [
+    {"type": "tool_call", "toolCallId": "c1", "toolName": "bash", "input": {"command": "cd /w && timeout 115 uv run python -m pytest tests/ -q 2>&1 | tail -30", "timeout": 120}, "expect": {"blocked": false, "input": {"command": "true", "timeout": 120}}},
+    {"type": "tool_result", "toolCallId": "c1", "toolName": "bash", "input": {"command": "true", "timeout": 120}, "isError": false, "content": [{"type": "text", "text": "(no output)"}], "details": {}, "expect": {"contentEndsWith": "Test command exited 1\nFAILED tests/test_app.py::test_home - assert 404 == 200"}}
+  ],
+  "expectedEntries": [{"kind": "self_test_redirected", "data": {"toolCallId": "c1"}}]
+}

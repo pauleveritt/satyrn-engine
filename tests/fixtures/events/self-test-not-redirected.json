@@ -1,0 +1,11 @@
+{
+  "name": "self-test-not-redirected",
+  "extension": "runner.ts",
+  "context": {"version": 1, "repo": "/w", "contract": "/w/c.yaml", "revisions": {}, "writable_paths": ["src/*"], "test_command": ["uv", "run", "python", "-m", "pytest", "-q"], "symbols": {}, "carried": [], "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "expectedHandlers": {"tool_call": 1, "tool_result": 1},
+  "events": [
+    {"type": "tool_call", "toolCallId": "c1", "toolName": "bash", "input": {"command": "uv run pytest tests/test_review.py -q 2>&1 | tail -5; uv run ruff check", "timeout": 120}, "expect": {"blocked": false, "input": {"command": "uv run pytest tests/test_review.py -q 2>&1 | tail -5; uv run ruff check", "timeout": 120}}},
+    {"type": "tool_result", "toolCallId": "c1", "toolName": "bash", "input": {"command": "uv run pytest tests/test_review.py -q 2>&1 | tail -5; uv run ruff check", "timeout": 120}, "isError": false, "content": [{"type": "text", "text": "3 passed\nAll checks passed!"}], "details": {}, "expect": {"patched": false}}
+  ],
+  "expectedEntries": []
+}
