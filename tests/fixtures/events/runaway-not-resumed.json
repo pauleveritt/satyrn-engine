@@ -7,9 +7,13 @@
     {"type": "turn_end", "message": {"role": "assistant", "stopReason": "length", "content": [{"type": "toolCall", "id": "e1", "name": "edit", "arguments": {}}], "usage": {"output": 16000}}, "expect": {"followUp": false}},
     {"type": "tool_result", "toolCallId": "e1", "toolName": "edit", "input": {"path": "app.py", "edits": [{"oldText": "a", "newText": "b"}]}, "isError": false, "content": [{"type": "text", "text": "1 b"}], "details": {"satyrn": true, "ok": true, "code": "OK", "result": {"path": "app.py", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "region": "1 b"}}, "expect": {"patched": false}},
     {"type": "turn_end", "message": {"role": "assistant", "stopReason": "length", "content": [{"type": "text", "text": "Now I will..."}], "usage": {"output": 16000}}, "expect": {"followUp": "Test command exited 1"}},
-    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "Done."}], "usage": {"output": 400}}, "expect": {"followUp": false}}
+    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "Done."}], "usage": {"output": 400}}, "expect": {"followUp": false}},
+    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "length", "content": [{"type": "text", "text": "Reconsidering the identity mapping..."}], "usage": {"output": 16000}}, "expect": {"followUp": "Your last turn hit the per-turn output cap"}},
+    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "length", "content": [{"type": "text", "text": "Still reconsidering..."}], "usage": {"output": 16000}}, "expect": {"followUp": "Your last turn hit the per-turn output cap"}}
   ],
   "expectedEntries": [
-    {"kind": "self_test_enforced", "data": {"generation": 1, "code": "OK", "exit_code": 1, "follow_up": true}}
+    {"kind": "self_test_enforced", "data": {"generation": 1, "code": "OK", "exit_code": 1, "follow_up": true}},
+    {"kind": "runaway_resumed", "data": {"resume": 1, "output_tokens": 16000}},
+    {"kind": "runaway_resumed", "data": {"resume": 2, "output_tokens": 16000}}
   ]
 }
