@@ -12,7 +12,7 @@ from .mutation import (
     MutationCode,
     MutationReceipt,
     normalize_relative_path,
-    replace_once,
+    replace_many,
 )
 from .runner import RunnerCode, RunnerReceipt, run_tests
 
@@ -66,8 +66,7 @@ class ReplaceRequest:
     contract: Path
     path: str
     expected_sha256: str | None
-    old_text: str
-    new_text: str
+    replacements: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +143,14 @@ def _required_string(payload: dict[str, object], field: str, *, allow_empty: boo
     return value
 
 
+def _required_edit_pair(payload: object, index: int) -> tuple[str, str]:
+    if not isinstance(payload, dict):
+        raise ProtocolError(f"request field 'edits[{index}]' must be a mapping")
+    old_text = _required_string(payload, "old_text")
+    new_text = _required_string(payload, "new_text", allow_empty=True)
+    return old_text, new_text
+
+
 def _required_revision(payload: dict[str, object]) -> str | None:
     if "expected_sha256" not in payload:
         raise ProtocolError("request field 'expected_sha256' is required")
@@ -204,14 +211,33 @@ def parse_request(data: str | bytes) -> ProtocolRequest:
                 path = normalize_relative_path(_required_string(payload, "path"))
             except ValueError as exc:
                 raise ProtocolError(f"invalid replacement path: {exc}") from exc
+            has_edits = "edits" in payload
+            has_pair = "old_text" in payload or "new_text" in payload
+            if has_edits and has_pair:
+                raise ProtocolError(
+                    "a replace request carries either edits or one old_text/new_text pair, not both"
+                )
+            if has_edits:
+                edits = payload["edits"]
+                if not isinstance(edits, list) or not edits:
+                    raise ProtocolError("request field 'edits' must be a non-empty array")
+                replacements = tuple(
+                    _required_edit_pair(item, index) for index, item in enumerate(edits)
+                )
+            else:
+                replacements = (
+                    (
+                        _required_string(payload, "old_text"),
+                        _required_string(payload, "new_text", allow_empty=True),
+                    ),
+                )
             return ReplaceRequest(
                 operation=operation,
                 repo=repo,
                 contract=contract,
                 path=path,
                 expected_sha256=_required_revision(payload),
-                old_text=_required_string(payload, "old_text"),
-                new_text=_required_string(payload, "new_text", allow_empty=True),
+                replacements=replacements,
             )
         case _:  # pragma: no cover - membership check above closes the union
             raise AssertionError(operation)
@@ -306,13 +332,12 @@ def handle_protocol(data: str | bytes) -> tuple[str, int]:
                     _render_replace_check_failure(checked.code, checked.message),
                     int(checked.code),
                 )
-            receipt = replace_once(
+            receipt = replace_many(
                 request.repo,
                 checked.contract,
                 request.path,
                 request.expected_sha256,
-                request.old_text,
-                request.new_text,
+                request.replacements,
             )
             return render_replace_response(receipt), int(_MUTATION_TO_EXIT[receipt.code])
         case RunTestsRequest():

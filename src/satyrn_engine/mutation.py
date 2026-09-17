@@ -2,6 +2,7 @@
 
 import os
 import secrets
+from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -387,6 +388,97 @@ def replace_once(
     finally:
         os.close(target_descriptor)
         os.close(parent_descriptor)
+
+
+#: The most replacements one ``replace`` exchange may carry (design section
+#: 5.1, Ruling 8). Baseline's edit tool already allows many; unbounded is not
+#: the parity being restored -- a turn cut at the 16,000-token per-turn cap
+#: can emit an arbitrarily long `edits` array, and one exchange should stay
+#: one bounded unit of work.
+MAX_REPLACEMENTS = 16
+
+
+def _read_current_bytes(root: Path, path: str) -> bytes | None:
+    """Best-effort read of `path`'s current bytes through the same
+    no-follow open pattern as `replace_once`, or `None` if it cannot be
+    read that way (missing, not a regular file, invalid path, ...)."""
+    try:
+        resolved_root = root.resolve(strict=True)
+        parent_descriptor, target_descriptor, _ = _open_target(resolved_root, path)
+    except (OSError, ValueError):
+        return None
+    try:
+        target_stat = os.fstat(target_descriptor)
+        if not S_ISREG(target_stat.st_mode):
+            return None
+        with os.fdopen(target_descriptor, "rb", closefd=False) as input_file:
+            return input_file.read()
+    except OSError:
+        return None
+    finally:
+        os.close(target_descriptor)
+        os.close(parent_descriptor)
+
+
+def _restore(root: Path, path: str, original: bytes) -> None:
+    """Write `original` back over `path`, through the same no-follow
+    open and atomic-replace path as every other write in this module."""
+    resolved_root = root.resolve(strict=True)
+    parent_descriptor, target_descriptor, target_name = _open_target(resolved_root, path)
+    try:
+        mode = S_IMODE(os.fstat(target_descriptor).st_mode)
+        _atomic_replace(parent_descriptor, target_name, mode, original)
+    finally:
+        os.close(target_descriptor)
+        os.close(parent_descriptor)
+
+
+def replace_many(
+    root: Path,
+    contract: Contract,
+    path: str,
+    expected_sha256: str | None,
+    replacements: Sequence[tuple[str, str]],
+) -> MutationReceipt:
+    """Apply every replacement in order, then write once -- or write nothing.
+
+    All-or-nothing: each replacement is applied (and, because `replace_once`
+    itself writes, physically committed) in turn against the revision left
+    by the one before it; if any replacement after the first fails, the
+    file is restored to the bytes it held before replacement 1 ran, so a
+    half-applied multi-edit never leaves a tree the model or the grader has
+    to reason about. The refusal names the 1-based index, because a model
+    that sent four replacements needs to know which one it must fix. One
+    exchange, one revision, one mutation generation.
+    """
+    if not replacements:
+        return MutationReceipt(MutationCode.MUTATION_FAILED, "no replacements were supplied")
+    if len(replacements) > MAX_REPLACEMENTS:
+        return MutationReceipt(
+            MutationCode.MUTATION_FAILED,
+            f"{len(replacements)} replacements exceeds the limit of {MAX_REPLACEMENTS}; send fewer",
+        )
+
+    # Captured before replacement 1 runs, so a restore lands back on the
+    # state the caller started from -- not on whatever replacement 1 left
+    # behind. `None` when the file cannot be read this way (an invalid path,
+    # for instance); `replace_once` below still performs -- and reports --
+    # its own validation, this is only the backup for a later restore.
+    original_bytes = _read_current_bytes(root, path)
+
+    receipt = replace_once(root, contract, path, expected_sha256, *replacements[0])
+    if not receipt.ok:
+        return MutationReceipt(receipt.code, f"replacement 1: {receipt.message}")
+
+    for index, (old_text, new_text) in enumerate(replacements[1:], start=2):
+        assert receipt.result is not None  # narrows for the type checker; ok implies a result
+        follow = replace_once(root, contract, path, receipt.result.sha256, old_text, new_text)
+        if not follow.ok:
+            if original_bytes is not None:
+                _restore(root, path, original_bytes)
+            return MutationReceipt(follow.code, f"replacement {index}: {follow.message}")
+        receipt = follow
+    return receipt
 
 
 def _open_target(root: Path, path: str) -> tuple[int, int, str]:

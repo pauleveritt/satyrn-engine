@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 
 import { AdapterRefusal, parseResponse } from "../packages/engine/orchestrator.ts";
 import mutationExtension, {
+	EditParameters,
 	buildReplacementRequest,
 	createEngineExchange,
 	createMutator,
@@ -114,8 +115,7 @@ test("replacement request carries policy data without applying policy", () => {
 		contract: "/workspace/contract.yaml",
 		path: "src/app.py",
 		expected_sha256: FIRST_REVISION,
-		old_text: "return 1",
-		new_text: "return 2",
+		edits: [{ old_text: "return 1", new_text: "return 2" }],
 	});
 	assert.equal(
 		JSON.parse(buildReplacementRequest(context(), input(), null)).expected_sha256,
@@ -267,7 +267,7 @@ test("malformed input refuses before exchange", async () => {
 		null,
 		{ ...input(), path: "" },
 		{ ...input(), edits: [] },
-		{ ...input(), edits: [input().edits[0], input().edits[0]] },
+		{ ...input(), edits: Array.from({ length: 17 }, () => input().edits[0]) },
 		{ ...input(), edits: [{ oldText: "", newText: "next" }] },
 		{ ...input(), edits: [{ oldText: "old", newText: 1 }] },
 		{ ...input(), edits: [{ oldText: "old", newText: "new", path: 7 }] },
@@ -297,7 +297,7 @@ test("a redundant item path that matches is accepted, and reaches the engine onc
 	assert.equal(response.details.ok, true);
 	assert.equal(requests.length, 1);
 	assert.equal(requests[0].path, "src/app.py");
-	assert.equal(requests[0].old_text, "return 1");
+	assert.equal(requests[0].edits[0].old_text, "return 1");
 });
 
 test("an item path that contradicts the file path is refused before exchange", async () => {
@@ -464,7 +464,7 @@ test("registered tool exposes one replacement and marks refusals as errors", asy
 
 	const tool = registeredTools(pi).edit;
 	assert.equal(tool.name, "edit");
-	assert.equal(tool.parameters.properties.edits.maxItems, 1);
+	assert.equal(tool.parameters.properties.edits.maxItems, 16);
 	const response = await tool.execute("call", input());
 	assert.equal(response.details.ok, true);
 	assert.equal(await toolResult(handlers.tool_result, { toolName: "edit", details: response.details }), undefined);
@@ -596,4 +596,22 @@ test("the bounded edit registers a prompt snippet naming its restriction", () =>
 		/anchor/i,
 		"the snippet must say what makes this edit different from pi's built-in",
 	);
+});
+
+test("the edit schema takes up to sixteen replacements", () => {
+	const schema = EditParameters.properties.edits;
+	assert.equal(schema.maxItems, 16);
+	assert.equal(schema.minItems, 1);
+});
+
+test("a two-replacement edit becomes one replace request carrying both", () => {
+	const request = JSON.parse(buildReplacementRequest(context(), {
+		path: "app.py",
+		edits: [{ oldText: "a", newText: "b" }, { oldText: "c", newText: "d" }],
+	}, "a".repeat(64)));
+	assert.deepEqual(request.edits, [
+		{ old_text: "a", new_text: "b" },
+		{ old_text: "c", new_text: "d" },
+	]);
+	assert.equal(request.old_text, undefined);
 });

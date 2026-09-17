@@ -9,6 +9,7 @@ import pytest
 from satyrn_engine import mutation
 from satyrn_engine.contract import Contract
 from satyrn_engine.mutation import (
+    MAX_REPLACEMENTS,
     REGION_MAX_BYTES,
     REGION_MAX_LINES,
     MutationCode,
@@ -16,6 +17,7 @@ from satyrn_engine.mutation import (
     MutationResult,
     file_sha256,
     normalize_relative_path,
+    replace_many,
     replace_once,
 )
 
@@ -638,3 +640,43 @@ def test_region_is_empty_when_the_edit_empties_the_file(tmp_path: Path) -> None:
     assert receipt.result is not None
     assert target.read_text(encoding="utf-8") == ""
     assert receipt.result.region == ""
+
+
+def test_replace_many_applies_every_replacement_in_order(tmp_path: Path) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    digest = file_sha256(target.read_bytes())
+    receipt = replace_many(tmp_path, _contract("app.py"), "app.py", digest,
+                            [("alpha", "ALPHA"), ("gamma", "GAMMA")])
+    assert receipt.ok
+    assert target.read_text(encoding="utf-8") == "ALPHA\nbeta\nGAMMA\n"
+
+
+def test_replace_many_writes_nothing_when_one_replacement_fails(tmp_path: Path) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+    digest = file_sha256(target.read_bytes())
+    receipt = replace_many(tmp_path, _contract("app.py"), "app.py", digest,
+                            [("alpha", "ALPHA"), ("nowhere", "X")])
+    assert not receipt.ok
+    assert "replacement 2" in receipt.message
+    assert target.read_text(encoding="utf-8") == "alpha\nbeta\n"
+
+
+def test_replace_many_refuses_more_than_the_cap(tmp_path: Path) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("x\n", encoding="utf-8")
+    digest = file_sha256(target.read_bytes())
+    pairs = [(f"a{i}", f"b{i}") for i in range(MAX_REPLACEMENTS + 1)]
+    receipt = replace_many(tmp_path, _contract("app.py"), "app.py", digest, pairs)
+    assert not receipt.ok
+    assert str(MAX_REPLACEMENTS) in receipt.message
+
+
+def test_replace_many_with_one_replacement_matches_replace_once(tmp_path: Path) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("alpha\n", encoding="utf-8")
+    digest = file_sha256(target.read_bytes())
+    receipt = replace_many(tmp_path, _contract("app.py"), "app.py", digest, [("alpha", "ALPHA")])
+    assert receipt.ok
+    assert target.read_text(encoding="utf-8") == "ALPHA\n"

@@ -40,7 +40,7 @@ export interface EditReplacement {
 
 export interface EditInput {
 	readonly path: string;
-	readonly edits: readonly [EditReplacement];
+	readonly edits: readonly EditReplacement[];
 }
 
 export interface ReplacementResult {
@@ -118,7 +118,13 @@ export function createEngineExchange(
 	return (request) => exchange(spawner, request, engineRepo, deadlineMs);
 }
 
-const EditParameters = {
+// design section 5.1, Ruling 8: baseline's edit tool already allows many
+// replacements in one exchange; sixteen because a turn cut at the
+// 16,000-token per-turn cap can emit an arbitrarily long `edits` array, and
+// one exchange should stay one bounded unit of work.
+const MAX_EDITS = 16;
+
+export const EditParameters = {
 	type: "object",
 	additionalProperties: false,
 	required: ["path", "edits"],
@@ -127,7 +133,7 @@ const EditParameters = {
 		edits: {
 			type: "array",
 			minItems: 1,
-			maxItems: 1,
+			maxItems: MAX_EDITS,
 			items: {
 				type: "object",
 				additionalProperties: false,
@@ -207,28 +213,28 @@ function parseEditInput(input: unknown): EditInput {
 	if (!isRecord(input) || typeof input.path !== "string" || input.path.length === 0) {
 		throw new AdapterRefusal("INVALID_REQUEST", "edit path must be a non-empty string");
 	}
-	if (!Array.isArray(input.edits) || input.edits.length !== 1) {
-		throw new AdapterRefusal("INVALID_REQUEST", "E4 edit requires exactly one replacement");
+	if (!Array.isArray(input.edits) || input.edits.length < 1 || input.edits.length > MAX_EDITS) {
+		throw new AdapterRefusal("INVALID_REQUEST", `edit requires between 1 and ${MAX_EDITS} replacements`);
 	}
-	const [replacement] = input.edits;
-	if (
-		!isRecord(replacement) ||
-		typeof replacement.oldText !== "string" ||
-		replacement.oldText.length === 0 ||
-		typeof replacement.newText !== "string"
-	) {
-		throw new AdapterRefusal("INVALID_REQUEST", "edit replacement requires non-empty oldText and string newText");
+	const edits: EditReplacement[] = [];
+	for (const replacement of input.edits) {
+		if (
+			!isRecord(replacement) ||
+			typeof replacement.oldText !== "string" ||
+			replacement.oldText.length === 0 ||
+			typeof replacement.newText !== "string"
+		) {
+			throw new AdapterRefusal("INVALID_REQUEST", "edit replacement requires non-empty oldText and string newText");
+		}
+		if (replacement.path !== undefined && replacement.path !== input.path) {
+			throw new AdapterRefusal(
+				"INVALID_REQUEST",
+				"edit replacement path does not match the file path; name one file",
+			);
+		}
+		edits.push({ oldText: replacement.oldText, newText: replacement.newText });
 	}
-	if (replacement.path !== undefined && replacement.path !== input.path) {
-		throw new AdapterRefusal(
-			"INVALID_REQUEST",
-			"edit replacement path does not match the file path; name one file",
-		);
-	}
-	return {
-		path: input.path,
-		edits: [{ oldText: replacement.oldText, newText: replacement.newText }],
-	};
+	return { path: input.path, edits };
 }
 
 export function buildReplacementRequest(
@@ -236,7 +242,6 @@ export function buildReplacementRequest(
 	input: EditInput,
 	expectedSha256: string | null,
 ): string {
-	const [replacement] = input.edits;
 	return JSON.stringify({
 		version: PROTOCOL_VERSION,
 		operation: "replace",
@@ -244,8 +249,7 @@ export function buildReplacementRequest(
 		contract: context.contract,
 		path: input.path,
 		expected_sha256: expectedSha256,
-		old_text: replacement.oldText,
-		new_text: replacement.newText,
+		edits: input.edits.map(({ oldText, newText }) => ({ old_text: oldText, new_text: newText })),
 	});
 }
 
@@ -342,10 +346,9 @@ export function createMutator(
 			try {
 				const input = parseEditInput(rawInput);
 				const symbolPath = key(input.path) ?? input.path;
-				const removed = removedSymbols(
-					input.edits[0].oldText,
-					input.edits[0].newText,
-					context.symbols[symbolPath] ?? [],
+				const declared = context.symbols[symbolPath] ?? [];
+				const removed = input.edits.flatMap((edit) =>
+					removedSymbols(edit.oldText, edit.newText, declared),
 				);
 				if (removed.length > 0) {
 					try {
@@ -397,8 +400,8 @@ export function registerMutator(pi: ExtensionAPI, context: MutationContext, exch
 		// described the built-in's behaviour, or nothing at all, while the
 		// schema it had to satisfy was this one.
 		promptSnippet:
-			"replaces one exact unique text anchor in one contract-declared file; not a general file writer",
-		description: "Replace one exact unique text anchor in one contract-declared file.",
+			"replaces up to sixteen exact unique text anchors, in order, in one contract-declared file; not a general file writer",
+		description: "Replace one or more exact unique text anchors, applied in order, in one contract-declared file.",
 		parameters: EditParameters,
 		execute: mutator.execute,
 	});

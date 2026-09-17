@@ -125,8 +125,7 @@ def test_parse_replace_request_has_closed_shape(tmp_path: Path) -> None:
         contract=contract,
         path="app.py",
         expected_sha256="0" * 64,
-        old_text="value = 1",
-        new_text="",
+        replacements=(("value = 1", ""),),
     )
 
 
@@ -140,8 +139,7 @@ def test_parse_replace_request_preserves_explicit_unavailable_revision(tmp_path:
         contract=contract,
         path="app.py",
         expected_sha256=None,
-        old_text="value = 1",
-        new_text="value = 2",
+        replacements=(("value = 1", "value = 2"),),
     )
 
 
@@ -590,6 +588,32 @@ def test_render_test_response_round_trips_success_and_refusal() -> None:
         "message": 'only this exact command is allowed: "pytest"',
         "result": None,
     }
+
+
+def test_replace_request_accepts_an_edits_array() -> None:
+    request = parse_request(json.dumps({
+        "version": 1, "operation": "replace", "repo": "/w", "contract": "/w/c.yaml",
+        "path": "app.py", "expected_sha256": "a" * 64,
+        "edits": [{"old_text": "a", "new_text": "b"}, {"old_text": "c", "new_text": "d"}],
+    }))
+    assert request.replacements == (("a", "b"), ("c", "d"))
+
+
+def test_replace_request_still_accepts_one_old_text_new_text_pair() -> None:
+    request = parse_request(json.dumps({
+        "version": 1, "operation": "replace", "repo": "/w", "contract": "/w/c.yaml",
+        "path": "app.py", "expected_sha256": "a" * 64, "old_text": "a", "new_text": "b",
+    }))
+    assert request.replacements == (("a", "b"),)
+
+
+def test_replace_request_refuses_both_forms_at_once() -> None:
+    with pytest.raises(ProtocolError, match="edits"):
+        parse_request(json.dumps({
+            "version": 1, "operation": "replace", "repo": "/w", "contract": "/w/c.yaml",
+            "path": "app.py", "expected_sha256": "a" * 64, "old_text": "a", "new_text": "b",
+            "edits": [{"old_text": "c", "new_text": "d"}],
+        }))
 
 
 def test_test_response_reports_the_compact_size():
