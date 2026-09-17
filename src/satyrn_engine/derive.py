@@ -164,7 +164,8 @@ def _writable_paths(request: str, tracked: tuple[str, ...], preserve: tuple[str,
                     checks: tuple[str, ...]) -> tuple[str, ...]:
     files, directories = set(tracked), _directories(tracked)
     chosen: list[str] = []
-    source = files_block(request) or request
+    block = files_block(request)
+    source = request if block is None else block
     for raw in _TOKEN.findall(source):
         token = raw if raw in files else raw.strip("./").rstrip("/")
         candidates: list[str] = []

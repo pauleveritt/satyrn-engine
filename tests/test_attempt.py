@@ -13,6 +13,7 @@ import pytest
 import satyrn_engine.attempt as attempt_module
 import satyrn_engine.cli as cli
 from satyrn_engine.attempt import (
+    PROMPT_LIST_CAP,
     AttemptCode,
     AttemptResult,
     GitResult,
@@ -2314,4 +2315,22 @@ def test_carried_files_are_not_described_as_writable():
     prompt = build_prompt(contract, existing=("tests/test_a.py",), tracked=("tests/test_a.py",))
     writable_section = prompt.split("Tests carried")[0]
     assert "tests/test_a.py" not in writable_section
+
+
+def test_a_carried_list_at_the_cap_is_still_listed():
+    """PROMPT_LIST_CAP's boundary, pinned exactly (not just exercised at 2 and 30):
+    a carried list of exactly PROMPT_LIST_CAP items is still named, not collapsed."""
+    preserve = tuple(f"tests/test_{i}.py" for i in range(PROMPT_LIST_CAP))
+    contract = Contract(id="c", task="t", writable_paths=("src/*",), preserve=preserve, test_command=("pytest",))
+    prompt = build_prompt(contract, existing=(), tracked=())
+    assert f"tests/test_{PROMPT_LIST_CAP - 1}.py" in prompt
+    assert f"{PROMPT_LIST_CAP} files" not in prompt
+
+
+def test_a_carried_list_one_past_the_cap_collapses():
+    preserve = tuple(f"tests/test_{i}.py" for i in range(PROMPT_LIST_CAP + 1))
+    contract = Contract(id="c", task="t", writable_paths=("src/*",), preserve=preserve, test_command=("pytest",))
+    prompt = build_prompt(contract, existing=(), tracked=())
+    assert "tests/test_0.py" not in prompt
+    assert f"{PROMPT_LIST_CAP + 1} files" in prompt
 

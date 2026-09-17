@@ -199,3 +199,22 @@ def test_a_request_without_a_files_block_still_reads_the_whole_request():
                             preserve=("tests/test_app.py",), checks=())
     assert "app.py" in paths
     assert "models.py" in paths
+
+
+def test_files_block_is_none_for_a_request_with_no_files_header():
+    assert files_block("Repair the seeded bug in app.py and models.py.") is None
+
+
+def test_an_empty_files_block_admits_nothing_rather_than_widening_to_the_whole_request():
+    # `files_block` returns "" (falsy but not None) when the header is the
+    # last line of the request. `_writable_paths` must read that as "the
+    # block named nothing" -- and fall back the same way an explicit empty
+    # selection always has -- never as "no block, so read the whole
+    # request", which would re-admit `new_thing.py` named only in the prose
+    # before the (empty) `Files:` block.
+    assert files_block("Files:\n") == ""
+    tracked = ("src/app/cli.py", "tests/test_cli.py")
+    request = "Create src/app/new_thing.py with a helper.\n\nFiles:\n"
+    paths = _writable_paths(request, tracked, preserve=("tests/test_cli.py",), checks=())
+    assert "src/app/new_thing.py" not in paths
+    assert paths == ("src/*", "tests/*")
