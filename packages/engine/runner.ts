@@ -412,6 +412,37 @@ export function enforcedMessage(resultText: string): string {
 	return `Before you finish: the Engine ran self_test because nothing had run it since the last change, and it did not pass.\n${resultText}`;
 }
 
+/**
+ * Component A, finish-on-green (design §2). Ten census cells held a
+ * hidden-suite pass inside the 32k/48 line and none stopped there: they ran
+ * coverage and lint gates the task never asked for, repaired their own
+ * scaffolding, deleted their own tests to reach a count, and in four cells
+ * regressed the tree. When a self-test run inside a turn exits 0 and at
+ * least one *source* mutation has landed since the last green, the Engine
+ * steers once. A nudge, never a hard stop: release one's cell 511653 had
+ * its own suite green with the hidden suite at 19 of 20 and fixed the last
+ * case five turns later.
+ *
+ * The text is the design's, byte for byte, and names no test path (plan
+ * Ruling 1): the prompt already lists the carried set, and a path list
+ * built from the contract would put the developer's real test filenames
+ * into a model-visible message.
+ */
+export const FINISH_STEER =
+	"self_test passes on the current tree. If the requested change is complete, stop now and " +
+	"report what you changed. Do not commit, add provenance rows, run the full repository suite, " +
+	"run linters or type checkers, or change your tests to match a count; the developer reviews " +
+	"the candidate and does those. If something in the request is still missing, say which part " +
+	"and continue.";
+
+/** A path whose mutation is not a source mutation (plan Ruling 2). */
+export function isTestPath(path: string): boolean {
+	const segments = path.split("/");
+	if (segments.slice(0, -1).includes("tests")) return true;
+	const name = segments[segments.length - 1];
+	return name === "conftest.py" || name.startsWith("test_") || name.endsWith("_test.py");
+}
+
 /** An assistant message that ends the agent loop: no tool call, and not an error or an abort. */
 export function isFinalTurn(message: unknown): boolean {
 	if (!isRecord(message) || message.role !== "assistant") return false;
@@ -427,6 +458,14 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 	// last completed self-test ran against (null: none has).
 	let generation = 0;
 	let checked: number | null = null;
+	// A second generation counting only source mutations (plan Ruling 2):
+	// the completion gate keeps using `generation`, which counts every
+	// landed mutation, while the steer must not re-arm when a cell rewrites
+	// its own tests -- which is exactly what 453263 and 470484 did after
+	// their green. `nudged` is the source generation the last steer went
+	// out for (null: none has).
+	let sourceGeneration = 0;
+	let nudged: number | null = null;
 	const run = async (toolCallId: string): Promise<RunnerToolResult> => {
 		const at = generation;
 		const result = await runner.execute(toolCallId, {});
@@ -467,17 +506,35 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 		await note("self_test_redirected", { toolCallId: event.toolCallId });
 		return undefined;
 	});
+	/** One steer per source generation, on a green that happened inside a
+	 * turn. Never on the enforced route (plan Ruling 3): that gate only runs
+	 * when the model was already stopping. */
+	const maybeSteer = async (details: RunnerToolDetails): Promise<void> => {
+		if (!details.ok || details.result.exit_code !== 0 || details.result.timed_out) return;
+		if (sourceGeneration === 0 || nudged === sourceGeneration) return;
+		nudged = sourceGeneration;
+		await note("finish_nudged", { generation: sourceGeneration });
+		pi.sendMessage(
+			{ customType: "finish_nudged", content: FINISH_STEER, display: true, details: undefined },
+			{ deliverAs: "steer" },
+		);
+	};
 	pi.on("tool_result", async (event) => {
 		if (event.toolName === "edit" && isRecord(event.details) && event.details.satyrn === true && event.details.ok === true) {
 			generation += 1;
+			const path = isRecord(event.input) && typeof event.input.path === "string" ? event.input.path : null;
+			if (path !== null && !isTestPath(path)) sourceGeneration += 1;
 			return undefined;
 		}
 		if (event.toolName === "write" && event.isError !== true) {
 			generation += 1;
+			const path = isRecord(event.input) && typeof event.input.path === "string" ? event.input.path : null;
+			if (path !== null && !isTestPath(path)) sourceGeneration += 1;
 			return undefined;
 		}
 		if (event.toolName === "bash" && redirected.delete(event.toolCallId)) {
 			const result = await run(event.toolCallId);
+			await maybeSteer(result.details);
 			return {
 				content: [{ type: "text", text: `${redirectSentence(context.test_command)}\n${result.content[0].text}` }],
 				isError: result.details.ok !== true,
@@ -486,6 +543,7 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 		if (event.toolName !== "self_test" || !isRecord(event.details) || event.details.satyrn !== true) {
 			return undefined;
 		}
+		await maybeSteer(event.details as RunnerToolDetails);
 		return event.details.ok === true ? undefined : { isError: true };
 	});
 	pi.on("turn_end", async (event) => {

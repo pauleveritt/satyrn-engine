@@ -283,7 +283,11 @@ what to do instead; bash `timeout` set to 120 s when absent and clamped at
 only runs pytest answered by `self_test` instead (`self_test_redirected`);
 and, when the model stops with no self-test since its last `edit` or
 `write`, one run by the Engine whose failure goes back to the model as a
-single follow-up message (`self_test_enforced`). `preserve`, `checks`,
+single follow-up message (`self_test_enforced`). When `self_test` passes and
+a source file has changed since the last pass, the Engine sends one message
+saying the change may be complete and that commits, provenance rows,
+repository-wide suites, linters and test-count edits are the developer's.
+`preserve`, `checks`,
 tracked `conftest.py` files and tracked pytest configuration
 (`pyproject.toml`, `pytest.ini`, `setup.cfg`, `tox.ini`) are restored from the
 base into the worktree before every `self_test` run and before validation, so

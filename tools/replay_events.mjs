@@ -70,29 +70,41 @@ function fakePi() {
  * failing test with its assertion line. */
 export const FAKE_TEST_OUTPUT = "FAILED tests/test_app.py::test_home - assert 404 == 200";
 
-async function fakeExchange(request) {
-	const parsed = JSON.parse(request);
-	if (parsed.operation === "test") {
+/** A zero exit reads as a clean pass; anything else falls back to the one
+ * failing test fixtures have always seen (`testExitCode` defaults to 1). */
+function fakeTestResult(testExitCode) {
+	if (testExitCode === 0) {
+		const output = "4 passed in 0.1s\n";
+		return { exit_code: 0, output, truncated: false, timed_out: false, compact_bytes: output.length };
+	}
+	return {
+		exit_code: testExitCode,
+		output: FAKE_TEST_OUTPUT,
+		truncated: false,
+		timed_out: false,
+		compact_bytes: FAKE_TEST_OUTPUT.length,
+	};
+}
+
+function makeFakeExchange(testExitCode) {
+	return async function fakeExchange(request) {
+		const parsed = JSON.parse(request);
+		if (parsed.operation === "test") {
+			return {
+				version: 1,
+				ok: true,
+				code: "OK",
+				message: "",
+				result: fakeTestResult(testExitCode),
+			};
+		}
 		return {
 			version: 1,
 			ok: true,
 			code: "OK",
 			message: "",
-			result: {
-				exit_code: 1,
-				output: FAKE_TEST_OUTPUT,
-				truncated: false,
-				timed_out: false,
-				compact_bytes: FAKE_TEST_OUTPUT.length,
-			},
+			result: { path: parsed.path, sha256: "1".repeat(64), region: "" },
 		};
-	}
-	return {
-		version: 1,
-		ok: true,
-		code: "OK",
-		message: "",
-		result: { path: parsed.path, sha256: "1".repeat(64), region: "" },
 	};
 }
 
@@ -173,11 +185,13 @@ async function replayToolCall(handlers, event) {
 	return problems;
 }
 
-async function replayToolResult(handlers, event) {
+async function replayToolResult(handlers, sent, event) {
+	const before = sent.length;
 	const call = { ...event };
 	delete call.type;
 	delete call.expect;
 	const patch = await runToolResultHandlers(handlers, call);
+	const queued = sent.slice(before);
 	const expect = event.expect ?? {};
 	const problems = [];
 	if (expect.patched === false && patch !== undefined) {
@@ -188,6 +202,14 @@ async function replayToolResult(handlers, event) {
 		const lastText = Array.isArray(blocks) && blocks.length > 0 ? blocks.at(-1)?.text : undefined;
 		if (typeof lastText !== "string" || !lastText.endsWith(expect.contentEndsWith)) {
 			problems.push(`expect.contentEndsWith ${JSON.stringify(expect.contentEndsWith)} not found at the end of ${JSON.stringify(lastText)}`);
+		}
+	}
+	if (expect.steer === false && queued.length > 0) {
+		problems.push(`expect.steer false but ${queued.length} message(s) were queued`);
+	}
+	if (typeof expect.steer === "string") {
+		if (queued.length !== 1 || queued[0].options?.deliverAs !== "steer" || !String(queued[0].message?.content).includes(expect.steer)) {
+			problems.push(`expect.steer ${JSON.stringify(expect.steer)} not one steer in ${JSON.stringify(queued)}`);
 		}
 	}
 	return problems;
@@ -263,7 +285,7 @@ export async function replayFixture(fixture) {
 			? {}
 			: { SATYRN_MUTATION_CONTEXT: JSON.stringify(fixture.context), SATYRN_ENGINE_REPO: "/engine" };
 
-	registerExtension(pi, environment, fakeExchange);
+	registerExtension(pi, environment, makeFakeExchange(fixture.testExitCode ?? 1));
 
 	const problems = [...checkExpectedHandlers(fixture, handlers)];
 	for (const event of fixture.events ?? []) {
@@ -272,7 +294,7 @@ export async function replayFixture(fixture) {
 				problems.push(...(await replayToolCall(handlers.tool_call, event)));
 				break;
 			case "tool_result":
-				problems.push(...(await replayToolResult(handlers.tool_result, event)));
+				problems.push(...(await replayToolResult(handlers.tool_result, sent, event)));
 				break;
 			case "tool_exec":
 				problems.push(...(await replayToolExec(tools, event)));

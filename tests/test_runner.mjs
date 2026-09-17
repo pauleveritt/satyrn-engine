@@ -9,7 +9,9 @@ import runnerExtension, {
 	parseTestResponse,
 	REDIRECTED_COMMAND,
 	enforcedMessage,
+	FINISH_STEER,
 	isFinalTurn,
+	isTestPath,
 	isTestRunCommand,
 	redirectSentence,
 	registerRunner,
@@ -521,6 +523,21 @@ test("shared mutation context parses the same way for both tools", () => {
 
 test("base response parser rejects non-object JSON without leaking a type error", () => {
 	assert.deepEqual(parseResponse(JSON.stringify(success())), success());
+});
+
+test("a test path is any test module, conftest, or anything under tests/", () => {
+	assert.equal(isTestPath("tests/test_app.py"), true);
+	assert.equal(isTestPath("tests/conftest.py"), true);
+	assert.equal(isTestPath("src/pkg/app_test.py"), true);
+	assert.equal(isTestPath("tests/helpers/data.json"), true);
+	assert.equal(isTestPath("src/pkg/app.py"), false);
+	assert.equal(isTestPath("contests/app.py"), false);
+});
+
+test("the steer text is the design's paragraph and names no path", () => {
+	assert.match(FINISH_STEER, /^self_test passes on the current tree\./);
+	assert.match(FINISH_STEER, /Do not commit, add provenance rows/);
+	assert.equal(FINISH_STEER.includes(".py"), false);
 });
 
 function fakePi() {

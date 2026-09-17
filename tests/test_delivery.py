@@ -248,7 +248,12 @@ def test_guard_firings_come_from_the_counter_and_render_every_kind() -> None:
         "command_timed_out": 0,
         "self_test_redirected": 0,
         "self_test_enforced": 0,
+        "finish_nudged": 0,
     }
+
+
+def test_guard_firings_default_payload_carries_finish_nudged() -> None:
+    assert delivery.GuardFirings().payload()["finish_nudged"] == 0
 
 
 def test_count_spool_feeds_a_finished_stream_through_the_one_counter() -> None:
