@@ -337,6 +337,7 @@ def test_validation_records_passed_and_leaves_code_ok(
     assert receipt.validation is ValidationOutcome.PASSED
     assert receipt.validation_exit == 0
     assert receipt.validation_output == "2 passed\n"
+    assert receipt.validation_output_bytes == len(receipt.validation_output.encode("utf-8"))
     assert receipt.candidate_commit == "c" * 40
     assert receipt.command_exit == 0
 

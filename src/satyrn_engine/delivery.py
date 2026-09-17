@@ -144,6 +144,7 @@ class DeliveryPayload(TypedDict):
     validation: ValidationOutcome
     validation_exit: int | None
     validation_output: str | None
+    validation_output_bytes: int | None
     worktree_path: str | None
     budget: BudgetPayload
     turns: int
