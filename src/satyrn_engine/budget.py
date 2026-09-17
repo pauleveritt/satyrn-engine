@@ -22,6 +22,7 @@ GUARD_KINDS: tuple[str, ...] = (
     "self_test_redirected",
     "self_test_enforced",
     "finish_nudged",
+    "runaway_resumed",
 )
 
 

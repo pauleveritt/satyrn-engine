@@ -454,6 +454,37 @@ export function isFinalTurn(message: unknown): boolean {
 	return !content.some((part) => isRecord(part) && part.type === "toolCall");
 }
 
+/**
+ * Component B, runaway resume (design §3). Eight of 33 build cells over two
+ * census nights ended on one 16,000-token design think with no tool call,
+ * each opening on a single detail the cell decided to reason out instead of
+ * act on. The completion gate does not catch them: on a length-cut turn
+ * before any mutation the public suite is green, so the gate lets the
+ * session end, which is what happened in all eight.
+ */
+export const RESUME_MESSAGE =
+	"Your last turn hit the per-turn output cap with no tool call, so nothing was done. Do not " +
+	"restate the plan. Make the next concrete change with a tool call: read the one file you " +
+	"need, or edit.";
+
+/** Two resumes bound the cost at two more turns (design §3). */
+export const MAX_RESUMES = 2;
+
+/** An assistant turn cut by the per-turn output cap with no tool call. */
+export function isLengthCut(message: unknown): boolean {
+	if (!isRecord(message) || message.role !== "assistant") return false;
+	if (message.stopReason !== "length") return false;
+	const content = Array.isArray(message.content) ? message.content : [];
+	return !content.some((part) => isRecord(part) && part.type === "toolCall");
+}
+
+/** The turn's output token count, when Pi's usage block carries one. */
+function outputTokens(message: unknown): number | null {
+	if (!isRecord(message) || !isRecord(message.usage)) return null;
+	const output = message.usage.output;
+	return typeof output === "number" ? output : null;
+}
+
 export function registerRunner(pi: ExtensionAPI, context: MutationContext, exchangeRequest: ExchangeRequest): void {
 	const runner = createRunner(context, exchangeRequest);
 	const redirected = new Set<string>();
@@ -469,6 +500,9 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 	// out for (null: none has).
 	let sourceGeneration = 0;
 	let nudged: number | null = null;
+	// Component B (design §3): counts resumes sent this session, capped at
+	// MAX_RESUMES.
+	let resumes = 0;
 	const run = async (toolCallId: string): Promise<RunnerToolResult> => {
 		const at = generation;
 		const result = await runner.execute(toolCallId, {});
@@ -558,25 +592,42 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 		// (agent-session.js _queueFollowUp), and the custom type names the
 		// Engine as the message's author; Pi hands it to the model as a
 		// user message (core/messages.js convertToLlm).
-		if (!isFinalTurn(event.message) || checked === generation) return;
-		const at = generation;
-		const result = await runner.execute("self_test_enforced", {});
-		checked = at;
-		const details = result.details;
-		const passed = details.ok && details.result.exit_code === 0 && !details.result.timed_out;
-		const followUp = details.ok && !passed;
-		await note("self_test_enforced", {
-			generation: at,
-			code: details.code,
-			exit_code: details.ok ? details.result.exit_code : null,
-			follow_up: followUp,
-		});
-		if (followUp) {
-			pi.sendMessage(
-				{ customType: "self_test_enforced", content: enforcedMessage(result.content[0].text), display: true, details: undefined },
-				{ deliverAs: "followUp" },
-			);
+		let gated = false;
+		if (isFinalTurn(event.message) && checked !== generation) {
+			const at = generation;
+			const result = await runner.execute("self_test_enforced", {});
+			checked = at;
+			const details = result.details;
+			const passed = details.ok && details.result.exit_code === 0 && !details.result.timed_out;
+			const followUp = details.ok && !passed;
+			await note("self_test_enforced", {
+				generation: at,
+				code: details.code,
+				exit_code: details.ok ? details.result.exit_code : null,
+				follow_up: followUp,
+			});
+			if (followUp) {
+				gated = true;
+				pi.sendMessage(
+					{ customType: "self_test_enforced", content: enforcedMessage(result.content[0].text), display: true, details: undefined },
+					{ deliverAs: "followUp" },
+				);
+			}
 		}
+		// Component B, runaway resume (design §3, Ruling 4): the gate goes
+		// first and suppresses the resume for this turn. Two Engine messages
+		// in one turn read as contradiction, and the gate's "your tree is
+		// red, here is why" gets a tool call as surely as the resume would.
+		// A runaway before any mutation leaves the public suite green, so the
+		// gate is silent and the resume is the only message -- the eight
+		// cells' exact shape.
+		if (gated || !isLengthCut(event.message) || resumes >= MAX_RESUMES) return;
+		resumes += 1;
+		await note("runaway_resumed", { resume: resumes, output_tokens: outputTokens(event.message) });
+		pi.sendMessage(
+			{ customType: "runaway_resumed", content: RESUME_MESSAGE, display: true, details: undefined },
+			{ deliverAs: "followUp" },
+		);
 	});
 }
 

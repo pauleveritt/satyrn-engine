@@ -1,0 +1,17 @@
+{
+  "name": "runaway-resumed",
+  "extension": "runner.ts",
+  "testExitCode": 0,
+  "context": {"version": 1, "repo": "/w", "contract": "/w/c.yaml", "revisions": {"app.py": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "writable_paths": ["app.py", "tests/*"], "test_command": ["uv", "run", "python", "-m", "pytest", "-q"], "symbols": {}, "carried": [], "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "expectedHandlers": {"tool_call": 1, "tool_result": 1, "turn_end": 1},
+  "events": [
+    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "length", "content": [{"type": "text", "text": "The identity mapping is..."}], "usage": {"output": 16000}}, "expect": {"followUp": "Your last turn hit the per-turn output cap"}},
+    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "length", "content": [{"type": "text", "text": "Continuing the design..."}], "usage": {"output": 16000}}, "expect": {"followUp": "Your last turn hit the per-turn output cap"}},
+    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "length", "content": [{"type": "text", "text": "Still thinking..."}], "usage": {"output": 16000}}, "expect": {"followUp": false}}
+  ],
+  "expectedEntries": [
+    {"kind": "self_test_enforced", "data": {"generation": 0, "code": "OK", "exit_code": 0, "follow_up": false}},
+    {"kind": "runaway_resumed", "data": {"resume": 1, "output_tokens": 16000}},
+    {"kind": "runaway_resumed", "data": {"resume": 2, "output_tokens": 16000}}
+  ]
+}

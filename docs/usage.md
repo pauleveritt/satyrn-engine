@@ -288,7 +288,9 @@ completed inside a turn -- the model's own `self_test` call, or a bash call
 redirected into it, never the enforced gate -- passes, and a source file has
 changed since the last pass, the Engine sends one message saying the change
 may be complete and that commits, provenance rows, repository-wide suites,
-linters and test-count edits are the developer's. `preserve`, `checks`,
+linters and test-count edits are the developer's. When a turn hits the
+per-turn output cap with no tool call, the Engine asks once for a concrete
+next step, at most twice per session. `preserve`, `checks`,
 tracked `conftest.py` files and tracked pytest configuration
 (`pyproject.toml`, `pytest.ini`, `setup.cfg`, `tox.ini`) are restored from the
 base into the worktree before every `self_test` run and before validation, so

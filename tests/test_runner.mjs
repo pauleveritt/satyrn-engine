@@ -11,10 +11,13 @@ import runnerExtension, {
 	enforcedMessage,
 	FINISH_STEER,
 	isFinalTurn,
+	isLengthCut,
 	isTestPath,
 	isTestRunCommand,
+	MAX_RESUMES,
 	redirectSentence,
 	registerRunner,
+	RESUME_MESSAGE,
 } from "../packages/engine/runner.ts";
 import { createEngineExchange, parseMutationContext } from "../packages/engine/mutator.ts";
 
@@ -586,3 +589,25 @@ function fakePi() {
 		},
 	};
 }
+
+test("a length-cut tool-free assistant turn is a runaway", () => {
+	assert.equal(isLengthCut({ role: "assistant", stopReason: "length", content: [{ type: "text", text: "..." }] }), true);
+	assert.equal(isLengthCut({ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "..." }] }), false);
+	assert.equal(isLengthCut({ role: "assistant", stopReason: "length", content: [{ type: "toolCall", id: "t", name: "edit" }] }), false);
+	assert.equal(isLengthCut({ role: "user", stopReason: "length", content: [] }), false);
+});
+
+test("the resume text is the design's paragraph, byte for byte, and names no path", () => {
+	// Ruling 1 (plan): the resume text is the spec's, byte for byte -- a
+	// literal-string pin, not a regex or a substring check, so a reworded
+	// message (even one that keeps the key phrases) fails this test.
+	assert.equal(
+		RESUME_MESSAGE,
+		"Your last turn hit the per-turn output cap with no tool call, so nothing was done. Do not " +
+			"restate the plan. Make the next concrete change with a tool call: read the one file you " +
+			"need, or edit.",
+	);
+	assert.equal(RESUME_MESSAGE.includes(".py"), false);
+	assert.equal(/\//.test(RESUME_MESSAGE), false);
+	assert.equal(MAX_RESUMES, 2);
+});

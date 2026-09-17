@@ -132,3 +132,5 @@
 | tests/fixtures/events/finish-on-green-not-steered.json | created in release-one |
 | tests/fixtures/events/finish-on-green-steered-redirected-bash.json | created in release-one |
 | tests/fixtures/events/finish-on-green-not-steered-enforced.json | created in release-one |
+| tests/fixtures/events/runaway-resumed.json | created in release-one |
+| tests/fixtures/events/runaway-not-resumed.json | created in release-one |

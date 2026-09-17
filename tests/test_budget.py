@@ -118,11 +118,15 @@ def test_counter_sums_assistant_usage_tool_calls_and_guard_firings_only() -> Non
     assert (counter.turns, counter.tokens_in, counter.tokens_out, counter.tool_calls) == (1, 120, 120, 1)
     assert counter.guard_firings == {"loop_broken": 1, "scope_refused": 0, "symbol_preserved": 0,
                                      "command_bounded": 2, "command_timed_out": 0, "self_test_redirected": 1,
-                                     "self_test_enforced": 1, "finish_nudged": 0}
+                                     "self_test_enforced": 1, "finish_nudged": 0, "runaway_resumed": 0}
 
 
 def test_guard_kinds_carries_finish_nudged() -> None:
     assert "finish_nudged" in GUARD_KINDS
+
+
+def test_guard_kinds_carries_runaway_resumed() -> None:
+    assert "runaway_resumed" in GUARD_KINDS
 
 
 def test_a_token_limit_trips_on_the_limit_plus_one() -> None:
