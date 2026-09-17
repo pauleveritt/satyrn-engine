@@ -3,8 +3,10 @@ import pytest
 from satyrn_engine.derive import (
     DeriveError,
     RepoFacts,
+    _writable_paths,
     contract_id,
     derive_contract,
+    files_block,
     render_contract,
     self_test_command,
 )
@@ -159,3 +161,41 @@ def test_rendered_yaml_omits_absent_values_and_loads_back_to_the_same_contract(t
     path = tmp_path / "c.yaml"
     path.write_text(text, encoding="utf-8")
     assert load_contract(path) == contract
+
+
+FILES_REQUEST = """\
+Task 8: The run-record gate
+
+Files:
+- Create: `src/satyrn_evals/run_record.py`, `tests/`
+- Modify: `src/satyrn_evals/cli.py` (add `launch --check RECORD`)
+
+Interfaces:
+- Produces: `RunRecord`, `gate(record)`.
+
+Step 3: Implement. First check `src/satyrn_evals/errors.py` and do not change it.
+"""
+
+
+def test_files_block_is_the_block_and_stops_at_the_next_header():
+    block = files_block(FILES_REQUEST)
+    assert "run_record.py" in block
+    assert "cli.py" in block
+    assert "errors.py" not in block
+    assert "RunRecord" not in block
+
+
+def test_writable_paths_come_from_the_files_block_only():
+    tracked = ("src/satyrn_evals/cli.py", "src/satyrn_evals/errors.py", "tests/test_cli.py")
+    paths = _writable_paths(FILES_REQUEST, tracked, preserve=("tests/test_cli.py",), checks=())
+    assert "src/satyrn_evals/errors.py" not in paths
+    assert "src/satyrn_evals/cli.py" in paths
+    assert "src/satyrn_evals/run_record.py" in paths
+
+
+def test_a_request_without_a_files_block_still_reads_the_whole_request():
+    tracked = ("app.py", "models.py", "tests/test_app.py")
+    paths = _writable_paths("Repair the seeded bug in app.py and models.py.", tracked,
+                            preserve=("tests/test_app.py",), checks=())
+    assert "app.py" in paths
+    assert "models.py" in paths

@@ -337,6 +337,14 @@ class SubprocessPiRunner:
 
 BASH_BOUND_SECONDS = 120  # pinned to packages/engine/bounds.ts DEFAULT_TIMEOUT_SECONDS by tests/test_bounds_pin.py
 
+#: How many paths a prompt list names before it collapses to a count
+#: (design §5.2). The Engine prompt was 3 to 4 times Baseline's, almost all
+#: of it the tracked test files enumerated twice -- once under a writable
+#: pattern's "(existing: ...)" and once in the carried block. Eight is
+#: enough to name a real task's files and short enough that a self-hosted
+#: base's hundreds collapse.
+PROMPT_LIST_CAP = 8
+
 
 def build_prompt(contract: Contract, existing: Sequence[str], tracked: Sequence[str] = ()) -> str:
     """Build the E5 handoff prompt: every fact inline, nothing pointed at.
@@ -351,7 +359,10 @@ def build_prompt(contract: Contract, existing: Sequence[str], tracked: Sequence[
     """
 
     def writable_line(pattern: str) -> str:
-        beneath = sorted(path for path in existing if fnmatch(path, pattern))
+        beneath = sorted(path for path in existing if fnmatch(path, pattern)
+                         and path not in contract.preserve and path not in contract.checks)
+        if len(beneath) > PROMPT_LIST_CAP:
+            return f"- {pattern}  ({len(beneath)} existing files)"
         if beneath:
             return f"- {pattern}  (existing: {', '.join(beneath)})"
         is_exact = not any(char in pattern for char in "*?[")
@@ -360,7 +371,11 @@ def build_prompt(contract: Contract, existing: Sequence[str], tracked: Sequence[
         return f"- {pattern}"
 
     def block(title: str, items: Sequence[str]) -> str:
-        return f"{title}\n" + "\n".join(f"- {item}" for item in items) + "\n\n" if items else ""
+        if not items:
+            return ""
+        if len(items) > PROMPT_LIST_CAP:
+            return f"{title}\n- {len(items)} files\n\n"
+        return f"{title}\n" + "\n".join(f"- {item}" for item in items) + "\n\n"
 
     writable = (
         "Writable paths (edit and write are refused elsewhere; new files are allowed under these):\n"

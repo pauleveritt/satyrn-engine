@@ -136,11 +136,36 @@ def _fallback_paths(tracked: tuple[str, ...], preserve: tuple[str, ...], checks:
     return tuple(sorted(top_files + [f"{d}/*" for d in top_dirs]))
 
 
+_FILES_HEADER = re.compile(r"^Files:\s*$", re.MULTILINE)
+_NEXT_HEADER = re.compile(r"^[A-Z][A-Za-z ]{0,40}:\s*$", re.MULTILINE)
+
+
+def files_block(request: str) -> str | None:
+    """The text of the request's ``Files:`` block, or ``None``.
+
+    The block runs from the line after ``Files:`` to the next header line
+    (``Word:`` alone on a line) or to the end. Design §5.3: derive must
+    admit only the paths the request's ``Files:`` block names, so it cannot
+    admit a path the grader rejects -- release one's run-record-gate cells
+    were invited into ``errors.py``, which is outside the task's
+    ``source_paths``, purely because the word appeared later in the prompt.
+    A request with no ``Files:`` block (an AgentClinic repair, say) reads as
+    before: the whole request is tokenized.
+    """
+    header = _FILES_HEADER.search(request)
+    if header is None:
+        return None
+    rest = request[header.end():]
+    following = _NEXT_HEADER.search(rest)
+    return rest[: following.start()] if following else rest
+
+
 def _writable_paths(request: str, tracked: tuple[str, ...], preserve: tuple[str, ...],
                     checks: tuple[str, ...]) -> tuple[str, ...]:
     files, directories = set(tracked), _directories(tracked)
     chosen: list[str] = []
-    for raw in _TOKEN.findall(request):
+    source = files_block(request) or request
+    for raw in _TOKEN.findall(source):
         token = raw if raw in files else raw.strip("./").rstrip("/")
         candidates: list[str] = []
         if token in files:

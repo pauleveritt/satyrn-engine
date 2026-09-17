@@ -2275,3 +2275,43 @@ def test_recording_the_invocation_never_fails_the_attempt(tmp_path: Path) -> Non
     unwritable = tmp_path / "missing" / "c.yaml"
     record_invocation(unwritable, ("pi",))  # must not raise
 
+
+def test_a_long_carried_list_collapses_to_patterns():
+    contract = Contract(id="c", task="t", writable_paths=("src/*",),
+                        preserve=tuple(f"tests/test_{i}.py" for i in range(30)),
+                        test_command=("pytest",))
+    prompt = build_prompt(contract, existing=(), tracked=())
+    assert "tests/test_0.py" not in prompt
+    assert "30 files" in prompt
+    assert "restored before every self-test" in prompt
+
+
+def test_a_short_carried_list_is_still_listed():
+    contract = Contract(id="c", task="t", writable_paths=("src/*",),
+                        preserve=("tests/test_a.py", "tests/test_b.py"), test_command=("pytest",))
+    prompt = build_prompt(contract, existing=(), tracked=())
+    assert "tests/test_a.py" in prompt
+
+
+def test_a_writable_pattern_with_many_matches_reports_a_count():
+    existing = tuple(f"src/m{i}.py" for i in range(30))
+    contract = Contract(id="c", task="t", writable_paths=("src/*",), test_command=("pytest",))
+    prompt = build_prompt(contract, existing=existing, tracked=existing)
+    assert "src/m0.py" not in prompt
+    assert "30 existing files" in prompt
+
+
+def test_a_writable_pattern_with_few_matches_still_names_them():
+    existing = ("src/a.py", "src/b.py")
+    contract = Contract(id="c", task="t", writable_paths=("src/*",), test_command=("pytest",))
+    prompt = build_prompt(contract, existing=existing, tracked=existing)
+    assert "src/a.py" in prompt
+
+
+def test_carried_files_are_not_described_as_writable():
+    contract = Contract(id="c", task="t", writable_paths=("tests/*",),
+                        preserve=("tests/test_a.py",), test_command=("pytest",))
+    prompt = build_prompt(contract, existing=("tests/test_a.py",), tracked=("tests/test_a.py",))
+    writable_section = prompt.split("Tests carried")[0]
+    assert "tests/test_a.py" not in writable_section
+
