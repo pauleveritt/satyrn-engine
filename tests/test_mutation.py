@@ -680,3 +680,113 @@ def test_replace_many_with_one_replacement_matches_replace_once(tmp_path: Path) 
     receipt = replace_many(tmp_path, _contract("app.py"), "app.py", digest, [("alpha", "ALPHA")])
     assert receipt.ok
     assert target.read_text(encoding="utf-8") == "ALPHA\n"
+
+
+def _counting_atomic_replace(monkeypatch: pytest.MonkeyPatch) -> list[bytes]:
+    """Wrap `mutation._atomic_replace` to record every physical write while
+    still performing it, so a test can pin the exact write count (Ruling 8:
+    one write on success, zero on any refusal) rather than only its effect."""
+    calls: list[bytes] = []
+    original = mutation._atomic_replace
+
+    def counting(parent_descriptor: int, target_name: str, mode: int, content: bytes) -> None:
+        calls.append(content)
+        original(parent_descriptor, target_name, mode, content)
+
+    monkeypatch.setattr(mutation, "_atomic_replace", counting)
+    return calls
+
+
+def test_replace_many_writes_the_file_exactly_once_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    digest = file_sha256(target.read_bytes())
+    calls = _counting_atomic_replace(monkeypatch)
+
+    receipt = replace_many(tmp_path, _contract("app.py"), "app.py", digest,
+                            [("alpha", "ALPHA"), ("beta", "BETA"), ("gamma", "GAMMA")])
+
+    assert receipt.ok
+    assert len(calls) == 1
+    assert target.read_text(encoding="utf-8") == "ALPHA\nBETA\nGAMMA\n"
+
+
+def test_replace_many_writes_nothing_when_the_last_replacement_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sibling of the write-once success above, at the opposite edge: a
+    failure on the LAST replacement in the sequence (not the second of two)
+    must still produce zero physical writes, not (N-1) forward writes plus
+    a restore."""
+    target = tmp_path / "app.py"
+    target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    digest = file_sha256(target.read_bytes())
+    calls = _counting_atomic_replace(monkeypatch)
+
+    receipt = replace_many(tmp_path, _contract("app.py"), "app.py", digest,
+                            [("alpha", "ALPHA"), ("beta", "BETA"), ("nowhere", "X")])
+
+    assert not receipt.ok
+    assert "replacement 3" in receipt.message
+    assert len(calls) == 0
+    assert target.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
+
+
+def test_replace_many_accepts_exactly_the_cap(tmp_path: Path) -> None:
+    """Sibling of `test_replace_many_refuses_more_than_the_cap`: the cap
+    itself (MAX_REPLACEMENTS) must succeed, not just be the refusal
+    boundary's neighbour."""
+    words = [
+        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+        "india", "juliett", "kilo", "lima", "mike", "november", "oscar", "papa",
+    ]
+    assert len(words) == MAX_REPLACEMENTS
+    target = tmp_path / "app.py"
+    target.write_text("\n".join(words) + "\n", encoding="utf-8")
+    digest = file_sha256(target.read_bytes())
+    pairs = [(word, word.upper()) for word in words]
+
+    receipt = replace_many(tmp_path, _contract("app.py"), "app.py", digest, pairs)
+
+    assert receipt.ok
+    assert target.read_text(encoding="utf-8") == "\n".join(word.upper() for word in words) + "\n"
+
+
+def test_replace_many_region_shows_every_far_apart_replacement(tmp_path: Path) -> None:
+    # Trailing ":" keeps each anchor from being a substring of another
+    # (plain "line1" is a substring of "line10" through "line19").
+    lines = [f"line{i}:" for i in range(1, 21)]
+    target = tmp_path / "app.py"
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    digest = file_sha256(target.read_bytes())
+
+    receipt = replace_many(tmp_path, _contract("app.py"), "app.py", digest,
+                            [("line1:", "FIRST:"), ("line20:", "LAST:")])
+
+    assert receipt.ok
+    assert receipt.result is not None
+    region = receipt.result.region
+    assert "1: FIRST:" in region
+    assert "20: LAST:" in region
+    assert "..." in region  # a real gap remains between the two windows
+
+
+def test_replace_many_region_merges_adjacent_replacements(tmp_path: Path) -> None:
+    lines = [f"line{i}:" for i in range(1, 11)]
+    target = tmp_path / "app.py"
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    digest = file_sha256(target.read_bytes())
+
+    receipt = replace_many(tmp_path, _contract("app.py"), "app.py", digest,
+                            [("line5:", "FIVE:"), ("line6:", "SIX:")])
+
+    assert receipt.ok
+    assert receipt.result is not None
+    region = receipt.result.region
+    assert "5: FIVE:" in region
+    assert "6: SIX:" in region
+    assert region.count("...") == 0  # one merged block, not two overlapping copies
+    assert region.count("5: FIVE:") == 1
+    assert region.count("6: SIX:") == 1

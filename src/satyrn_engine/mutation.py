@@ -278,6 +278,147 @@ def _post_edit_region(before: bytes, after: bytes, anchor_offset: int, new_bytes
     return rendered
 
 
+def _close_both(parent_descriptor: int, target_descriptor: int, receipt: MutationReceipt) -> MutationReceipt:
+    """Close both descriptors and pass a refusal receipt through -- used by
+    `_prepare_target` for every failure branch after the open succeeds, so
+    neither descriptor leaks on a refusal that returns before any caller's
+    own `finally` is in scope."""
+    os.close(target_descriptor)
+    os.close(parent_descriptor)
+    return receipt
+
+
+def _prepare_target(
+    repo: Path,
+    contract: Contract,
+    path: str,
+    expected_sha256: str | None,
+) -> MutationReceipt | tuple[int, int, str, str, int, bytes]:
+    """Validate `path`, open it without following any symlink, and check its
+    current revision -- every step every replacement needs before any text
+    is even looked at. On success the caller owns both descriptors (and
+    must close them, typically in a `finally` around a later
+    `_atomic_replace`); on failure both descriptors are already closed and
+    a refusal receipt is returned. Shared by `replace_once`'s single
+    replacement and `replace_many`'s in-memory sequence, so the two open,
+    read and revision-check a target exactly the same way.
+    """
+    try:
+        normalized_path = normalize_relative_path(path)
+    except ValueError as exc:
+        return MutationReceipt(MutationCode.MUTATION_FAILED, f"invalid mutation path: {exc}")
+    if not any(fnmatch(normalized_path, pattern) for pattern in contract.writable_paths):
+        return MutationReceipt(
+            MutationCode.PATH_UNDECLARED,
+            f"path is outside the contract's writable paths: {normalized_path}",
+        )
+
+    try:
+        root = repo.resolve(strict=True)
+        parent_descriptor, target_descriptor, target_name = _open_target(root, normalized_path)
+    except OSError as exc:
+        return MutationReceipt(MutationCode.MUTATION_FAILED, f"cannot read mutation target {normalized_path}: {exc}")
+
+    try:
+        target_stat = os.fstat(target_descriptor)
+        if not S_ISREG(target_stat.st_mode):
+            raise OSError(f"mutation target is not a regular file: {normalized_path}")
+        with os.fdopen(target_descriptor, "rb", closefd=False) as input_file:
+            before = input_file.read()
+        before.decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        return _close_both(
+            parent_descriptor,
+            target_descriptor,
+            MutationReceipt(MutationCode.MUTATION_FAILED, f"cannot read mutation target {normalized_path}: {exc}"),
+        )
+
+    if expected_sha256 is None:
+        return _close_both(
+            parent_descriptor,
+            target_descriptor,
+            MutationReceipt(
+                MutationCode.REVISION_UNAVAILABLE,
+                f"no captured revision is available for {normalized_path}",
+            ),
+        )
+    actual_sha256 = file_sha256(before)
+    if actual_sha256 != expected_sha256:
+        return _close_both(
+            parent_descriptor,
+            target_descriptor,
+            MutationReceipt(
+                MutationCode.REVISION_STALE,
+                f"file revision changed for {normalized_path}: expected {expected_sha256}, found {actual_sha256}",
+            ),
+        )
+
+    return parent_descriptor, target_descriptor, target_name, normalized_path, S_IMODE(target_stat.st_mode), before
+
+
+def _apply_replacement(
+    current: bytes,
+    path: str,
+    old_text: str,
+    new_text: str,
+) -> MutationReceipt | tuple[bytes, int, bytes]:
+    """Validate and apply one replacement against `current`'s in-memory
+    bytes. Pure -- no I/O -- so it is shared by `replace_once`'s single
+    write and `replace_many`'s sequence, which writes only once after every
+    replacement in the sequence has been proven to apply. Returns a
+    refusal receipt (never OK, never carrying a result) or
+    `(after, anchor_offset, new_bytes)`.
+    """
+    try:
+        old_bytes = old_text.encode("utf-8")
+        new_bytes = new_text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        return MutationReceipt(MutationCode.MUTATION_FAILED, f"cannot encode replacement text: {exc}")
+
+    # (c) checked before any write, and before the anchor is even
+    # located: 386 edits across 42 cells had old_text == new_text and
+    # were reported OK, "Replaced" -- active misinformation about a
+    # no-op. See the E9 design doc referenced above.
+    if old_bytes == new_bytes:
+        return MutationReceipt(
+            MutationCode.NO_CHANGE_REQUESTED,
+            f"old_text and new_text are identical in {path}; nothing to replace",
+        )
+
+    anchor_offset = current.find(old_bytes)
+    match current.count(old_bytes):
+        case 0:
+            # (b) 182 of 208 ANCHOR_MISSING events, across the same
+            # sample, were an edit that had already landed, re-sent
+            # with its original (now-stale) anchor. A plain substring
+            # test -- a fact about the file, not a similarity guess
+            # (fuzzy anchor matching is refused, E8). `new_bytes` is
+            # never empty here: the identity check above already
+            # returned for old_bytes == new_bytes == b"", and an empty
+            # `new_bytes` would otherwise "match" trivially everywhere
+            # and say nothing true about the file.
+            if new_bytes and new_bytes in current:
+                line = _line_of_offset(current, current.find(new_bytes))
+                return MutationReceipt(
+                    MutationCode.ANCHOR_ALREADY_APPLIED,
+                    f"new_text is already present in {path} at line {line}; old_text was not found",
+                )
+            return MutationReceipt(
+                MutationCode.ANCHOR_MISSING,
+                f"old_text was not found in {path}",
+            )
+        case 1:
+            pass
+        case count:
+            return MutationReceipt(
+                MutationCode.ANCHOR_AMBIGUOUS,
+                f"old_text matches {count} locations in {path}; it must be unique",
+            )
+
+    after = current.replace(old_bytes, new_bytes, 1)
+    return after, anchor_offset, new_bytes
+
+
 def replace_once(
     repo: Path,
     contract: Contract,
@@ -287,100 +428,25 @@ def replace_once(
     new_text: str,
 ) -> MutationReceipt:
     """Replace one exact unique anchor or return a typed refusal."""
-    try:
-        path = normalize_relative_path(path)
-    except ValueError as exc:
-        return MutationReceipt(MutationCode.MUTATION_FAILED, f"invalid mutation path: {exc}")
-    if not any(fnmatch(path, pattern) for pattern in contract.writable_paths):
-        return MutationReceipt(
-            MutationCode.PATH_UNDECLARED,
-            f"path is outside the contract's writable paths: {path}",
-        )
+    prepared = _prepare_target(repo, contract, path, expected_sha256)
+    if isinstance(prepared, MutationReceipt):
+        return prepared
+    parent_descriptor, target_descriptor, target_name, normalized_path, mode, before = prepared
 
     try:
-        root = repo.resolve(strict=True)
-        parent_descriptor, target_descriptor, target_name = _open_target(root, path)
-    except OSError as exc:
-        return MutationReceipt(MutationCode.MUTATION_FAILED, f"cannot read mutation target {path}: {exc}")
-
-    try:
-        try:
-            target_stat = os.fstat(target_descriptor)
-            if not S_ISREG(target_stat.st_mode):
-                raise OSError(f"mutation target is not a regular file: {path}")
-            with os.fdopen(target_descriptor, "rb", closefd=False) as input_file:
-                before = input_file.read()
-            before.decode("utf-8")
-        except (OSError, UnicodeError) as exc:
-            return MutationReceipt(MutationCode.MUTATION_FAILED, f"cannot read mutation target {path}: {exc}")
-
-        if expected_sha256 is None:
-            return MutationReceipt(
-                MutationCode.REVISION_UNAVAILABLE,
-                f"no captured revision is available for {path}",
-            )
-        actual_sha256 = file_sha256(before)
-        if actual_sha256 != expected_sha256:
-            return MutationReceipt(
-                MutationCode.REVISION_STALE,
-                f"file revision changed for {path}: expected {expected_sha256}, found {actual_sha256}",
-            )
+        outcome = _apply_replacement(before, normalized_path, old_text, new_text)
+        if isinstance(outcome, MutationReceipt):
+            return outcome
+        after, anchor_offset, new_bytes = outcome
 
         try:
-            old_bytes = old_text.encode("utf-8")
-            new_bytes = new_text.encode("utf-8")
-        except UnicodeEncodeError as exc:
-            return MutationReceipt(MutationCode.MUTATION_FAILED, f"cannot encode replacement text: {exc}")
-
-        # (c) checked before any write, and before the anchor is even
-        # located: 386 edits across 42 cells had old_text == new_text and
-        # were reported OK, "Replaced" -- active misinformation about a
-        # no-op. See the E9 design doc referenced above.
-        if old_bytes == new_bytes:
-            return MutationReceipt(
-                MutationCode.NO_CHANGE_REQUESTED,
-                f"old_text and new_text are identical in {path}; nothing to replace",
-            )
-
-        anchor_offset = before.find(old_bytes)
-        match before.count(old_bytes):
-            case 0:
-                # (b) 182 of 208 ANCHOR_MISSING events, across the same
-                # sample, were an edit that had already landed, re-sent
-                # with its original (now-stale) anchor. A plain substring
-                # test -- a fact about the file, not a similarity guess
-                # (fuzzy anchor matching is refused, E8). `new_bytes` is
-                # never empty here: the identity check above already
-                # returned for old_bytes == new_bytes == b"", and an empty
-                # `new_bytes` would otherwise "match" trivially everywhere
-                # and say nothing true about the file.
-                if new_bytes and new_bytes in before:
-                    line = _line_of_offset(before, before.find(new_bytes))
-                    return MutationReceipt(
-                        MutationCode.ANCHOR_ALREADY_APPLIED,
-                        f"new_text is already present in {path} at line {line}; old_text was not found",
-                    )
-                return MutationReceipt(
-                    MutationCode.ANCHOR_MISSING,
-                    f"old_text was not found in {path}",
-                )
-            case 1:
-                pass
-            case count:
-                return MutationReceipt(
-                    MutationCode.ANCHOR_AMBIGUOUS,
-                    f"old_text matches {count} locations in {path}; it must be unique",
-                )
-
-        after = before.replace(old_bytes, new_bytes, 1)
-        try:
-            _atomic_replace(parent_descriptor, target_name, S_IMODE(target_stat.st_mode), after)
+            _atomic_replace(parent_descriptor, target_name, mode, after)
         except OSError as exc:
-            return MutationReceipt(MutationCode.MUTATION_FAILED, f"cannot replace {path}: {exc}")
+            return MutationReceipt(MutationCode.MUTATION_FAILED, f"cannot replace {normalized_path}: {exc}")
         return MutationReceipt(
             MutationCode.OK,
             result=MutationResult(
-                path=path,
+                path=normalized_path,
                 sha256=file_sha256(after),
                 region=_post_edit_region(before, after, anchor_offset, new_bytes),
             ),
@@ -398,39 +464,68 @@ def replace_once(
 MAX_REPLACEMENTS = 16
 
 
-def _read_current_bytes(root: Path, path: str) -> bytes | None:
-    """Best-effort read of `path`'s current bytes through the same
-    no-follow open pattern as `replace_once`, or `None` if it cannot be
-    read that way (missing, not a regular file, invalid path, ...)."""
-    try:
-        resolved_root = root.resolve(strict=True)
-        parent_descriptor, target_descriptor, _ = _open_target(resolved_root, path)
-    except (OSError, ValueError):
-        return None
-    try:
-        target_stat = os.fstat(target_descriptor)
-        if not S_ISREG(target_stat.st_mode):
-            return None
-        with os.fdopen(target_descriptor, "rb", closefd=False) as input_file:
-            return input_file.read()
-    except OSError:
-        return None
-    finally:
-        os.close(target_descriptor)
-        os.close(parent_descriptor)
+def _post_edit_regions(before: bytes, after: bytes, applied: Sequence[tuple[int, bytes]]) -> str:
+    """The changed regions of `after` for every replacement `replace_many`
+    applied, merged into one region so a multi-edit exchange does not
+    reintroduce E9 for every replacement but the last (see the module
+    comment above `REGION_CONTEXT_LINES`).
 
+    `applied` is `(anchor_offset, new_bytes)` per replacement, in `after`'s
+    own byte coordinates (every earlier replacement's recorded offset has
+    already been shifted by every later replacement's length delta -- see
+    `replace_many`). For exactly one replacement this must render
+    byte-for-byte the same as the single-replacement path, so it delegates
+    to `_post_edit_region` rather than risk drifting from that function's
+    truncation and non-newline-separator handling.
 
-def _restore(root: Path, path: str, original: bytes) -> None:
-    """Write `original` back over `path`, through the same no-follow
-    open and atomic-replace path as every other write in this module."""
-    resolved_root = root.resolve(strict=True)
-    parent_descriptor, target_descriptor, target_name = _open_target(resolved_root, path)
-    try:
-        mode = S_IMODE(os.fstat(target_descriptor).st_mode)
-        _atomic_replace(parent_descriptor, target_name, mode, original)
-    finally:
-        os.close(target_descriptor)
-        os.close(parent_descriptor)
+    For more than one, each replacement's changed line span is widened by
+    `REGION_CONTEXT_LINES` on both sides into a window; windows that
+    overlap or sit adjacent (no blank line of true gap between them) merge
+    into one continuous numbered block, so two nearby edits are shown once,
+    not as two overlapping copies. Separate blocks are joined by a bare
+    "..." line, the way an ordinary unified diff marks a gap. The whole
+    rendered result is still capped at REGION_MAX_BYTES, clipped from the
+    end with the same marker `_post_edit_region` uses for an over-long
+    single change -- unlike that function, this does not yet balance the
+    cut across blocks or reserve budget per replacement first; the worst
+    case for MAX_REPLACEMENTS widely-spread replacements is exactly that
+    cap (REGION_MAX_BYTES) plus the marker's own bytes, never more.
+    """
+    if len(applied) == 1:
+        anchor_offset, new_bytes = applied[0]
+        return _post_edit_region(before, after, anchor_offset, new_bytes)
+
+    lines = after.decode("utf-8").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()  # a trailing newline ends the last line, it does not add one
+    total = len(lines)
+    if total == 0:
+        # The whole file was deleted by the sequence. Nothing to show.
+        return ""
+
+    windows: list[tuple[int, int]] = []
+    for anchor_offset, new_bytes in applied:
+        start_line = _line_of_offset(after, anchor_offset)
+        end_line = start_line + new_bytes.count(b"\n")
+        end_line = min(end_line, total)
+        start_line = min(start_line, end_line)
+        windows.append((max(1, start_line - REGION_CONTEXT_LINES), min(total, end_line + REGION_CONTEXT_LINES)))
+
+    windows.sort()
+    merged: list[tuple[int, int]] = []
+    for window_start, window_end in windows:
+        if merged and window_start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], window_end))
+        else:
+            merged.append((window_start, window_end))
+
+    def numbered(range_start: int, range_end: int) -> list[str]:
+        return [f"{number}: {lines[number - 1]}" for number in range(range_start, range_end + 1)]
+
+    rendered = "\n...\n".join("\n".join(numbered(window_start, window_end)) for window_start, window_end in merged)
+    if len(rendered.encode("utf-8")) > REGION_MAX_BYTES:
+        rendered = _clip_to_bytes(rendered, REGION_MAX_BYTES) + "\n" + _REGION_CONTEXT_TRUNCATED_MARKER
+    return rendered
 
 
 def replace_many(
@@ -440,16 +535,18 @@ def replace_many(
     expected_sha256: str | None,
     replacements: Sequence[tuple[str, str]],
 ) -> MutationReceipt:
-    """Apply every replacement in order, then write once -- or write nothing.
+    """Apply every replacement in order in memory, then write once -- or
+    write nothing.
 
-    All-or-nothing: each replacement is applied (and, because `replace_once`
-    itself writes, physically committed) in turn against the revision left
-    by the one before it; if any replacement after the first fails, the
-    file is restored to the bytes it held before replacement 1 ran, so a
-    half-applied multi-edit never leaves a tree the model or the grader has
-    to reason about. The refusal names the 1-based index, because a model
-    that sent four replacements needs to know which one it must fix. One
-    exchange, one revision, one mutation generation.
+    All-or-nothing, and truly one write: every replacement is validated and
+    applied against an in-memory `current` buffer (`_apply_replacement`
+    performs no I/O), threaded from one replacement to the next, and
+    `_atomic_replace` is called exactly once, only after every replacement
+    in the sequence has succeeded. A failure at any replacement leaves the
+    file untouched -- there is nothing to restore, because nothing was
+    written -- and the refusal names the 1-based failing index, because a
+    model that sent four replacements needs to know which one it must fix.
+    One exchange, one revision, one mutation generation, one write.
     """
     if not replacements:
         return MutationReceipt(MutationCode.MUTATION_FAILED, "no replacements were supplied")
@@ -459,26 +556,51 @@ def replace_many(
             f"{len(replacements)} replacements exceeds the limit of {MAX_REPLACEMENTS}; send fewer",
         )
 
-    # Captured before replacement 1 runs, so a restore lands back on the
-    # state the caller started from -- not on whatever replacement 1 left
-    # behind. `None` when the file cannot be read this way (an invalid path,
-    # for instance); `replace_once` below still performs -- and reports --
-    # its own validation, this is only the backup for a later restore.
-    original_bytes = _read_current_bytes(root, path)
+    prepared = _prepare_target(root, contract, path, expected_sha256)
+    if isinstance(prepared, MutationReceipt):
+        return prepared
+    parent_descriptor, target_descriptor, target_name, normalized_path, mode, before = prepared
 
-    receipt = replace_once(root, contract, path, expected_sha256, *replacements[0])
-    if not receipt.ok:
-        return MutationReceipt(receipt.code, f"replacement 1: {receipt.message}")
+    try:
+        current = before
+        # `applied` carries (anchor_offset, new_bytes) per replacement, in
+        # `current`'s own evolving coordinate space. When a later
+        # replacement changes the byte length of the file, every earlier
+        # entry whose span sits at or after that replacement's changed
+        # span is shifted by the length delta, so by the time the loop
+        # ends every entry is expressed in the FINAL `current` bytes'
+        # coordinates -- which is exactly what `_post_edit_regions` needs.
+        applied: list[tuple[int, bytes]] = []
+        for index, (old_text, new_text) in enumerate(replacements, start=1):
+            outcome = _apply_replacement(current, normalized_path, old_text, new_text)
+            if isinstance(outcome, MutationReceipt):
+                return MutationReceipt(outcome.code, f"replacement {index}: {outcome.message}")
+            after, anchor_offset, new_bytes = outcome
 
-    for index, (old_text, new_text) in enumerate(replacements[1:], start=2):
-        assert receipt.result is not None  # narrows for the type checker; ok implies a result
-        follow = replace_once(root, contract, path, receipt.result.sha256, old_text, new_text)
-        if not follow.ok:
-            if original_bytes is not None:
-                _restore(root, path, original_bytes)
-            return MutationReceipt(follow.code, f"replacement {index}: {follow.message}")
-        receipt = follow
-    return receipt
+            old_bytes_length = len(old_text.encode("utf-8"))
+            changed_end = anchor_offset + old_bytes_length
+            delta = len(new_bytes) - old_bytes_length
+            applied = [
+                (start + delta, span) if start >= changed_end else (start, span) for start, span in applied
+            ]
+            applied.append((anchor_offset, new_bytes))
+            current = after
+
+        try:
+            _atomic_replace(parent_descriptor, target_name, mode, current)
+        except OSError as exc:
+            return MutationReceipt(MutationCode.MUTATION_FAILED, f"cannot replace {normalized_path}: {exc}")
+        return MutationReceipt(
+            MutationCode.OK,
+            result=MutationResult(
+                path=normalized_path,
+                sha256=file_sha256(current),
+                region=_post_edit_regions(before, current, applied),
+            ),
+        )
+    finally:
+        os.close(target_descriptor)
+        os.close(parent_descriptor)
 
 
 def _open_target(root: Path, path: str) -> tuple[int, int, str]:

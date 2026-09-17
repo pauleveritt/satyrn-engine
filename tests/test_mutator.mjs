@@ -278,6 +278,23 @@ test("malformed input refuses before exchange", async () => {
 	assert.equal(exchanges, 0);
 });
 
+test("exactly sixteen replacements is accepted and reaches the engine once", async () => {
+	// Sibling of the seventeen-item refusal above: the cap itself must
+	// succeed, not just be the refusal boundary's neighbour.
+	const requests = [];
+	const mutator = createMutator(context(), async (request) => {
+		requests.push(JSON.parse(request));
+		return success();
+	});
+	const edits = Array.from({ length: 16 }, (_, index) => ({ oldText: `old${index}`, newText: `new${index}` }));
+
+	const response = await mutator.execute("call", { path: "src/app.py", edits });
+
+	assert.equal(response.details.ok, true);
+	assert.equal(requests.length, 1);
+	assert.equal(requests[0].edits.length, 16);
+});
+
 test("a redundant item path that matches is accepted, and reaches the engine once", async () => {
 	// The success sibling for the refusal below, and the regression test for
 	// the 2026-09-06 V13 probe: 973 `edits.0: must not have additional
