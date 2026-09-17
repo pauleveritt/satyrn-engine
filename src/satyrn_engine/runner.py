@@ -49,6 +49,14 @@ COMPACT_TAIL_LINES = 20
 # the optional `(0:01:15)`-style duration suffix pytest appends past 60s
 # (m7), which would otherwise drop a summary line for a slow suite.
 _SUMMARY = re.compile(r"^=*\s*(\d+ \w+(, )?)+ in [\d.]+s(\s*\(\d+:\d{2}:\d{2}\))?\s*=*$")
+#: How many `E ` lines after each traceback block's assertion line are kept
+#: (Component C, design §4). The depth-3 cells of release one found the seam
+#: at R2 and not at R1, and the only difference was one such line
+#: (`where None = first.timestamp.tzinfo`). Three is the design's number: it
+#: covers pytest's usual `+  where` / `+    where` chain without carrying a
+#: whole traceback into the model's context.
+EXPLANATION_LINES = 3
+_BLOCK = re.compile(r"^_{3,}.+_{3,}$")
 INFRASTRUCTURE = ("pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini")
 _QUIET: dict[str, object] = {
     "stdin": subprocess.DEVNULL,
@@ -80,6 +88,7 @@ class RunnerResult:
     output: str
     truncated: bool
     timed_out: bool
+    compact_bytes: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,13 +140,49 @@ def command_matches(command: str, declared: tuple[str, ...]) -> bool:
     return command.strip() == " ".join(declared)
 
 
+def _explanations(lines: list[str]) -> list[str]:
+    """Per traceback block, the block header and up to `EXPLANATION_LINES`
+    `E ` lines *after* that block's first `E ` line.
+
+    The first `E ` line is pytest's assertion, which the ``FAILED`` summary
+    line already carries; what release one's R1/R2 pair showed to matter is
+    the lines after it. Blocks are delimited by pytest's ``___ name ___``
+    rule. A block with no `E ` line, or only the assertion, contributes
+    nothing -- not even its header -- so a passing run is untouched.
+    """
+    kept: list[str] = []
+    header: str | None = None
+    seen_assertion = False
+    taken = 0
+    for line in lines:
+        if _BLOCK.match(line.strip()):
+            header, seen_assertion, taken = line.strip(), False, 0
+            continue
+        stripped = line.lstrip()
+        if not (stripped == "E" or stripped.startswith("E ")):
+            continue
+        if not seen_assertion:
+            seen_assertion = True
+            continue
+        if taken >= EXPLANATION_LINES:
+            continue
+        if header is not None:
+            kept.append(header)
+            header = None
+        kept.append(line.rstrip())
+        taken += 1
+    return kept
+
+
 def compact_output(text: str) -> str:
-    """Failed and errored test ids with their first assertion line, plus the
-    summary line.
+    """Failed and errored test ids with their first assertion line, each
+    failure's explanation lines, and the summary line.
 
     Against real ``pytest -q`` output: keep every line starting with
-    ``FAILED `` or ``ERROR `` and the final summary line (fenced or not,
-    with or without pytest's ``(H:MM:SS)`` suffix past 60s -- m7). When
+    ``FAILED `` or ``ERROR ``, the final summary line (fenced or not, with
+    or without pytest's ``(H:MM:SS)`` suffix past 60s -- m7), and for each
+    traceback block up to `EXPLANATION_LINES` ``E `` lines after that
+    block's assertion, under the block's own header (Component C). When
     nothing matches, the last `COMPACT_TAIL_LINES` lines stand in, so a
     passing ``-q`` run keeps its progress dots (m3).
     """
@@ -145,7 +190,7 @@ def compact_output(text: str) -> str:
     kept = [line for line in lines if line.startswith(("FAILED ", "ERROR "))]
     summary = next((line for line in reversed(lines) if _SUMMARY.match(line)), None)
     if kept:
-        return "\n".join([*kept, *([summary] if summary else [])]) + "\n"
+        return "\n".join([*kept, *_explanations(lines), *([summary] if summary else [])]) + "\n"
     return "\n".join(lines[-COMPACT_TAIL_LINES:]) + ("\n" if lines else "")
 
 
@@ -323,12 +368,14 @@ def run_tests(
         if run_timed_out:
             break
 
+    output = "".join(outputs)
     return RunnerReceipt(
         RunnerCode.OK,
         result=RunnerResult(
             exit_code=exit_code,
-            output="".join(outputs),
+            output=output,
             truncated=truncated,
             timed_out=timed_out,
+            compact_bytes=len(output.encode("utf-8")),
         ),
     )

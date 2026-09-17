@@ -88,6 +88,7 @@ export interface TestResult {
 	readonly output: string;
 	readonly truncated: boolean;
 	readonly timed_out: boolean;
+	readonly compact_bytes: number;
 }
 
 export interface TestSuccessResponse {
@@ -159,7 +160,8 @@ export function parseTestResponse(response: EngineResponse): TestResponse {
 			!Number.isInteger(response.result.exit_code) ||
 			typeof response.result.output !== "string" ||
 			typeof response.result.truncated !== "boolean" ||
-			typeof response.result.timed_out !== "boolean"
+			typeof response.result.timed_out !== "boolean" ||
+			typeof response.result.compact_bytes !== "number"
 		) {
 			throw new AdapterRefusal("ENGINE_MALFORMED_RESPONSE", "successful test response has an unexpected shape");
 		}
@@ -173,6 +175,7 @@ export function parseTestResponse(response: EngineResponse): TestResponse {
 				output: response.result.output,
 				truncated: response.result.truncated,
 				timed_out: response.result.timed_out,
+				compact_bytes: response.result.compact_bytes,
 			},
 		};
 	}

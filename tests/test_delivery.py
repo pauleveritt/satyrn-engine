@@ -146,6 +146,7 @@ def test_receipt_matches_committed_fixture(code: DeliveryCode, fixture: str) -> 
         "validation",
         "validation_exit",
         "validation_output",
+        "validation_output_bytes",
         "worktree_path",
         "budget",
         "turns",
@@ -1126,3 +1127,39 @@ def test_attempt_cli_finishes_artifact_work_after_termination_and_restores_handl
 
     assert cli.main(["attempt", "--model", "model", "contract.yaml"]) == 0
     assert signal.getsignal(interruption) is previous
+
+
+def test_receipt_reports_the_validation_output_size() -> None:
+    receipt = DeliveryReceipt(
+        code=DeliveryCode.OK,
+        message="candidate created",
+        contract_id="greeting",
+        repository="/src/app",
+        base_commit="base-sha",
+        candidate_ref="refs/satyrn/candidates/greeting/head",
+        candidate_commit="candidate-sha",
+        changed_paths=("greeting.py",),
+        command_exit=0,
+        worktree_path=None,
+        validation=ValidationOutcome.PASSED,
+        validation_exit=0,
+        validation_output="FAILED a::b\n",
+        validation_output_bytes=13,
+    )
+    assert receipt.payload()["validation_output_bytes"] == 13
+
+
+def test_receipt_without_validation_reports_no_size() -> None:
+    receipt = DeliveryReceipt(
+        code=DeliveryCode.OK,
+        message="candidate created",
+        contract_id="greeting",
+        repository="/src/app",
+        base_commit="base-sha",
+        candidate_ref="refs/satyrn/candidates/greeting/head",
+        candidate_commit="candidate-sha",
+        changed_paths=("greeting.py",),
+        command_exit=0,
+        worktree_path=None,
+    )
+    assert receipt.payload()["validation_output_bytes"] is None

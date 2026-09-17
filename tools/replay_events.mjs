@@ -78,7 +78,13 @@ async function fakeExchange(request) {
 			ok: true,
 			code: "OK",
 			message: "",
-			result: { exit_code: 1, output: FAKE_TEST_OUTPUT, truncated: false, timed_out: false },
+			result: {
+				exit_code: 1,
+				output: FAKE_TEST_OUTPUT,
+				truncated: false,
+				timed_out: false,
+				compact_bytes: FAKE_TEST_OUTPUT.length,
+			},
 		};
 	}
 	return {

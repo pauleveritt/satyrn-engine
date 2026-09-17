@@ -33,7 +33,7 @@ const success = (overrides = {}) => ({
 	ok: true,
 	code: "OK",
 	message: "",
-	result: { exit_code: 0, output: "ok\n", truncated: false, timed_out: false, ...overrides },
+	result: { exit_code: 0, output: "ok\n", truncated: false, timed_out: false, compact_bytes: 0, ...overrides },
 });
 
 test("test request carries repo, contract, a null command, and the base commit", () => {
@@ -57,6 +57,7 @@ test("test response parser rejects malformed success and refusal", () => {
 		{ ...success(), result: { ...success().result, output: 1 } },
 		{ ...success(), result: { ...success().result, truncated: "no" } },
 		{ ...success(), result: { ...success().result, timed_out: "no" } },
+		{ ...success(), result: { ...success().result, compact_bytes: "0" } },
 		{ version: 1, ok: false, code: "OTHER", message: "bad", result: null },
 		{ version: 1, ok: false, code: "TEST_COMMAND_UNAVAILABLE", message: "bad" },
 		{ version: 1, ok: false, code: "TEST_COMMAND_UNAVAILABLE", message: "bad", result: {} },

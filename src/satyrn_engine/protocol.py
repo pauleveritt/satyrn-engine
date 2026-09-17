@@ -114,6 +114,7 @@ class RunnerResultPayload(TypedDict):
     output: str
     truncated: bool
     timed_out: bool
+    compact_bytes: int
 
 
 class RunTestsResponsePayload(ResponsePayload):
@@ -266,6 +267,7 @@ def render_test_response(receipt: RunnerReceipt) -> str:
             "output": receipt.result.output,
             "truncated": receipt.result.truncated,
             "timed_out": receipt.result.timed_out,
+            "compact_bytes": receipt.result.compact_bytes,
         }
     payload: RunTestsResponsePayload = {
         "version": PROTOCOL_VERSION,

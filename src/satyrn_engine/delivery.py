@@ -380,6 +380,7 @@ class DeliveryReceipt:
     validation: ValidationOutcome = ValidationOutcome.NOT_APPLICABLE
     validation_exit: int | None = None
     validation_output: str | None = None
+    validation_output_bytes: int | None = None
     version: Literal[1] = RECEIPT_VERSION
     budget: Budget = Budget()
     budget_usage: BudgetUsage = BudgetUsage(BudgetState.NOT_DECLARED, 0, 0.0)
@@ -431,6 +432,7 @@ class DeliveryReceipt:
             "validation": self.validation,
             "validation_exit": self.validation_exit,
             "validation_output": self.validation_output,
+            "validation_output_bytes": self.validation_output_bytes,
             "worktree_path": self.worktree_path,
             "budget": {
                 "state": self.budget_usage.state,
@@ -748,6 +750,7 @@ def _attempt(context: _DeliveryContext, command: tuple[str, ...], timeout: float
                 validation=pending.validation,
                 validation_exit=pending.validation_exit,
                 validation_output=pending.validation_output,
+                validation_output_bytes=pending.validation_output_bytes,
                 budget=pending.budget,
                 budget_usage=pending.budget_usage,
                 turns=pending.turns,
@@ -1305,6 +1308,7 @@ def _publish(context: _DeliveryContext, pending: DeliveryReceipt) -> DeliveryRec
             validation=pending.validation,
             validation_exit=pending.validation_exit,
             validation_output=pending.validation_output,
+            validation_output_bytes=pending.validation_output_bytes,
             budget=pending.budget,
             budget_usage=pending.budget_usage,
             turns=pending.turns,
@@ -1324,6 +1328,7 @@ def _publish(context: _DeliveryContext, pending: DeliveryReceipt) -> DeliveryRec
         validation=pending.validation,
         validation_exit=pending.validation_exit,
         validation_output=pending.validation_output,
+        validation_output_bytes=pending.validation_output_bytes,
         budget=pending.budget,
         budget_usage=pending.budget_usage,
         turns=pending.turns,
@@ -1439,6 +1444,9 @@ def _validated(
         validation=validation,
         validation_exit=validation_exit,
         validation_output=validation_output,
+        validation_output_bytes=(
+            None if validation_output is None else len(validation_output.encode("utf-8"))
+        ),
     )
 
 
@@ -1835,6 +1843,7 @@ def _context_receipt(
     validation: ValidationOutcome = ValidationOutcome.NOT_APPLICABLE,
     validation_exit: int | None = None,
     validation_output: str | None = None,
+    validation_output_bytes: int | None = None,
     budget: Budget | None = None,
     budget_usage: BudgetUsage | None = None,
     turns: int = 0,
@@ -1858,6 +1867,7 @@ def _context_receipt(
         validation=validation,
         validation_exit=validation_exit,
         validation_output=validation_output,
+        validation_output_bytes=validation_output_bytes,
         budget=context.budget if budget is None else budget,
         budget_usage=budget_usage,
         turns=turns,
@@ -1884,6 +1894,7 @@ def _receipt(
     validation: ValidationOutcome = ValidationOutcome.NOT_APPLICABLE,
     validation_exit: int | None = None,
     validation_output: str | None = None,
+    validation_output_bytes: int | None = None,
     budget: Budget | None = None,
     budget_usage: BudgetUsage | None = None,
     turns: int = 0,
@@ -1914,6 +1925,7 @@ def _receipt(
         validation=validation,
         validation_exit=validation_exit,
         validation_output=validation_output,
+        validation_output_bytes=validation_output_bytes,
         budget=declared,
         budget_usage=usage,
         turns=turns,

@@ -141,6 +141,8 @@ def test_compact_output_keeps_failed_and_error_ids_and_the_summary_line() -> Non
     assert compact_output(PYTEST_Q_FAIL) == (
         "FAILED tests/test_a.py::test_two - AssertionError: one is not two\n"
         "ERROR tests/test_a.py::test_err - RuntimeError: boom\n"
+        "___________________________________ test_two ___________________________________\n"
+        "E       assert 1 == 2\n"
         "1 failed, 1 passed, 1 error in 0.01s\n")
 
 
@@ -245,9 +247,12 @@ def test_run_tests_restores_the_carried_set_from_base_then_runs_suite_preserve_a
     assert receipt.result.output == (
         "FAILED tests/test_a.py::test_two - AssertionError: one is not two\n"
         "ERROR tests/test_a.py::test_err - RuntimeError: boom\n"
+        "___________________________________ test_two ___________________________________\n"
+        "E       assert 1 == 2\n"
         "1 failed, 1 passed, 1 error in 0.01s\n"
         ".\n1 passed in 0.01s\n"
         ".\n1 passed in 0.01s\n")
+    assert receipt.result.compact_bytes == len(receipt.result.output.encode("utf-8"))
 
 
 def test_run_tests_skips_carried_paths_absent_at_base_and_defaults_to_head(
@@ -338,3 +343,51 @@ def test_run_tests_refuses_when_checkout_fails_to_restore_the_carried_set(
     assert receipt.message == f"carried tests could not be restored from base {BASE}"
     argvs = [argv for argv, _ in calls]
     assert argvs == [["git", "ls-tree", "-r", "--name-only", BASE], list(checkout)]
+
+
+FAILING_Q_OUTPUT = """\
+F
+=================================== FAILURES ===================================
+_______________________ test_complaint_model_contract __________________________
+
+    def test_complaint_model_contract():
+        first = load_first()
+>       assert first.timestamp.tzinfo is not None
+E       assert None is not None
+E        +  where None = datetime.datetime(2026, 9, 1, 0, 0).tzinfo
+E        +    where datetime.datetime(2026, 9, 1, 0, 0) = <Complaint id=1>.timestamp
+E        +      where <Complaint id=1> = load_first()
+
+tests/test_models.py:14: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_models.py::test_complaint_model_contract - assert None is not None
+1 failed in 0.31s
+"""
+
+
+def test_compact_output_keeps_three_explanation_lines_after_the_assertion():
+    compact = compact_output(FAILING_Q_OUTPUT)
+    assert "FAILED tests/test_models.py::test_complaint_model_contract" in compact
+    assert "1 failed in 0.31s" in compact
+    assert "where None = datetime.datetime(2026, 9, 1, 0, 0).tzinfo" in compact
+    assert "where <Complaint id=1> = load_first()" in compact
+    assert compact.count("+  where") + compact.count("+    where") + compact.count("+      where") == 3
+
+
+def test_compact_output_drops_the_fourth_explanation_line():
+    text = FAILING_Q_OUTPUT.replace(
+        "tests/test_models.py:14: AssertionError",
+        "E        +        where 1 = <Complaint id=1>.id\ntests/test_models.py:14: AssertionError",
+    )
+    compact = compact_output(text)
+    assert "where 1 = <Complaint id=1>.id" not in compact
+
+
+def test_compact_output_of_a_passing_run_is_unchanged():
+    passing = "....\n4 passed in 0.10s\n"
+    assert compact_output(passing) == passing
+
+
+def test_compact_output_keeps_the_assertion_line_itself_once():
+    compact = compact_output(FAILING_Q_OUTPUT)
+    assert compact.count("assert None is not None") == 1

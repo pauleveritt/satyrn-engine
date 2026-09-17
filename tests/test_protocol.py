@@ -571,6 +571,7 @@ def test_render_test_response_round_trips_success_and_refusal() -> None:
             "output": "assert 1 == 2",
             "truncated": False,
             "timed_out": False,
+            "compact_bytes": 0,
         },
     }
     assert json.loads(render_test_response(refusal)) == {
@@ -589,3 +590,13 @@ def test_render_test_response_round_trips_success_and_refusal() -> None:
         "message": 'only this exact command is allowed: "pytest"',
         "result": None,
     }
+
+
+def test_test_response_reports_the_compact_size():
+    receipt = RunnerReceipt(
+        RunnerCode.OK,
+        result=RunnerResult(exit_code=1, output="FAILED a::b\n", truncated=False, timed_out=False,
+                            compact_bytes=13),
+    )
+    payload = json.loads(render_test_response(receipt))
+    assert payload["result"]["compact_bytes"] == 13
