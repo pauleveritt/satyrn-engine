@@ -130,3 +130,5 @@
 | tests/test_derive_size.py | created in release-one |
 | tests/fixtures/events/finish-on-green-steered.json | created in release-one |
 | tests/fixtures/events/finish-on-green-not-steered.json | created in release-one |
+| tests/fixtures/events/finish-on-green-steered-redirected-bash.json | created in release-one |
+| tests/fixtures/events/finish-on-green-not-steered-enforced.json | created in release-one |

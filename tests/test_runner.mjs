@@ -534,9 +534,24 @@ test("a test path is any test module, conftest, or anything under tests/", () =>
 	assert.equal(isTestPath("contests/app.py"), false);
 });
 
-test("the steer text is the design's paragraph and names no path", () => {
-	assert.match(FINISH_STEER, /^self_test passes on the current tree\./);
-	assert.match(FINISH_STEER, /Do not commit, add provenance rows/);
+test("isTestPath requires the .py extension on the basename patterns (Ruling A)", () => {
+	assert.equal(isTestPath("conftest.py"), true);
+	assert.equal(isTestPath("src/pkg/conftest.py"), true);
+	assert.equal(isTestPath("a/tests/b/c.py"), true);
+	assert.equal(isTestPath("src/testing/thing.py"), false);
+	assert.equal(isTestPath("src/mytests/x.py"), false);
+	assert.equal(isTestPath("test_thing.txt"), false);
+});
+
+test("the steer text is the design's paragraph, byte for byte, and names no path", () => {
+	assert.equal(
+		FINISH_STEER,
+		"self_test passes on the current tree. If the requested change is complete, stop now and " +
+			"report what you changed. Do not commit, add provenance rows, run the full repository suite, " +
+			"run linters or type checkers, or change your tests to match a count; the developer reviews " +
+			"the candidate and does those. If something in the request is still missing, say which part " +
+			"and continue.",
+	);
 	assert.equal(FINISH_STEER.includes(".py"), false);
 });
 

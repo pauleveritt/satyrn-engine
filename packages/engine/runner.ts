@@ -435,12 +435,15 @@ export const FINISH_STEER =
 	"the candidate and does those. If something in the request is still missing, say which part " +
 	"and continue.";
 
-/** A path whose mutation is not a source mutation (plan Ruling 2). */
+/** A path whose mutation is not a source mutation (plan Ruling 2). The
+ * basename patterns require the `.py` extension -- `test_harness.rs` or
+ * `test_data.json` outside a `tests/` directory is source, not test, and
+ * must still arm the steer (controller Ruling A, fix round 1). */
 export function isTestPath(path: string): boolean {
 	const segments = path.split("/");
 	if (segments.slice(0, -1).includes("tests")) return true;
 	const name = segments[segments.length - 1];
-	return name === "conftest.py" || name.startsWith("test_") || name.endsWith("_test.py");
+	return name === "conftest.py" || (name.startsWith("test_") && name.endsWith(".py")) || name.endsWith("_test.py");
 }
 
 /** An assistant message that ends the agent loop: no tool call, and not an error or an abort. */

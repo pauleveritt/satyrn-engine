@@ -208,7 +208,10 @@ async function replayToolResult(handlers, sent, event) {
 		problems.push(`expect.steer false but ${queued.length} message(s) were queued`);
 	}
 	if (typeof expect.steer === "string") {
-		if (queued.length !== 1 || queued[0].options?.deliverAs !== "steer" || !String(queued[0].message?.content).includes(expect.steer)) {
+		// Exact equality, not a substring check (controller fix round 1, probe
+		// M): a fixture pins the steer's full text, so a reworded message must
+		// be caught, not merely one that still contains some expected phrase.
+		if (queued.length !== 1 || queued[0].options?.deliverAs !== "steer" || String(queued[0].message?.content) !== expect.steer) {
 			problems.push(`expect.steer ${JSON.stringify(expect.steer)} not one steer in ${JSON.stringify(queued)}`);
 		}
 	}
