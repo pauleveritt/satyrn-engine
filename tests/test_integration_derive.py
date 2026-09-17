@@ -84,3 +84,43 @@ def test_an_empty_repository_is_refused_at_the_cli(
 
     assert exit_code == ExitCode.CONTRACT_MISSING_FIELD
     assert "DERIVE:" in captured.err
+
+
+def test_an_above_tier_request_is_derived_and_advisorily_refused_at_the_cli(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ruling 7: the boundary is advisory, not a hard stop. The contract is
+    still written to disk and to stdout, the refusal lands on stderr, and
+    the process exits 0 -- design section 7's runaway resume is measured on
+    `selfhost-cell-loop`, a large-tier request, so a hard refusal here would
+    make that measurement impossible."""
+    _init_repo(tmp_path)
+    request = "Files:\n- Create: `a.py`, `b.py`, `c.py`, `tests/`\n\nInterfaces:\n- Produces: `f`.\n"
+
+    exit_code = main(["derive", "--repo", str(tmp_path), "--", request])
+    captured = capsys.readouterr()
+
+    assert exit_code == ExitCode.OK
+    assert "satyrn-engine: contract " in captured.err
+    contract_path = Path(captured.err.splitlines()[0].split("satyrn-engine: contract ", 1)[1].strip())
+    assert contract_path.is_file()
+    assert "3 non-test paths" in captured.err
+    assert "split the request" in captured.err
+
+
+def test_a_medium_tier_request_carries_no_refusal_at_the_cli(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The advisory boundary's below-tier sibling: stderr carries only the
+    contract-path line, never a refusal."""
+    _init_repo(tmp_path)
+    request = "Files:\n- Modify: `src/app/gate.py`\n\nInterfaces:\n- Produces: `f`.\n"
+
+    exit_code = main(["derive", "--repo", str(tmp_path), "--", request])
+    captured = capsys.readouterr()
+
+    assert exit_code == ExitCode.OK
+    assert "satyrn-engine: contract " in captured.err
+    assert "non-test paths" not in captured.err
+    assert "split the request" not in captured.err
+    assert captured.err.count("satyrn-engine:") == 1

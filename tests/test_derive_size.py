@@ -24,7 +24,7 @@ from satyrn_engine.derive import (
 TASKS = Path("/Users/pauleveritt/projects/pauleveritt/satyrn-evals/src/satyrn_evals/tasks")
 ADMITTED = (
     "selfhost-run-record-gate", "selfhost-docs-linter", "selfhost-guard-prefixes",
-    "selfhost-review-script", "agentclinic-repair-depth-3",
+    "selfhost-review-script", "agentclinic-repair-depth-3", "selfhost-preflight-quiet",
 )
 REFUSED = ("selfhost-cell-loop", "selfhost-speed-probe")
 
@@ -89,6 +89,30 @@ def test_the_caps_are_the_plans_numbers():
     assert (MEDIUM_MODULE_CAP, MEDIUM_PRODUCES_CAP) == (2, 10)
 
 
+def test_selfhost_preflight_quiet_sits_exactly_at_the_produces_cap():
+    # The real task at the boundary: 10 produced symbols, admitted only
+    # because the comparison is `>` and not `>=`.
+    request = request_for("selfhost-preflight-quiet")
+    assert len(produces_names(request)) == 10
+    assert size_refusal(request) is None
+
+
+def test_ten_produced_symbols_are_admitted():
+    request = ("Files:\n- Create: `a.py`, `tests/`\n\nInterfaces:\n- Produces: "
+               + ", ".join(f"`sym{i}`" for i in range(1, 11)) + ".\n")
+    assert len(produces_names(request)) == 10
+    assert size_refusal(request) is None
+
+
+def test_eleven_produced_symbols_are_refused():
+    request = ("Files:\n- Create: `a.py`, `tests/`\n\nInterfaces:\n- Produces: "
+               + ", ".join(f"`sym{i}`" for i in range(1, 12)) + ".\n")
+    assert len(produces_names(request)) == 11
+    refusal = size_refusal(request)
+    assert refusal is not None
+    assert "11 symbols" in refusal
+
+
 def test_the_refusal_text_never_enters_the_rendered_prompt():
     """Plan Ruling 7: the refusal is the developer's message, not the
 
@@ -110,4 +134,26 @@ def test_the_refusal_text_never_enters_the_rendered_prompt():
 
     assert refusal not in prompt
     assert "split the request" not in prompt
-    assert "medium class" not in prompt
+
+
+def test_the_produces_clause_refusal_never_enters_the_rendered_prompt():
+    """Controller ruling: the module-clause test above pins only that
+    clause's message. Design section 7's runaway-resume measurement is
+    taken on `selfhost-cell-loop`, which fires the PRODUCES clause with a
+    different message -- that is the load-bearing path Ruling 7 protects
+    (a prompt-embedded refusal there would confound the runaway-resume
+    reading), so it must be pinned directly against the real manifest
+    request rather than only the synthetic module-clause one above.
+    """
+    request = request_for("selfhost-cell-loop")
+    refusal = size_refusal(request)
+    assert refusal is not None
+
+    tracked = ("pyproject.toml", "README.md")
+    facts = RepoFacts(tracked, '[project]\nname = "app"\n', "a" * 40)
+    contract = derive_contract(request, facts)
+    prompt = build_prompt(contract, existing=(), tracked=())
+
+    assert refusal not in prompt
+    for phrase in ("split the request", "18 of 18", "no passing state", "Interfaces: block declares"):
+        assert phrase not in prompt

@@ -19,6 +19,7 @@ from typing import BinaryIO, Literal, Protocol, TypedDict
 from .budget import GUARD_KINDS, Budget, BudgetState, BudgetUsage, TurnCounter, evaluate
 from .check import check
 from .contract import Contract
+from .derive import size_refusal as _derive_size_refusal
 from .exits import ExitCode
 from .runner import INFRASTRUCTURE, select_carried, tail_output
 
@@ -214,6 +215,7 @@ class _DeliveryContext:
     test_command: tuple[str, ...] = ()
     budget: Budget = Budget()
     contract: Contract | None = None
+    size_refusal: str | None = None
 
 
 @dataclass(slots=True)
@@ -501,6 +503,10 @@ def deliver(
     contract = checked.contract
     budget = _resolve_budget(contract, turn_limit, deadline_seconds, token_limit)
     if checked.code is not ExitCode.OK:
+        # Deliberate: no contract was read on this path, so no request text
+        # exists to measure. `size_refusal` means "the size boundary fired
+        # on this request" -- asserting a value here would claim a
+        # measurement that was never made. Stays `None` (the default).
         return _receipt(
             repository,
             _CHECK_REFUSAL_TO_DELIVERY_CODE[checked.code],
@@ -511,6 +517,7 @@ def deliver(
     if contract is None:  # pragma: no cover - CheckResult invariant
         raise AssertionError("successful check has no contract")
 
+    refusal = _derive_size_refusal(contract.task)
     prepared = _preflight(
         repository,
         contract.id,
@@ -518,6 +525,7 @@ def deliver(
         test_command=contract.test_command,
         budget=budget,
         contract=contract,
+        size_refusal=refusal,
     )
     if isinstance(prepared, DeliveryReceipt):
         return prepared
@@ -554,6 +562,7 @@ def _preflight(
     test_command: tuple[str, ...] = (),
     budget: Budget = _NO_BUDGET,
     contract: Contract | None = None,
+    size_refusal: str | None = None,
 ) -> _DeliveryContext | DeliveryReceipt:
     environment_result = _sanitized_environment(repository)
     if isinstance(environment_result, str):
@@ -563,6 +572,7 @@ def _preflight(
             environment_result,
             contract_id=contract_id,
             budget=budget,
+            size_refusal=size_refusal,
         )
     environment = environment_result
 
@@ -574,6 +584,7 @@ def _preflight(
             _git_message("cannot resolve repository root", root_result),
             contract_id=contract_id,
             budget=budget,
+            size_refusal=size_refusal,
         )
     root = Path(os.fsdecode(root_result.stdout.removesuffix(b"\n")))
     try:
@@ -587,6 +598,7 @@ def _preflight(
             "repo must name the Git working-tree root",
             contract_id=contract_id,
             budget=budget,
+            size_refusal=size_refusal,
         )
 
     if base is not None and not base_is_wellformed(base):
@@ -596,6 +608,7 @@ def _preflight(
             f"base is blank: {base!r}",
             contract_id=contract_id,
             budget=budget,
+            size_refusal=size_refusal,
         )
     head_result = _git(root, environment, *_base_argv(base))
     if head_result.returncode != 0:
@@ -610,6 +623,7 @@ def _preflight(
             ),
             contract_id=contract_id,
             budget=budget,
+            size_refusal=size_refusal,
         )
     base_commit = head_result.stdout.strip().decode("ascii")
 
@@ -631,6 +645,7 @@ def _preflight(
             contract_id=contract_id,
             base_commit=base_commit,
             budget=budget,
+            size_refusal=size_refusal,
         )
     if status_result.stdout:
         return _receipt(
@@ -640,6 +655,7 @@ def _preflight(
             contract_id=contract_id,
             base_commit=base_commit,
             budget=budget,
+            size_refusal=size_refusal,
         )
 
     try:
@@ -654,6 +670,7 @@ def _preflight(
             contract_id=contract_id,
             base_commit=base_commit,
             budget=budget,
+            size_refusal=size_refusal,
         )
     candidate_ref = f"refs/satyrn/candidates/{contract_id}/head"
     ref_format = _git(root, environment, "check-ref-format", candidate_ref)
@@ -665,6 +682,7 @@ def _preflight(
             contract_id=contract_id,
             base_commit=base_commit,
             budget=budget,
+            size_refusal=size_refusal,
         )
 
     existing = _ref_exists(root, environment, candidate_ref)
@@ -677,6 +695,7 @@ def _preflight(
             base_commit=base_commit,
             candidate_ref=candidate_ref,
             budget=budget,
+            size_refusal=size_refusal,
         )
     if existing:
         return _receipt(
@@ -687,6 +706,7 @@ def _preflight(
             base_commit=base_commit,
             candidate_ref=candidate_ref,
             budget=budget,
+            size_refusal=size_refusal,
         )
     return _DeliveryContext(
         repository=repository,
@@ -698,6 +718,7 @@ def _preflight(
         test_command=test_command,
         budget=budget,
         contract=contract,
+        size_refusal=size_refusal,
     )
 
 
@@ -1880,6 +1901,7 @@ def _context_receipt(
         tokens_out=tokens_out,
         guard_firings=guard_firings,
         carried=carried,
+        size_refusal=context.size_refusal,
     )
 
 
@@ -1907,6 +1929,7 @@ def _receipt(
     tokens_out: int = 0,
     guard_firings: GuardFirings = _NO_GUARD_FIRINGS,
     carried: Carried = _NO_CARRIED,
+    size_refusal: str | None = None,
 ) -> DeliveryReceipt:
     declared = budget if budget is not None else Budget()
     if budget_usage is not None:
@@ -1938,4 +1961,5 @@ def _receipt(
         tokens_out=tokens_out,
         guard_firings=guard_firings,
         carried=carried,
+        size_refusal=size_refusal,
     )

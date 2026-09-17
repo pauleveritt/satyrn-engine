@@ -198,8 +198,61 @@ def test_clean_root_reaches_no_changes_without_touching_source(tmp_path: Path) -
             "absent": [],
             "tampered": [],
         },
+        "size_refusal": None,
     }
     assert_source_unchanged(repo, before)
+
+
+def test_deliver_carries_a_size_refusal_on_the_receipt_for_a_large_tier_request(
+    tmp_path: Path,
+) -> None:
+    """Critical review finding: `size_refusal` must be computed and carried
+    by a real `deliver()` run, not only settable by hand-constructing a
+    `DeliveryReceipt` in a unit test. This is the request design section 7's
+    runaway-resume reading depends on being visible in the artifact, not
+    only on the developer's terminal."""
+    repo = make_repo(tmp_path / "repo")
+    contract = tmp_path / "contract.yaml"
+    contract.write_text(
+        yaml.safe_dump(
+            {
+                "id": "above-tier",
+                "task": "Files:\n- Create: `a.py`, `b.py`, `c.py`, `tests/`\n\nInterfaces:\n- Produces: `f`.\n",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    _, receipt = run_delivery(repo, contract)
+
+    refusal = receipt["size_refusal"]
+    assert isinstance(refusal, str)
+    assert "3 non-test paths" in refusal
+    assert "split the request" in refusal
+
+
+def test_deliver_carries_no_size_refusal_on_the_receipt_for_a_medium_tier_request(
+    tmp_path: Path,
+) -> None:
+    """The advisory sibling of the large-tier case above: a request within
+    the medium class carries `size_refusal: null` on the real receipt."""
+    repo = make_repo(tmp_path / "repo")
+    contract = tmp_path / "contract.yaml"
+    contract.write_text(
+        yaml.safe_dump(
+            {
+                "id": "medium-tier",
+                "task": "Files:\n- Modify: `a.py`\n\nInterfaces:\n- Produces: `f`.\n",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    _, receipt = run_delivery(repo, contract)
+
+    assert receipt["size_refusal"] is None
 
 
 def test_base_composes_two_real_cli_deliveries_into_one_fold_forward(
@@ -467,6 +520,7 @@ def test_success_creates_candidate_with_exact_parent_and_paths(tmp_path: Path) -
             "absent": [],
             "tampered": [],
         },
+        "size_refusal": None,
     }
     assert git(repo, "rev-parse", candidate_ref).stdout.strip().decode() == candidate_commit
     assert git(repo, "rev-parse", f"{candidate_commit}^").stdout == before[0]
@@ -758,6 +812,7 @@ def test_failed_attempt_is_discarded_without_candidate(
             "absent": [],
             "tampered": [],
         },
+        "size_refusal": None,
     }
     assert git(repo, "show-ref", "--verify", str(receipt["candidate_ref"])).returncode != 0
     assert_source_unchanged(repo, before)
@@ -819,6 +874,7 @@ def test_timeout_kills_same_process_group_descendant(tmp_path: Path) -> None:
             "absent": [],
             "tampered": [],
         },
+        "size_refusal": None,
     }
     time.sleep(1.0)
     assert not sentinel.exists()

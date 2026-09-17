@@ -143,12 +143,16 @@ _NEXT_HEADER = re.compile(r"^[A-Z][A-Za-z ]{0,40}:\s*$", re.MULTILINE)
 #: clauses, because the design's stated predicate ("one module named in
 #: `Files:`, one test module") was checked against the six self-hosted tasks
 #: and refuses `selfhost-run-record-gate`, a claim task whose `Files:` block
-#: names two modules, while admitting `selfhost-cell-loop` and
-#: `selfhost-speed-probe`, which name one each. The field that does separate
-#: the census's tiers is the declared interface: `Produces:` names 5, 2, 7, 1
-#: and 0 symbols on the five admitted tasks against 24 and 16 on the two
-#: large-tier ones. The file clause is kept because three or more modules is
-#: above the tier on its face.
+#: names two modules, while admitting `selfhost-cell-loop`, which names one,
+#: and `selfhost-speed-probe`, which names two (`scripts/speed_probe.py` and
+#: `ROADMAP.md`). The field that does separate the census's tiers is the
+#: declared interface: `Produces:` names 5, 2, 7, 1 and 0 symbols on the five
+#: admitted tasks against 23 and 16 on the two large-tier ones (the design's
+#: own prose says 24 for `selfhost-cell-loop`; the mechanical count from
+#: `produces_names` on the live manifest is 23 -- most likely the design
+#: counted the backticked span `` `.name` ``, a leading-dot fragment rather
+#: than a dotted identifier). The file clause is kept because three or more
+#: modules is above the tier on its face.
 MEDIUM_MODULE_CAP = 2
 MEDIUM_PRODUCES_CAP = 10
 _PRODUCES = re.compile(r"^-?\s*Produces[^:]*:(.*)$", re.MULTILINE)
