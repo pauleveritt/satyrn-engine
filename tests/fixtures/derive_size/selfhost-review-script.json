@@ -1,0 +1,7 @@
+{
+  "task": "selfhost-review-script",
+  "verdict": "admitted",
+  "produces_count": 7,
+  "non_test_path_count": 1,
+  "request": "Files:\n\n- Create: `tools/review.py`, `tests/`\n\n\nInterfaces:\n- Produces: `review_path(root: Path, commit_range: str, model: str) -> Path` \u2192 `docs/reviews/<start>..<end>-<model-slug>.md`; `refuse_if_exists(path: Path) -> None` (raises `FileExistsError`); `provider_and_model(spec: str) -> tuple[str, str]` (`\"zai/glm-5.3\"` \u2192 `(\"zai\", \"glm-5.3\")`); `build_prompt(diff: str, range_label: str) -> str`; `main(argv)` runs `pi -p --no-session --no-extensions --no-skills -nc --provider P --model M --exclude-tools write,edit PROMPT` and writes its stdout to the path. The `pi` call is the only subprocess and is not exercised in the default tier.\n"
+}

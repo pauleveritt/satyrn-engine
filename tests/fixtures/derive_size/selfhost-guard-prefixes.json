@@ -1,0 +1,7 @@
+{
+  "task": "selfhost-guard-prefixes",
+  "verdict": "admitted",
+  "produces_count": 1,
+  "non_test_path_count": 1,
+  "request": "Files:\n\n- Modify: `tools/hooks/guard.py`\n\n\nInterfaces:\n- Produces: `decide(tool_name: str, tool_input: dict) -> str | None` (signature unchanged; only the pi-lead regex changes)\n"
+}

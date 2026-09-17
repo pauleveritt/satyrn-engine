@@ -173,6 +173,8 @@ stdout stays machine-readable. The receipt always contains these fields:
 | `changed_paths` | UTF-8 paths sorted by raw bytes; `[]` means known empty, null means unavailable |
 | `command_exit` | direct command status; null when it never started or timed out |
 | `worktree_path` | retained cleanup path requiring operator action, otherwise null |
+| `size_refusal` | the advisory medium-class refusal text `derive` printed, or null when the request was within class or no request was measured |
+| `validation_output_bytes` | byte length of the self-test output captured for this delivery, or null when none ran |
 
 Success exits `0`. Contract refusals retain codes `3`–`6`. All other handled
 results that publish no candidate exit `8` (`NO_CANDIDATE`); automation reads
@@ -250,9 +252,13 @@ Inside Pi with the package installed (`pi install <engine>/packages/engine`,
     /implement add --check to src/app/cli.py
 
 derives a contract from the request and the repository — `writable_paths`
-from the files, directories and new files the request names (naming a
-non-test `.py` file also makes its test file, `tests/test_<stem>.py`,
-writable, unless that test already exists — it is then preserved instead).
+from the files, directories and new files named in the request's `Files:`
+block alone, when the request has one; only a request with no `Files:` block
+falls back to tokenizing the whole request (naming a non-test `.py` file
+also makes its test file, `tests/test_<stem>.py`, writable, unless that test
+already exists — it is then preserved instead). Restricting to the `Files:`
+block keeps derive from admitting a path the grader would reject just
+because the word appeared later in the prompt.
 When the named tokens yield no writable path other than test files or test
 directories (including naming nothing at all), `writable_paths` falls back
 to the repository's top-level entries instead: every top-level tracked file
@@ -269,8 +275,17 @@ fallback; an empty repository (no tracked files at all) is still refused.
 or the default `uv run python -m pytest -q`, `preserve` (tracked test files
 under `tests/`) and `checks` (`checks/`), budgets of 32,000 output tokens and
 48 turns — writes it under `.git/satyrn/contracts/<id>.yaml`, and shows it. A
-repository with no `pyproject.toml` is refused. In the TUI, answer the
-confirmation to dispatch; in print mode run:
+repository with no `pyproject.toml` is refused.
+
+`derive` also measures the request against the medium class: at most two
+non-test paths in the `Files:` block, and at most ten symbols named in an
+`Interfaces:` block's `Produces:` lines. Above either bound it still writes
+the contract — the refusal is advisory, not a gate — and prints a refusal to
+stderr naming the count and what was over, exits `0`, and records the
+refusal text on the receipt's `size_refusal` field. The refusal text never
+enters the model's prompt. Because a developer can under-declare symbols in
+`Produces:`, this is a guide for splitting a request, not an enforced limit.
+In the TUI, answer the confirmation to dispatch; in print mode run:
 
     /implement --go implement-0123456789ab
 
@@ -402,8 +417,12 @@ install alone does not enable it: E5 supplies a versioned
 `SATYRN_MUTATION_CONTEXT` containing the disposable workspace, contract, and
 captured revisions. Without that context, Pi keeps its built-in `edit` tool.
 
-With context, exactly one `edits[]` entry is sent over the existing one-shot
-protocol. Python normalizes the workspace-relative path, matches
+With context, up to sixteen `edits[]` entries can travel in one exchange.
+They are applied in order, all-or-nothing: the file is written exactly once,
+after every replacement in the sequence has succeeded, or not at all, and a
+refusal names the 1-based failing index. The single `old_text`/`new_text`
+form remains accepted for one replacement. Python normalizes the
+workspace-relative path, matches
 `writable_paths`, rejects every symlink component, checks the exact-byte
 SHA-256 {term}`revision`, and requires `oldText` to occur once. A success
 atomically publishes the replacement and returns the next revision. A refusal

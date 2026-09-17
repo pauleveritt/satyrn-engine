@@ -1,0 +1,7 @@
+{
+  "task": "selfhost-cell-loop",
+  "verdict": "refused",
+  "produces_count": 23,
+  "non_test_path_count": 1,
+  "request": "Files:\n\n- Create: `src/satyrn_evals/launch.py`, `tests/`\n\n\nInterfaces:\n- Produces: `launch.LEDGER_NAME = \"launch.json\"`, `SLOTS_DIR = \"slots\"`, `INFRASTRUCTURE_CODES`; `class Status(StrEnum)`: `COMPLETE`, `CAPPED`, `INFRASTRUCTURE`, `INTERRUPTED`; `@dataclass Slot(index: int, arm: str)` with `.name` (`\"03\"`); `class CellProcess(Protocol)`: `poll() -> int | None`, `terminate()`, `kill()`; `type Spawn = Callable[[Slot], CellProcess]`, `type Drift = Callable[[], str | None]`; `@dataclass LaunchOutcome(status, reason, finished: list[dict], replaced: list[dict])`; `plan_slots(arms, n) -> list[Slot]`; `slot_path(night, slot) -> Path` (`night/slots/NN.json`); `infrastructure_reason(result: dict) -> str | None`; `read_slots(night) -> dict[int, dict]`; `write_ledger(night, *, identity, sitting, outcome)`; `check_night(night, identity)` (UsageError when the ledger belongs to another record); `launch_cells(*, night, arms, n, k, max_seconds, cell_seconds, spawn, drift, grace=60.0, poll_interval=1.0, clock=time.monotonic, sleep=time.sleep) -> LaunchOutcome` (never raises for a signal: returns `INTERRUPTED`). A slot result dict is `{\"slot\", \"arm\", \"attempt_dir\", \"code\", \"verdict\", \"message\", \"command_exit\", \"deadline_phase\"}` (written by Task 3's cell process).\n"
+}

@@ -134,3 +134,13 @@
 | tests/fixtures/events/finish-on-green-not-steered-enforced.json | created in release-one |
 | tests/fixtures/events/runaway-resumed.json | created in release-one |
 | tests/fixtures/events/runaway-not-resumed.json | created in release-one |
+| tests/fixtures/derive_size/agentclinic-repair-depth-3.json | created in release-one |
+| tests/fixtures/derive_size/selfhost-cell-loop.json | created in release-one |
+| tests/fixtures/derive_size/selfhost-docs-linter.json | created in release-one |
+| tests/fixtures/derive_size/selfhost-guard-prefixes.json | created in release-one |
+| tests/fixtures/derive_size/selfhost-preflight-quiet.json | created in release-one |
+| tests/fixtures/derive_size/selfhost-review-script.json | created in release-one |
+| tests/fixtures/derive_size/selfhost-run-record-gate.json | created in release-one |
+| tests/fixtures/derive_size/selfhost-speed-probe.json | created in release-one |
+| tests/fixtures/events/finish-on-green-steered-not-resumed.json | created in release-one |
+| tests/fixtures/events/runaway-not-resumed-tool-call-in-length-cut.json | created in release-one |

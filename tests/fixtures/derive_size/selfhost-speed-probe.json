@@ -1,0 +1,7 @@
+{
+  "task": "selfhost-speed-probe",
+  "verdict": "refused",
+  "produces_count": 16,
+  "non_test_path_count": 2,
+  "request": "Files:\n\n- Create: `scripts/speed_probe.py`, `tests/`\n- Modify: `ROADMAP.md`\n\n\nInterfaces:\n- Produces: `speed_probe.CONTEXT_SIZES`, `CONCURRENCY`, `K_THRESHOLD = 1.5`, `SIZE_TOLERANCE`, `Completion`, `parse_line(line) -> Completion | None`, `completions_in(lines, model, start, end)`, `nearest_size(prompt)`, `decode_by_size(completions) -> dict[int, float]`, `total_throughput(completions) -> float`, `choose_k(throughput) -> int`, `analyze(plan, lines) -> dict`, `filler`, `request`, `run(base_url, model, *, streams_seconds, max_tokens, opener)`, `main` (`run`, `analyze`).\n"
+}

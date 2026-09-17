@@ -1,0 +1,7 @@
+{
+  "task": "agentclinic-repair-depth-3",
+  "verdict": "admitted",
+  "produces_count": 0,
+  "non_test_path_count": 0,
+  "request": "Files:\n\nInterfaces:\n\n"
+}

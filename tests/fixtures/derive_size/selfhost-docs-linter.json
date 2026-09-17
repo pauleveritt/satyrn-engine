@@ -1,0 +1,7 @@
+{
+  "task": "selfhost-docs-linter",
+  "verdict": "admitted",
+  "produces_count": 2,
+  "non_test_path_count": 1,
+  "request": "Files:\n\n- Create: `tools/lint_docs.py` (new, not imported), `tests/`\n\n\nInterfaces:\n- Produces: `lint_docs.check(root: Path) -> list[str]`; `just lint-docs` exits 1 on any failure.\n"
+}

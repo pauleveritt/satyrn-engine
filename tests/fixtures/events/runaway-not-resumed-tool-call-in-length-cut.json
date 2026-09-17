@@ -1,0 +1,10 @@
+{
+  "name": "runaway-not-resumed-tool-call-in-length-cut",
+  "extension": "runner.ts",
+  "context": {"version": 1, "repo": "/w", "contract": "/w/c.yaml", "revisions": {"app.py": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "writable_paths": ["app.py", "tests/*"], "test_command": ["uv", "run", "python", "-m", "pytest", "-q"], "symbols": {}, "carried": [], "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "expectedHandlers": {"tool_call": 1, "tool_result": 1, "turn_end": 1},
+  "events": [
+    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "length", "content": [{"type": "toolCall", "id": "e1", "name": "edit", "arguments": {}}], "usage": {"output": 16000}}, "expect": {"followUp": false}}
+  ],
+  "expectedEntries": []
+}

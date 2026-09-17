@@ -1,0 +1,7 @@
+{
+  "task": "selfhost-run-record-gate",
+  "verdict": "admitted",
+  "produces_count": 5,
+  "non_test_path_count": 2,
+  "request": "Files:\n\n- Create: `src/satyrn_evals/run_record.py`, `tests/`\n- Modify: `src/satyrn_evals/cli.py` (add `launch --check RECORD`)\n\n\nInterfaces:\n- Produces: `RunRecord` (frozen dataclass), `load_run_record(path: Path) -> RunRecord` (raises `RunRecordError`, which you define in `src/satyrn_evals/run_record.py` as a subclass of the existing `UsageError`, imported from `errors.py`; `errors.py` is already correct and is not one of the files you may change, so add nothing to it; the exception names the first missing or ill-typed field), `gate(record: RunRecord, *, previous_result_committed: bool | None) -> None` (raises `RunRecordError` on any refusal), and the CLI `satyrn-evals launch --check RECORD.json` (exit 0 on pass, usage exit code on refusal). Phase 2 adds the cell loop behind the same subcommand.\n"
+}
