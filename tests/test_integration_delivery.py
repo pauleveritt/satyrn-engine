@@ -168,6 +168,7 @@ def test_clean_root_reaches_no_changes_without_touching_source(tmp_path: Path) -
         "validation": "not_applicable",
         "validation_exit": None,
         "validation_output": None,
+        "validation_output_bytes": None,
         "worktree_path": None,
         "budget": {
             "state": "not_declared",
@@ -490,6 +491,7 @@ def test_success_creates_candidate_with_exact_parent_and_paths(tmp_path: Path) -
         "validation": "not_requested",
         "validation_exit": None,
         "validation_output": None,
+        "validation_output_bytes": None,
         "worktree_path": None,
         "budget": {
             "state": "not_declared",
@@ -782,6 +784,7 @@ def test_failed_attempt_is_discarded_without_candidate(
         "validation": "not_applicable",
         "validation_exit": None,
         "validation_output": None,
+        "validation_output_bytes": None,
         "worktree_path": None,
         "budget": {
             "state": "not_declared",
@@ -844,6 +847,7 @@ def test_timeout_kills_same_process_group_descendant(tmp_path: Path) -> None:
         "validation": "not_applicable",
         "validation_exit": None,
         "validation_output": None,
+        "validation_output_bytes": None,
         "worktree_path": None,
         "budget": {
             "state": "not_declared",
