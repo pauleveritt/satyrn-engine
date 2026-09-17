@@ -2317,6 +2317,14 @@ def test_carried_files_are_not_described_as_writable():
     assert "tests/test_a.py" not in writable_section
 
 
+def test_prompt_list_cap_is_eight():
+    """The plan names `attempt.PROMPT_LIST_CAP = 8` as a produced interface
+    (Task 4 builds on it), so the literal value is part of the contract, not
+    an implementation detail the boundary tests below may leave free to
+    drift. This must go red on its own if the constant is ever changed."""
+    assert PROMPT_LIST_CAP == 8
+
+
 def test_a_carried_list_at_the_cap_is_still_listed():
     """PROMPT_LIST_CAP's boundary, pinned exactly (not just exercised at 2 and 30):
     a carried list of exactly PROMPT_LIST_CAP items is still named, not collapsed."""
