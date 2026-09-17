@@ -153,6 +153,7 @@ class DeliveryPayload(TypedDict):
     tokens_out: int
     guard_firings: dict[str, int]
     carried: dict[str, list[str]]
+    size_refusal: str | None
 
 
 class BudgetPayload(TypedDict):
@@ -391,6 +392,7 @@ class DeliveryReceipt:
     tokens_out: int = 0
     guard_firings: GuardFirings = GuardFirings()
     carried: Carried = Carried()
+    size_refusal: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.code, DeliveryCode):
@@ -450,6 +452,7 @@ class DeliveryReceipt:
             "tokens_out": self.tokens_out,
             "guard_firings": self.guard_firings.payload(),
             "carried": self.carried.payload(),
+            "size_refusal": self.size_refusal,
         }
 
     def render(self) -> str:

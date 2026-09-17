@@ -155,6 +155,7 @@ def test_receipt_matches_committed_fixture(code: DeliveryCode, fixture: str) -> 
         "tokens_out",
         "guard_firings",
         "carried",
+        "size_refusal",
     ]
 
 
@@ -1164,3 +1165,36 @@ def test_receipt_without_validation_reports_no_size() -> None:
         worktree_path=None,
     )
     assert receipt.payload()["validation_output_bytes"] is None
+
+
+def test_the_receipt_carries_a_size_refusal_when_one_was_raised() -> None:
+    receipt = DeliveryReceipt(
+        code=DeliveryCode.OK,
+        message="candidate created",
+        contract_id="greeting",
+        repository="/src/app",
+        base_commit="base-sha",
+        candidate_ref="refs/satyrn/candidates/greeting/head",
+        candidate_commit="candidate-sha",
+        changed_paths=("greeting.py",),
+        command_exit=0,
+        worktree_path=None,
+        size_refusal="above the medium class",
+    )
+    assert receipt.payload()["size_refusal"] == "above the medium class"
+
+
+def test_the_receipt_carries_no_size_refusal_by_default() -> None:
+    receipt = DeliveryReceipt(
+        code=DeliveryCode.OK,
+        message="candidate created",
+        contract_id="greeting",
+        repository="/src/app",
+        base_commit="base-sha",
+        candidate_ref="refs/satyrn/candidates/greeting/head",
+        candidate_commit="candidate-sha",
+        changed_paths=("greeting.py",),
+        command_exit=0,
+        worktree_path=None,
+    )
+    assert receipt.payload()["size_refusal"] is None

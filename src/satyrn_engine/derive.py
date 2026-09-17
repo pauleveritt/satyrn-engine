@@ -139,6 +139,85 @@ def _fallback_paths(tracked: tuple[str, ...], preserve: tuple[str, ...], checks:
 _FILES_HEADER = re.compile(r"^Files:\s*$", re.MULTILINE)
 _NEXT_HEADER = re.compile(r"^[A-Z][A-Za-z ]{0,40}:\s*$", re.MULTILINE)
 
+#: The medium class, measured mechanically (design §6; plan Ruling 6). Two
+#: clauses, because the design's stated predicate ("one module named in
+#: `Files:`, one test module") was checked against the six self-hosted tasks
+#: and refuses `selfhost-run-record-gate`, a claim task whose `Files:` block
+#: names two modules, while admitting `selfhost-cell-loop` and
+#: `selfhost-speed-probe`, which name one each. The field that does separate
+#: the census's tiers is the declared interface: `Produces:` names 5, 2, 7, 1
+#: and 0 symbols on the five admitted tasks against 24 and 16 on the two
+#: large-tier ones. The file clause is kept because three or more modules is
+#: above the tier on its face.
+MEDIUM_MODULE_CAP = 2
+MEDIUM_PRODUCES_CAP = 10
+_PRODUCES = re.compile(r"^-?\s*Produces[^:]*:(.*)$", re.MULTILINE)
+_SPAN = re.compile(r"`([^`]+)`")
+_KEYWORD = re.compile(r"^(?:class|type|def|@dataclass)\s+")
+_DOTTED = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\Z")
+
+
+def produces_names(request: str) -> tuple[str, ...]:
+    """The symbols the request's ``Interfaces:`` ``Produces:`` lines name.
+
+    Each backticked span has a leading ``class``/``type``/``def``/
+    ``@dataclass`` keyword stripped, is cut at the first ``(``, space,
+    ``=`` or ``:``, and is kept when what remains is a dotted identifier
+    that neither ends in ``.py`` nor holds a ``/`` -- so a module path, a
+    shell command or a quoted literal never counts as a produced symbol.
+    Order-preserving and deduplicated.
+    """
+    names: list[str] = []
+    for line in _PRODUCES.findall(request):
+        for span in _SPAN.findall(line):
+            candidate = _KEYWORD.sub("", span.strip())
+            for stop in ("(", " ", "=", ":"):
+                candidate = candidate.split(stop, 1)[0]
+            candidate = candidate.strip()
+            if not _DOTTED.match(candidate) or candidate.endswith(".py") or "/" in candidate:
+                continue
+            if candidate not in names:
+                names.append(candidate)
+    return tuple(names)
+
+
+def _files_paths(request: str) -> tuple[str, ...]:
+    block = files_block(request)
+    if block is None:
+        return ()
+    found: list[str] = []
+    for span in _SPAN.findall(block):
+        token = span.strip().strip("`")
+        if "/" not in token and "." not in token:
+            continue
+        if token not in found:
+            found.append(token)
+    return tuple(found)
+
+
+def size_refusal(request: str) -> str | None:
+    """The developer-facing refusal when a request is above the medium class.
+
+    ``None`` when the request is within it. Advisory (plan Ruling 7): the
+    caller still writes the contract and still runs, because §7's runaway
+    resume is measured on a large-tier task, and because §6 says the Engine
+    "returns the contract with a refusal", not instead of it.
+    """
+    modules = tuple(p for p in _files_paths(request)
+                    if not _is_test_file(p) and not p.rstrip("/").endswith("tests"))
+    if len(modules) > MEDIUM_MODULE_CAP:
+        return (f"This request names {len(modules)} non-test paths in its Files: block "
+                f"({', '.join(modules)}). The Engine is built for one or two modules and their "
+                "tests; above that, 18 of 18 measured cells reached no passing state -- split "
+                "the request into one bounded change per module and run them in order.")
+    produced = produces_names(request)
+    if len(produced) > MEDIUM_PRODUCES_CAP:
+        return (f"This request's Interfaces: block declares {len(produced)} symbols "
+                f"({', '.join(produced[:5])}, ...). The Engine is built for a change of up to "
+                f"{MEDIUM_PRODUCES_CAP}; above that, 18 of 18 measured cells reached no passing "
+                "state -- split the request into bounded changes and run them in order.")
+    return None
+
 
 def files_block(request: str) -> str | None:
     """The text of the request's ``Files:`` block, or ``None``.

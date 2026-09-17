@@ -268,7 +268,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _derive(repo: Path, request: str) -> int:
-    from .derive import DeriveError, RepoFacts, derive_contract, render_contract
+    from .derive import (
+        DeriveError,
+        RepoFacts,
+        derive_contract,
+        render_contract,
+        size_refusal,
+    )
 
     def git(*args: str) -> str:
         return subprocess.run(["git", "-C", os.fspath(repo), *args], check=True, capture_output=True, text=True).stdout
@@ -293,6 +299,9 @@ def _derive(repo: Path, request: str) -> int:
     target.write_text(rendered, encoding="utf-8")
     sys.stdout.write(rendered)
     print(f"satyrn-engine: contract {target}", file=sys.stderr)
+    refusal = size_refusal(request)
+    if refusal is not None:
+        print(f"satyrn-engine: {refusal}", file=sys.stderr)
     return 0
 
 
