@@ -64,9 +64,12 @@ def self_test_command(pyproject: str) -> tuple[str, ...]:
     if not pyproject.strip():
         raise DeriveError("no pyproject.toml; declare [tool.satyrn] self_test or add one")
     try:
-        declared = tomllib.loads(pyproject).get("tool", {}).get("satyrn", {}).get("self_test")
+        data = tomllib.loads(pyproject)
     except tomllib.TOMLDecodeError as exc:
         raise DeriveError(f"pyproject.toml is not valid TOML: {exc}") from exc
+    tool = data.get("tool") if isinstance(data, dict) else None
+    satyrn_table = tool.get("satyrn") if isinstance(tool, dict) else None
+    declared = satyrn_table.get("self_test") if isinstance(satyrn_table, dict) else None
     if declared is None:
         return DEFAULT_SELF_TEST
     if not isinstance(declared, list) or not declared or not all(isinstance(t, str) and t for t in declared):
@@ -85,9 +88,12 @@ def _pytest_excluded_dirs(pyproject: str) -> tuple[str, ...]:
     suite is green still exits 2 on the fixture trees' import errors.
     """
     try:
-        ini = tomllib.loads(pyproject).get("tool", {}).get("pytest", {}).get("ini_options", {})
+        data = tomllib.loads(pyproject)
     except tomllib.TOMLDecodeError:
         return ()
+    tool = data.get("tool") if isinstance(data, dict) else None
+    pytest_table = tool.get("pytest") if isinstance(tool, dict) else None
+    ini = pytest_table.get("ini_options") if isinstance(pytest_table, dict) else None
     declared = ini.get("norecursedirs") if isinstance(ini, dict) else None
     if not isinstance(declared, list):
         return ()
@@ -95,12 +101,22 @@ def _pytest_excluded_dirs(pyproject: str) -> tuple[str, ...]:
 
 
 def _is_excluded(path: str, patterns: tuple[str, ...]) -> bool:
-    """True when ``path`` is under a directory pytest is told not to recurse."""
+    """True when pytest would not recurse into a directory on ``path``.
+
+    pytest matches a pattern that contains a path separator against the full
+    path, and a bare pattern against each directory's basename. Reproduce both:
+    a repo may declare ``norecursedirs = ["data"]`` and still exclude
+    ``tests/data``, and the Engine must keep that path out of ``preserve``.
+    """
+    parts = path.split("/")
     for pattern in patterns:
         prefix = pattern.rstrip("/")
-        if path == prefix or path.startswith(prefix + "/"):
-            return True
-        if fnmatch(path, pattern) or fnmatch(path, f"{prefix}/*"):
+        if "/" in pattern:
+            if path == prefix or path.startswith(prefix + "/"):
+                return True
+            if fnmatch(path, pattern):
+                return True
+        elif any(fnmatch(part, prefix) for part in parts[:-1]):
             return True
     return False
 

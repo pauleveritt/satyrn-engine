@@ -420,7 +420,10 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 	pi.on("tool_result", async (event) => {
 		if (event.toolName === "bash") {
 			const original = resultText(event);
-			if (!hasPytestSummary(original) || checked === generation) return undefined;
+			// No mutation has landed, or the Engine already tested this
+			// generation: the detection must not run on a fresh session
+			// (plan Task 6: output without a mutation generation must not fire).
+			if (generation === 0 || checked === generation || !hasPytestSummary(original)) return undefined;
 			const result = await run(event.toolCallId);
 			await maybeSteer(result.details);
 			await note("self_test_detected", { generation });

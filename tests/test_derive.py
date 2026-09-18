@@ -66,6 +66,33 @@ def test_preserve_omits_the_repos_pytest_excluded_directories() -> None:
     assert contract.preserve == ("tests/test_gate.py",)
 
 
+def test_preserve_honours_a_bare_basename_norecursedirs_pattern() -> None:
+    """pytest matches a bare pattern against a directory's basename, so
+    ``norecursedirs = ["data"]`` excludes ``tests/data`` even though the full
+    path differs."""
+    tracked = ("pyproject.toml", "src/app/gate.py", "tests/data/test_bad.py", "tests/test_gate.py")
+    pyproject = (
+        '[project]\nname = "app"\n'
+        "[tool.pytest.ini_options]\n"
+        'norecursedirs = ["data"]\n'
+    )
+    contract = derive_contract("Fix src/app/gate.py", RepoFacts(tracked, pyproject, HEAD))
+    assert contract.preserve == ("tests/test_gate.py",)
+
+
+@pytest.mark.parametrize(
+    "pyproject",
+    [
+        '[project]\nname = "app"\n[tool]\npytest = 5\n',
+        'tool = "x"\n',
+        "[tool.pytest]\nini_options = 5\n",
+    ],
+)
+def test_an_odd_pytest_table_is_ignored_not_a_crash(pyproject: str) -> None:
+    contract = derive_contract("Fix src/app/gate.py", RepoFacts(TRACKED, pyproject, HEAD))
+    assert contract.preserve == ("tests/test_cli.py", "tests/unit/test_gate.py")
+
+
 _FALLBACK_TOP_LEVEL = ("docs/*", "src/*", "tests/*")          # pyproject.toml is carried, not writable
 
 

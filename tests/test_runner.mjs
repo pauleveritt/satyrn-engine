@@ -279,6 +279,23 @@ test("a summary with no pending mutation runs nothing, and a bash result without
 	assert.equal(exchanges, 1);
 });
 
+test("a fresh session with no mutation does not detect", async () => {
+	// Plan Task 6: output without a mutation generation must not fire. `checked`
+	// starts null, so the generation-0 guard, not the checked comparison, is
+	// what stops this.
+	const pi = fakePi();
+	let exchanges = 0;
+	registerRunner(pi.api, context(), async () => {
+		exchanges += 1;
+		return success({ exit_code: 0, output: "4 passed in 0.1s\n" });
+	});
+	const [onResult] = pi.handlers.tool_result;
+	assert.equal(await onResult({ toolCallId: "b1", toolName: "bash", isError: false,
+		content: [{ type: "text", text: "3 passed in 0.5s" }], details: undefined }), undefined);
+	assert.equal(exchanges, 0);
+	assert.deepEqual(pi.entries, []);
+});
+
 test("a detected run the engine refuses is an error result and is recorded", async () => {
 	const pi = fakePi();
 	registerRunner(pi.api, context(), async () => (
@@ -378,6 +395,7 @@ test("a self-test the model ran after its last change satisfies the gate; a land
 
 test("a detected bash test run satisfies the gate; a successful write re-arms it; a refused write does not", async () => {
 	const gate = gated([success({ exit_code: 0, output: "3 passed" })]);
+	await gate.result(SOURCE_EDIT);
 	await gate.result({ toolCallId: "b1", toolName: "bash", isError: false,
 		content: [{ type: "text", text: "3 passed in 0.5s" }], details: undefined });
 	await gate.result({ toolCallId: "w0", toolName: "write", input: { path: "app.py", content: "x" }, isError: true, content: [], details: undefined });
@@ -386,7 +404,7 @@ test("a detected bash test run satisfies the gate; a successful write re-arms it
 	await gate.result({ toolCallId: "w1", toolName: "write", input: { path: "app.py", content: "x" }, isError: false, content: [], details: undefined });
 	await gate.turnEnd(FINAL);
 	assert.equal(gate.exchanges(), 2);
-	assert.deepEqual(gate.pi.entries.map((entry) => entry.kind), ["self_test_detected", "self_test_enforced"]);
+	assert.deepEqual(gate.pi.entries.map((entry) => entry.kind), ["finish_nudged", "self_test_detected", "self_test_enforced"]);
 });
 
 test("an enforced run the engine refuses is recorded and sends nothing; an errored or aborted turn is never gated", async () => {

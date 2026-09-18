@@ -146,3 +146,4 @@
 | tests/fixtures/events/self-test-detected-heredoc.json | created in release-one |
 | tests/fixtures/events/self-test-detected-later-bare.json | created in release-one |
 | tests/fixtures/events/self-test-not-detected.json | created in release-one |
+| tests/fixtures/events/self-test-not-detected-fresh.json | created in release-one |
