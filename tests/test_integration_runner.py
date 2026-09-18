@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from satyrn_engine.contract import Contract
+from satyrn_engine.derive import RepoFacts, derive_contract
 from satyrn_engine.runner import TAIL_BYTES, RunnerCode, run_tests
 
 pytestmark = pytest.mark.integration
@@ -148,6 +149,41 @@ def test_a_tampered_preserve_path_is_restored_from_base_before_the_extra_run(tmp
     assert "original" in receipt.result.output
     assert "tampered" not in receipt.result.output
     assert preserve.read_text(encoding="utf-8") == "original\n"
+
+
+def test_a_clean_tree_whose_only_red_tests_are_pytest_excluded_self_tests_green(tmp_path: Path) -> None:
+    """The 2026-09-18 route-proof defect, end to end: a repo whose own suite
+    is green but whose fixture tree cannot import. `run_tests` runs the
+    contract command once more with `preserve` appended; before the fix the
+    derived `preserve` named `tests/data/...`, pytest collected it anyway
+    (an explicit path defeats `norecursedirs`), and the self-test exited 2."""
+    repo = tmp_path / "repo"
+    (repo / "tests" / "data" / "fixture").mkdir(parents=True)
+    (repo / "tests" / "test_ok.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    (repo / "tests" / "data" / "fixture" / "test_hidden.py").write_text("import not_a_module\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text(
+        "[project]\nname = 'x'\nversion = '0'\n"
+        "[tool.pytest.ini_options]\n"
+        'norecursedirs = ["tests/data"]\n'
+        "[tool.satyrn]\n"
+        f'self_test = ["{sys.executable}", "-m", "pytest", "-q"]\n',
+        encoding="utf-8",
+    )
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    tracked = tuple(_git_output(repo, "ls-files").split())
+    facts = RepoFacts(tracked, (repo / "pyproject.toml").read_text(encoding="utf-8"), "e" * 40)
+    contract = derive_contract("Fix tests/test_ok.py", facts)
+
+    assert "tests/data/fixture/test_hidden.py" not in contract.preserve
+    receipt = run_tests(repo, contract, None)
+
+    assert receipt.code is RunnerCode.OK
+    assert receipt.result is not None
+    assert receipt.result.exit_code == 0
 
 
 def test_the_command_runs_with_cwd_set_to_the_repo(tmp_path: Path) -> None:
