@@ -3,7 +3,7 @@
   "extension": "runner.ts",
   "testExitCode": 0,
   "context": {"version": 1, "repo": "/w", "contract": "/w/c.yaml", "revisions": {"app.py": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "writable_paths": ["app.py", "tests/*"], "test_command": ["uv", "run", "python", "-m", "pytest", "-q"], "symbols": {}, "carried": [], "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-  "expectedHandlers": {"tool_call": 1, "tool_result": 1, "turn_end": 1},
+  "expectedHandlers": {"tool_call": 0, "tool_result": 1, "turn_end": 1},
   "events": [
     {"type": "tool_result", "toolCallId": "w1", "toolName": "write", "input": {"path": "app.py"}, "isError": false, "content": [{"type": "text", "text": "ok"}], "details": {}, "expect": {"patched": false}},
     {"type": "tool_result", "toolCallId": "s1", "toolName": "self_test", "input": {}, "isError": false, "content": [{"type": "text", "text": "Test command exited 0"}], "details": {"satyrn": true, "ok": true, "code": "OK", "result": {"exit_code": 0, "output": "4 passed in 0.1s\n", "truncated": false, "timed_out": false, "compact_bytes": 17}}, "expect": {"steer": "self_test passes on the current tree. If the requested change is complete, stop now and report what you changed. Do not commit, add provenance rows, run the full repository suite, run linters or type checkers, or change your tests to match a count; the developer reviews the candidate and does those. If something in the request is still missing, say which part and continue."}},

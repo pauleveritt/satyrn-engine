@@ -235,9 +235,9 @@ trusted command itself.
 ### Justification status (2026-09-15)
 
 The loop breaker, scope guard, symbol preservation, command bounds (guard 4),
-carried tests, `self_test` (its redirect and the completion gate) were
+carried tests, `self_test` (its output detection and the completion gate) were
 designed from evidence gathered before release one's clean harness. On live
-isolated cells, guard 4 fired as designed and the `self_test` redirect
+isolated cells, guard 4 fired as designed and the `self_test` detection
 replaced ad-hoc pytest runs, but none of these components has been shown to
 change outcomes, and the completion gate never fired in cells that end at the
 budget rather than stopping early. Their justification is re-opened for
@@ -294,14 +294,16 @@ One fresh Pi runs in a worktree branched from `HEAD` with the guards loaded
 child): the loop breaker; `edit`/`write` refused outside `writable_paths`; an
 `edit` or `write` that would remove a symbol the base defines refused with
 what to do instead; bash `timeout` set to 120 s when absent and clamped at
-300 s, the result naming the bound and the self-test; a bash command that
-only runs pytest answered by `self_test` instead (`self_test_redirected`);
-and, when the model stops with no self-test since its last `edit` or
-`write`, one run by the Engine whose failure goes back to the model as a
-single follow-up message (`self_test_enforced`). When a self-test that
-completed inside a turn -- the model's own `self_test` call, or a bash call
-redirected into it, never the enforced gate -- passes, and a source file has
-changed since the last pass, the Engine sends one message saying the change
+300 s, the result naming the bound and the self-test; a bash command left
+exactly as the model wrote it, with pytest's summary line in its output
+detected so the Engine runs its own self-test once when a source mutation has
+landed since the last one (`self_test_detected`); and, when the model stops
+with no self-test since its last `edit` or `write`, one run by the Engine
+whose failure goes back to the model as a single follow-up message
+(`self_test_enforced`). When a self-test that completed inside a turn -- the
+model's own `self_test` call, or the Engine's run after a detected bash test
+run, never the enforced gate -- passes, and a source file has changed since
+the last pass, the Engine sends one message saying the change
 may be complete and that commits, provenance rows, repository-wide suites,
 linters and test-count edits are the developer's. When a turn hits the
 per-turn output cap with no tool call, the Engine asks once for a concrete

@@ -123,14 +123,11 @@
 | tests/test_integration_implement.py | created in release-one |
 | tests/fixtures/events/bounds-timeout-text-not-error.json | created in release-one |
 | tests/test_integration_pi_pump.py | created in release-one |
-| tests/fixtures/events/self-test-redirected.json | created in release-one |
-| tests/fixtures/events/self-test-not-redirected.json | created in release-one |
 | tests/fixtures/events/self-test-enforced.json | created in release-one |
 | tests/fixtures/events/self-test-not-enforced.json | created in release-one |
 | tests/test_derive_size.py | created in release-one |
 | tests/fixtures/events/finish-on-green-steered.json | created in release-one |
 | tests/fixtures/events/finish-on-green-not-steered.json | created in release-one |
-| tests/fixtures/events/finish-on-green-steered-redirected-bash.json | created in release-one |
 | tests/fixtures/events/finish-on-green-not-steered-enforced.json | created in release-one |
 | tests/fixtures/events/runaway-resumed.json | created in release-one |
 | tests/fixtures/events/runaway-not-resumed.json | created in release-one |
@@ -144,3 +141,8 @@
 | tests/fixtures/derive_size/selfhost-speed-probe.json | created in release-one |
 | tests/fixtures/events/finish-on-green-steered-not-resumed.json | created in release-one |
 | tests/fixtures/events/runaway-not-resumed-tool-call-in-length-cut.json | created in release-one |
+| tests/fixtures/events/self-test-detected.json | created in release-one |
+| tests/fixtures/events/self-test-detected-compound.json | created in release-one |
+| tests/fixtures/events/self-test-detected-heredoc.json | created in release-one |
+| tests/fixtures/events/self-test-detected-later-bare.json | created in release-one |
+| tests/fixtures/events/self-test-not-detected.json | created in release-one |

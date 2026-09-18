@@ -2,12 +2,11 @@
   "name": "self-test-not-enforced",
   "extension": "runner.ts",
   "context": {"version": 1, "repo": "/w", "contract": "/w/c.yaml", "revisions": {"app.py": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "writable_paths": ["app.py", "tests/*"], "test_command": ["uv", "run", "python", "-m", "pytest", "-q"], "symbols": {}, "carried": [], "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-  "expectedHandlers": {"tool_call": 1, "tool_result": 1, "turn_end": 1},
+  "expectedHandlers": {"tool_call": 0, "tool_result": 1, "turn_end": 1},
   "events": [
     {"type": "tool_result", "toolCallId": "e1", "toolName": "edit", "input": {"path": "app.py", "edits": [{"oldText": "a", "newText": "b"}]}, "isError": false, "content": [{"type": "text", "text": "1 b"}], "details": {"satyrn": true, "ok": true, "code": "OK", "result": {"path": "app.py", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "region": "1 b"}}, "expect": {"patched": false}},
-    {"type": "tool_call", "toolCallId": "b1", "toolName": "bash", "input": {"command": "uv run python -m pytest -q 2>&1 | tail -5", "timeout": 120}, "expect": {"blocked": false, "input": {"command": "true", "timeout": 120}}},
-    {"type": "tool_result", "toolCallId": "b1", "toolName": "bash", "input": {"command": "true", "timeout": 120}, "isError": false, "content": [{"type": "text", "text": "(no output)"}], "details": {}, "expect": {"contentEndsWith": "assert 404 == 200"}},
+    {"type": "tool_result", "toolCallId": "b1", "toolName": "bash", "input": {"command": "uv run python -m pytest -q 2>&1 | tail -5"}, "isError": false, "content": [{"type": "text", "text": "3 passed in 0.5s"}], "details": {}, "expect": {"contentEndsWith": "assert 404 == 200"}},
     {"type": "turn_end", "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "The fix is in app.py."}]}, "expect": {"followUp": false}}
   ],
-  "expectedEntries": [{"kind": "self_test_redirected", "data": {"toolCallId": "b1"}}]
+  "expectedEntries": [{"kind": "self_test_detected", "data": {"generation": 1}}]
 }

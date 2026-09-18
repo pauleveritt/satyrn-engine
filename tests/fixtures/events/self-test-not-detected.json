@@ -1,10 +1,12 @@
 {
-  "name": "runaway-not-resumed-tool-call-in-length-cut",
+  "name": "self-test-not-detected",
   "extension": "runner.ts",
+  "testExitCode": 0,
   "context": {"version": 1, "repo": "/w", "contract": "/w/c.yaml", "revisions": {"app.py": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "writable_paths": ["app.py", "tests/*"], "test_command": ["uv", "run", "python", "-m", "pytest", "-q"], "symbols": {}, "carried": [], "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
   "expectedHandlers": {"tool_call": 0, "tool_result": 1, "turn_end": 1},
   "events": [
-    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "length", "content": [{"type": "toolCall", "id": "e1", "name": "edit", "arguments": {}}], "usage": {"output": 16000}}, "expect": {"followUp": false}}
+    {"type": "tool_exec", "toolCallId": "s1", "toolName": "self_test", "input": {}, "expect": {"code": "OK"}},
+    {"type": "tool_result", "toolCallId": "b1", "toolName": "bash", "input": {"command": "uv run python -m pytest -q", "timeout": 120}, "isError": false, "content": [{"type": "text", "text": "3 passed in 0.5s"}], "details": {}, "expect": {"patched": false, "steer": false}}
   ],
   "expectedEntries": []
 }

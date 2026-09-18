@@ -7,15 +7,14 @@ import runnerExtension, {
 	buildTestRequest,
 	createRunner,
 	parseTestResponse,
-	REDIRECTED_COMMAND,
+	DETECTED_SENTENCE,
 	enforcedMessage,
 	FINISH_STEER,
+	hasPytestSummary,
 	isFinalTurn,
 	isLengthCut,
 	isTestPath,
-	isTestRunCommand,
 	MAX_RESUMES,
-	redirectSentence,
 	registerRunner,
 	RESUME_MESSAGE,
 } from "../packages/engine/runner.ts";
@@ -213,89 +212,85 @@ test("registered tool marks a refusal as an error but not a failing suite", asyn
 	assert.equal(await pi.resultHandler({ toolName: "read", details: null }), undefined);
 });
 
-// Phase 3b: guard 2 enforced. Commands observed in the route-proof and
-// admission transcripts (~/satyrn-runs/2026-09-1[45]-*), worktree paths shortened.
-const TEST_RUNS = [
-	"uv run python -m pytest -q",
-	"pytest",
-	'cd "$(pwd)"; uv run pytest tests/test_lint_docs.py -q 2>&1 | tail -25',
-	"cd /w/worktree; timeout 115 uv run python -m pytest -q 2>&1 | tail -40",
-	"cd /w/worktree\nuv run pytest tests/ -q 2>&1 | tail -15",
-	"cd /w/worktree && uv run pytest tests/its.py -q 2>&1 | tail -6",
-	'uv run python -m pytest tests/_probe.py -v 2>&1 | grep -E "PASSED|FAILED|ERROR"',
-	"PYTHONPATH=src python3 -m pytest -x tests/test_a.py::test_b",
-	'.venv/bin/pytest -q >/dev/null 2>&1; echo "EXIT: $?"',
-	"uv run --frozen pytest -k lint",
-];
+// Phase 3b re-ruled 2026-09-18: the Engine leaves the command alone and
+// detects pytest's summary line in the output, then runs its own self_test
+// once when a source mutation has landed since the last one.
+const SOURCE_EDIT = { toolCallId: "e1", toolName: "edit", input: { path: "app.py" }, isError: false, content: [],
+	details: { satyrn: true, ok: true, code: "OK", result: { path: "app.py", sha256: "1".repeat(64), region: "" } } };
 
-const NOT_TEST_RUNS = [
-	'uv run pytest tests/test_review.py -q 2>&1 | tail -5; echo "===RUFF==="; uv run ruff check tools/review.py',
-	"cat tests/conftest.py; uv run pytest -q",
-	"head -20 tests/test_provenance.py; uv run pytest tests/test_provenance.py -q",
-	"cd /w && cat > /tmp/probe_test.py <<'EOF'\ndef test_x():\n    assert True\nEOF\nuv run pytest /tmp/probe_test.py",
-	'uv run python -c "import app; print(app)"',
-	"uv run pytest -q > out.txt",
-	"uv run pytest -q &",
-	"uv run pytest -q | tee log.txt",
-	"echo $(uv run pytest -q)",
-	"grep -rn pytest tests/",
-	"just test",
-	"timeout uv run pytest",
-	"uv run pytest 'tests/test_a.py",
-];
-
-test("a bash command that only runs the test runner is a test run; one doing anything else is not", () => {
-	for (const command of TEST_RUNS) assert.equal(isTestRunCommand(command), true, command);
-	for (const command of NOT_TEST_RUNS) assert.equal(isTestRunCommand(command), false, command);
+test("a pytest summary line carries a numeric count and a duration on one line", () => {
+	assert.equal(hasPytestSummary("1 failed, 3 passed, 270 deselected in 32.12s"), true);
+	assert.equal(hasPytestSummary("3 passed in 0.5s"), true);
+	assert.equal(hasPytestSummary("FAILED tests/test_a.py - assert 1 == 2"), false);
+	assert.equal(hasPytestSummary("Found 1 error."), false);
+	assert.equal(hasPytestSummary("passed"), false);
+	assert.equal(hasPytestSummary("3 passed\nin 0.5s"), false);
 });
 
-test("a test run through bash becomes true, is recorded, and its result is the self-test's under one sentence", async () => {
+test("a bash result carrying a pytest summary after a landed source edit runs self_test once, records it, and appends the compact result", async () => {
 	const pi = fakePi();
 	const requests = [];
 	registerRunner(pi.api, context(), async (request) => {
 		requests.push(JSON.parse(request));
-		return success({ exit_code: 1, output: "FAILED tests/test_a.py::test_b - assert 1 == 2" });
+		return success({ exit_code: 0, output: "4 passed in 0.1s\n" });
 	});
-	const [onCall] = pi.handlers.tool_call;
 	const [onResult] = pi.handlers.tool_result;
-	const call = { toolCallId: "c1", toolName: "bash", input: { command: "uv run pytest tests/test_a.py -q 2>&1 | tail -5", timeout: 120 } };
-	assert.equal(await onCall(call), undefined);
-	assert.deepEqual(call.input, { command: REDIRECTED_COMMAND, timeout: 120 });
-	assert.deepEqual(pi.entries, [{ kind: "self_test_redirected", data: { toolCallId: "c1" } }]);
-	const patch = await onResult({ toolCallId: "c1", toolName: "bash", input: call.input, isError: false,
-		content: [{ type: "text", text: "(no output)" }], details: undefined });
+	assert.equal(await onResult(SOURCE_EDIT), undefined);
+	const patch = await onResult({
+		toolCallId: "b1", toolName: "bash", input: { command: "uv run pytest -q" },
+		isError: false, content: [{ type: "text", text: "3 passed in 0.5s" }], details: undefined,
+	});
 	assert.deepEqual(patch, {
-		content: [{ type: "text", text: `${redirectSentence(context().test_command)}\nTest command exited 1\nFAILED tests/test_a.py::test_b - assert 1 == 2` }],
+		content: [{ type: "text", text: `3 passed in 0.5s\n${DETECTED_SENTENCE}\nTest command exited 0\n4 passed in 0.1s\n` }],
 		isError: false,
 	});
-	assert.equal(redirectSentence(context().test_command),
-		'The Engine ran self_test in place of this command: it runs "uv run python -m pytest -q" over the whole suite, whatever paths or flags the command named.');
 	assert.equal(requests.length, 1);
 	assert.equal(requests[0].operation, "test");
-	// Consumed once: a second result for the same id is not redirected again.
-	assert.equal(await onResult({ toolCallId: "c1", toolName: "bash", content: [], details: undefined }), undefined);
+	assert.deepEqual(pi.entries, [
+		{ kind: "finish_nudged", data: { generation: 1 } },
+		{ kind: "self_test_detected", data: { generation: 1 } },
+	]);
+	assert.equal(pi.sent.length, 1);
+	assert.equal(pi.sent[0].message.customType, "finish_nudged");
+	// Consumed once: a second summary with no new mutation does not run again.
+	assert.equal(await onResult({ toolCallId: "b2", toolName: "bash", isError: false,
+		content: [{ type: "text", text: "3 passed in 0.5s" }], details: undefined }), undefined);
+	assert.equal(requests.length, 1);
 });
 
-test("a redirected run the engine refuses is an error result; any other bash call is untouched", async () => {
+test("a summary with no pending mutation runs nothing, and a bash result without a summary is untouched", async () => {
 	const pi = fakePi();
 	let exchanges = 0;
 	registerRunner(pi.api, context(), async () => {
 		exchanges += 1;
-		return { version: 1, ok: false, code: "TEST_COMMAND_UNAVAILABLE", message: "gone", result: null };
+		return success({ exit_code: 0, output: "4 passed in 0.1s\n" });
 	});
-	const [onCall] = pi.handlers.tool_call;
 	const [onResult] = pi.handlers.tool_result;
-	await onCall({ toolCallId: "r1", toolName: "bash", input: { command: "pytest" } });
-	const refused = await onResult({ toolCallId: "r1", toolName: "bash", content: [], details: undefined });
+	// A completed self-test with no mutation leaves `checked === generation` (0).
+	await pi.tool.execute("s1", {});
+	assert.equal(await onResult({ toolCallId: "b1", toolName: "bash", isError: false,
+		content: [{ type: "text", text: "3 passed in 0.5s" }], details: undefined }), undefined);
+	assert.equal(exchanges, 1);
+	// A landed source edit re-arms detection, but an output without a summary
+	// is left exactly as it was.
+	await onResult(SOURCE_EDIT);
+	assert.equal(await onResult({ toolCallId: "b2", toolName: "bash", isError: false,
+		content: [{ type: "text", text: "FAILED tests/test_a.py - assert 1 == 2" }], details: undefined }), undefined);
+	assert.equal(exchanges, 1);
+});
+
+test("a detected run the engine refuses is an error result and is recorded", async () => {
+	const pi = fakePi();
+	registerRunner(pi.api, context(), async () => (
+		{ version: 1, ok: false, code: "TEST_COMMAND_UNAVAILABLE", message: "gone", result: null }
+	));
+	const [onResult] = pi.handlers.tool_result;
+	await onResult(SOURCE_EDIT);
+	const refused = await onResult({ toolCallId: "b1", toolName: "bash", isError: false,
+		content: [{ type: "text", text: "3 passed in 0.5s" }], details: undefined });
 	assert.equal(refused.isError, true);
 	assert.match(refused.content[0].text, /TEST_COMMAND_UNAVAILABLE: gone$/);
-	const other = { toolCallId: "o1", toolName: "bash", input: { command: "uv run ruff check" } };
-	assert.equal(await onCall(other), undefined);
-	assert.deepEqual(other.input, { command: "uv run ruff check" });
-	assert.equal(await onResult({ toolCallId: "o1", toolName: "bash", content: [{ type: "text", text: "ok" }], details: undefined }), undefined);
-	assert.equal(await onCall({ toolCallId: "x1", toolName: "read", input: { path: "pytest" } }), undefined);
-	assert.equal(exchanges, 1);
-	assert.deepEqual(pi.entries.map((entry) => entry.kind), ["self_test_redirected"]);
+	assert.deepEqual(pi.entries, [{ kind: "self_test_detected", data: { generation: 1 } }]);
 });
 
 const FINAL = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Done." }] };
@@ -320,7 +315,6 @@ function gated(responses) {
 		exchanges: () => exchanges,
 		turnEnd: (message) => pi.handlers.turn_end[0]({ type: "turn_end", turnIndex: 0, message, toolResults: [] }),
 		result: (event) => pi.handlers.tool_result[0](event),
-		call: (event) => pi.handlers.tool_call[0](event),
 	};
 }
 
@@ -382,17 +376,17 @@ test("a self-test the model ran after its last change satisfies the gate; a land
 	assert.deepEqual(gate.pi.sent, []);
 });
 
-test("a redirected bash test run satisfies the gate; a successful write re-arms it; a refused write does not", async () => {
+test("a detected bash test run satisfies the gate; a successful write re-arms it; a refused write does not", async () => {
 	const gate = gated([success({ exit_code: 0, output: "3 passed" })]);
-	await gate.call({ toolCallId: "b1", toolName: "bash", input: { command: "uv run pytest -q" } });
-	await gate.result({ toolCallId: "b1", toolName: "bash", input: { command: REDIRECTED_COMMAND }, isError: false, content: [], details: undefined });
+	await gate.result({ toolCallId: "b1", toolName: "bash", isError: false,
+		content: [{ type: "text", text: "3 passed in 0.5s" }], details: undefined });
 	await gate.result({ toolCallId: "w0", toolName: "write", input: { path: "app.py", content: "x" }, isError: true, content: [], details: undefined });
 	await gate.turnEnd(FINAL);
 	assert.equal(gate.exchanges(), 1);
 	await gate.result({ toolCallId: "w1", toolName: "write", input: { path: "app.py", content: "x" }, isError: false, content: [], details: undefined });
 	await gate.turnEnd(FINAL);
 	assert.equal(gate.exchanges(), 2);
-	assert.deepEqual(gate.pi.entries.map((entry) => entry.kind), ["self_test_redirected", "self_test_enforced"]);
+	assert.deepEqual(gate.pi.entries.map((entry) => entry.kind), ["self_test_detected", "self_test_enforced"]);
 });
 
 test("an enforced run the engine refuses is recorded and sends nothing; an errored or aborted turn is never gated", async () => {

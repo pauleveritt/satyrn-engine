@@ -3,7 +3,7 @@
   "extension": "runner.ts",
   "testExitCode": 0,
   "context": {"version": 1, "repo": "/w", "contract": "/w/c.yaml", "revisions": {"app.py": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "writable_paths": ["app.py", "tests/*"], "test_command": ["uv", "run", "python", "-m", "pytest", "-q"], "symbols": {}, "carried": [], "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-  "expectedHandlers": {"tool_call": 1, "tool_result": 1, "turn_end": 1},
+  "expectedHandlers": {"tool_call": 0, "tool_result": 1, "turn_end": 1},
   "events": [
     {"type": "turn_end", "message": {"role": "assistant", "stopReason": "length", "content": [{"type": "text", "text": "The identity mapping is..."}], "usage": {"output": 16000}}, "expect": {"followUp": "Your last turn hit the per-turn output cap"}},
     {"type": "turn_end", "message": {"role": "assistant", "stopReason": "length", "content": [{"type": "text", "text": "Continuing the design..."}], "usage": {"output": 16000}}, "expect": {"followUp": "Your last turn hit the per-turn output cap"}},
