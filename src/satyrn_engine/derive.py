@@ -74,6 +74,37 @@ def self_test_command(pyproject: str) -> tuple[str, ...]:
     return tuple(declared)
 
 
+def _pytest_excluded_dirs(pyproject: str) -> tuple[str, ...]:
+    """The repo's declared pytest ``norecursedirs``, or ``()``.
+
+    The carried set is restored before every self-test and ``run_tests`` runs
+    the contract command once more with the carried paths appended. Naming a
+    path pytest's own config excludes (``tests/data``,
+    ``tests/integration/data`` in the self-hosted tasks) makes pytest collect
+    it anyway -- an explicit path defeats ``norecursedirs`` -- so a repo whose
+    suite is green still exits 2 on the fixture trees' import errors.
+    """
+    try:
+        ini = tomllib.loads(pyproject).get("tool", {}).get("pytest", {}).get("ini_options", {})
+    except tomllib.TOMLDecodeError:
+        return ()
+    declared = ini.get("norecursedirs") if isinstance(ini, dict) else None
+    if not isinstance(declared, list):
+        return ()
+    return tuple(d for d in declared if isinstance(d, str) and d)
+
+
+def _is_excluded(path: str, patterns: tuple[str, ...]) -> bool:
+    """True when ``path`` is under a directory pytest is told not to recurse."""
+    for pattern in patterns:
+        prefix = pattern.rstrip("/")
+        if path == prefix or path.startswith(prefix + "/"):
+            return True
+        if fnmatch(path, pattern) or fnmatch(path, f"{prefix}/*"):
+            return True
+    return False
+
+
 def _directories(tracked: tuple[str, ...]) -> set[str]:
     found: set[str] = set()
     for path in tracked:
@@ -281,7 +312,10 @@ def derive_contract(request: str, facts: RepoFacts, *, token_budget: int = DEFAU
     if not text:
         raise DeriveError("the request is empty")
     command = self_test_command(facts.pyproject)
-    preserve = tuple(sorted(p for p in facts.tracked if any(fnmatch(p, pat) for pat in _PRESERVE_PATTERNS)))
+    excluded = _pytest_excluded_dirs(facts.pyproject)
+    preserve = tuple(sorted(p for p in facts.tracked
+                            if any(fnmatch(p, pat) for pat in _PRESERVE_PATTERNS)
+                            and not _is_excluded(p, excluded)))
     checks = tuple(sorted(p for p in facts.tracked if p.startswith("checks/")))
     return Contract(id=contract_id(text, facts.head), task=text,
                     writable_paths=_writable_paths(text, facts.tracked, preserve, checks), test_command=command,

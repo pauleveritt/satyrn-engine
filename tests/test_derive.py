@@ -49,6 +49,23 @@ def test_carried_sets_and_budgets_are_derived_from_the_repo() -> None:
     assert (contract.token_budget, contract.turn_budget) == (32000, 48)
 
 
+def test_preserve_omits_the_repos_pytest_excluded_directories() -> None:
+    tracked = (
+        "pyproject.toml",
+        "src/app/gate.py",
+        "tests/test_gate.py",
+        "tests/data/overlay-task/grader/overlay/test_hidden.py",
+        "tests/integration/data/mini-session/base/test_solution.py",
+    )
+    pyproject = (
+        '[project]\nname = "app"\n'
+        "[tool.pytest.ini_options]\n"
+        'norecursedirs = [".claude", "tests/data", "tests/integration/data"]\n'
+    )
+    contract = derive_contract("Fix src/app/gate.py", RepoFacts(tracked, pyproject, HEAD))
+    assert contract.preserve == ("tests/test_gate.py",)
+
+
 _FALLBACK_TOP_LEVEL = ("docs/*", "src/*", "tests/*")          # pyproject.toml is carried, not writable
 
 
