@@ -82,6 +82,24 @@ def build_parser() -> argparse.ArgumentParser:
     derive_parser = subparsers.add_parser("derive", help="derive a contract from a request and the repository",
                                           usage="satyrn-engine derive --repo REPO -- REQUEST...")
     derive_parser.add_argument("--repo", required=True, help="working-tree root of a Git repository")
+    derive_parser.add_argument(
+        "--token-budget",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help=(
+            "output-token limit written into the contract (default: the "
+            "product default 32000). An eval record passes its own limit so "
+            "the Engine has no stop the record does not name."
+        ),
+    )
+    derive_parser.add_argument(
+        "--turn-budget",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="turn limit written into the contract (default: the product default 48).",
+    )
     derive_parser.add_argument("request", nargs="+", help="the developer's request, as words, after --")
 
     deliver_parser = subparsers.add_parser(
@@ -260,14 +278,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         return int(receipt.exit_code)
     if args.command == "derive":
-        return _derive(Path(args.repo), " ".join(args.request))
+        return _derive(
+            Path(args.repo),
+            " ".join(args.request),
+            token_budget=args.token_budget,
+            turn_budget=args.turn_budget,
+        )
     result = check(Path(args.repo), Path(args.contract))
     if result.code != ExitCode.OK:
         print(f"satyrn-engine: {result.code.name}: {result.message}", file=sys.stderr)
     return int(result.code)
 
 
-def _derive(repo: Path, request: str) -> int:
+def _derive(
+    repo: Path,
+    request: str,
+    *,
+    token_budget: int | None = None,
+    turn_budget: int | None = None,
+) -> int:
     from .derive import (
         DeriveError,
         RepoFacts,
@@ -289,7 +318,12 @@ def _derive(repo: Path, request: str) -> int:
     pyproject = repo / "pyproject.toml"
     facts = RepoFacts(tracked, pyproject.read_text(encoding="utf-8") if pyproject.is_file() else "", head)
     try:
-        contract = derive_contract(request, facts)
+        budgets: dict[str, int] = {}
+        if token_budget is not None:
+            budgets["token_budget"] = token_budget
+        if turn_budget is not None:
+            budgets["turn_budget"] = turn_budget
+        contract = derive_contract(request, facts, **budgets)
     except DeriveError as exc:
         print(f"satyrn-engine: DERIVE: {exc.message}", file=sys.stderr)
         return int(ExitCode.CONTRACT_MISSING_FIELD)

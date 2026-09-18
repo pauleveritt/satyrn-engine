@@ -7,10 +7,12 @@ console script passes from ``sys.argv[1:]``).
 
 import io
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from satyrn_engine.cli import main, parse_args
 from satyrn_engine.exits import ExitCode
@@ -67,6 +69,63 @@ def test_check_paths_make_no_process_or_model_calls(tmp_path: Path) -> None:
 def test_derive_request_keeps_a_leading_dash_out_of_argparse() -> None:
     args = parse_args(["derive", "--repo", ".", "--", "-add", "a", "flag"])
     assert args.request == ["-add", "a", "flag"]
+
+
+def test_derive_budget_arguments_default_to_none_and_parse_a_positive_int() -> None:
+    default = parse_args(["derive", "--repo", ".", "--", "req"])
+    assert (default.token_budget, default.turn_budget) == (None, None)
+    explicit = parse_args(
+        ["derive", "--repo", ".", "--token-budget", "48000", "--turn-budget", "72", "--", "req"]
+    )
+    assert (explicit.token_budget, explicit.turn_budget) == (48000, 72)
+
+
+@pytest.mark.parametrize("flag", ["--token-budget", "--turn-budget"])
+def test_a_non_positive_derive_budget_is_refused(flag: str) -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["derive", "--repo", ".", flag, "0", "--", "req"])
+
+
+@pytest.mark.parametrize(
+    ("budget_args", "expected"),
+    [
+        (["--token-budget", "48000", "--turn-budget", "72"], (48000, 72)),
+        ([], (32000, 48)),
+    ],
+)
+def test_derive_writes_the_budget_into_the_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    budget_args: list[str],
+    expected: tuple[int, int],
+) -> None:
+    """The eval adapter passes the record's limits to `derive`; the written
+    contract must carry them. Without them the product default stays 32000/48
+    (maintainer ruling 2026-09-18: only the eval contract changes)."""
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")
+    git_dir = tmp_path / "gitdir"
+    git_dir.mkdir()
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "ls-files" in argv:
+            return subprocess.CompletedProcess(argv, 0, "pyproject.toml\nsrc/app.py\n", "")
+        if "--git-dir" in argv:
+            return subprocess.CompletedProcess(argv, 0, f"{git_dir}\n", "")
+        if "rev-parse" in argv:
+            return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\n", "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr("satyrn_engine.cli.subprocess.run", fake_run)
+    assert main([
+        "derive", "--repo", str(repo), *budget_args, "--", "Fix src/app.py",
+    ]) == 0
+    written = list((git_dir / "satyrn" / "contracts").glob("*.yaml"))
+    assert len(written) == 1
+    body = yaml.safe_load(written[0].read_text(encoding="utf-8"))
+    assert (body["token_budget"], body["turn_budget"]) == expected
 
 
 class _FakeStream:
