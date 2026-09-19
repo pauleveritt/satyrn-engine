@@ -6,12 +6,14 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
 
 import pytest
 
+from satyrn_engine import cli
 from satyrn_engine.attempt import (
     ENGINE_REPO_ENV,
     PATCH_ENV,
@@ -21,6 +23,7 @@ from satyrn_engine.attempt import (
     attempt,
 )
 from satyrn_engine.delivery import DeliveryCode, deliver
+from satyrn_engine.exits import ExitCode
 
 ROOT = Path(__file__).parents[1]
 FAKE_PI = ROOT / "tests" / "fixtures" / "attempt" / "fake_pi.py"
@@ -167,6 +170,36 @@ def test_a_broken_forward_sink_does_not_discard_a_clean_pi_exit(tmp_path: Path) 
     assert b"+    return 2" in patch.read_bytes()
     # The transcript -- the artifact of record -- is unaffected by forward's failure.
     assert b'"type": "agent_start"' in transcript.read_bytes()
+    # I2 (Opus review, 2026-09-19): the producer half of exit code 15 --
+    # forward_lost must follow through to AttemptResult.exit_code, the one
+    # channel that can tell a caller (deliver) the live counter it read from
+    # `forward` is no longer trustworthy for the rest of the run.
+    assert result.forward_lost is True
+    assert int(result.exit_code) == 15
+    assert result.exit_code is ExitCode.ATTEMPT_OK_FORWARD_LOST
+
+
+def test_a_broken_forward_sink_exits_15_through_the_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I2's consumer half: the CLI `attempt` subcommand (`cli.main`, the
+    console-script entry point -- `int(main(...))` is exactly what becomes
+    the real process exit code) must return 15, not 0, when `forward` (its
+    own stdout) was dropped for good after Pi already exited cleanly."""
+    repo, contract, target, environment = _fixture(tmp_path)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.chdir(repo)
+
+    class _FakeStdout:
+        buffer = _BrokenForward()
+
+    monkeypatch.setattr(sys, "stdout", _FakeStdout())
+
+    exit_code = cli.main(["attempt", "--model", "fixture/model", "--", str(contract)])
+
+    assert exit_code == 15
+    assert target.read_text(encoding="utf-8") == "def value():\n    return 2\n"
 
 
 def test_attempt_refuses_an_exact_writable_path_that_is_a_real_tracked_symlink(tmp_path: Path) -> None:
