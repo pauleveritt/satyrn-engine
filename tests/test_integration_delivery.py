@@ -15,6 +15,7 @@ import pytest
 import yaml
 
 import satyrn_engine.delivery as delivery
+from satyrn_engine.exits import ExitCode
 
 ROOT = Path(__file__).parents[1]
 
@@ -178,6 +179,7 @@ def test_clean_root_reaches_no_changes_without_touching_source(tmp_path: Path) -
             "deadline_seconds": None,
             "token_limit": None,
             "tokens_used": 0,
+            "live_counter": "live",
         },
         "turns": 0,
         "tool_calls": 0,
@@ -504,6 +506,7 @@ def test_success_creates_candidate_with_exact_parent_and_paths(tmp_path: Path) -
             "deadline_seconds": None,
             "token_limit": None,
             "tokens_used": 0,
+            "live_counter": "live",
         },
         "turns": 0,
         "tool_calls": 0,
@@ -800,6 +803,7 @@ def test_failed_attempt_is_discarded_without_candidate(
             "deadline_seconds": None,
             "token_limit": None,
             "tokens_used": 0,
+            "live_counter": "live",
         },
         "turns": 0,
         "tool_calls": 0,
@@ -828,6 +832,31 @@ def test_failed_attempt_is_discarded_without_candidate(
     }
     assert git(repo, "show-ref", "--verify", str(receipt["candidate_ref"])).returncode != 0
     assert_source_unchanged(repo, before)
+
+
+def test_attempt_ok_forward_lost_still_creates_a_candidate_but_marks_the_receipt(tmp_path: Path) -> None:
+    """`ATTEMPT_OK_FORWARD_LOST` (attempt's own exit code when its `forward`
+    sink -- the live stream this function counts turns/tokens from -- was
+    dropped for good but Pi itself still finished cleanly) must not be
+    treated as a command failure: the whole point of 0af4f97's fix was that
+    a dead telemetry pipe must never discard a clean, successful attempt.
+    The receipt must instead say the live counter is untrustworthy."""
+    repo = make_repo(tmp_path / "repo")
+    contract = write_contract(tmp_path / "forward-lost")
+    script = (
+        "from pathlib import Path; "
+        "Path('added.txt').write_text('new\\n'); "
+        f"raise SystemExit({int(ExitCode.ATTEMPT_OK_FORWARD_LOST)})"
+    )
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", script))
+
+    assert proc.returncode == 0
+    assert receipt["outcome"] == "candidate-created"
+    assert receipt["code"] == "OK"
+    assert receipt["changed_paths"] == ["added.txt"]
+    assert receipt["budget"]["live_counter"] == "lost"
+    assert git(repo, "show-ref", "--verify", str(receipt["candidate_ref"])).returncode == 0
 
 
 def test_timeout_kills_same_process_group_descendant(tmp_path: Path) -> None:
@@ -866,6 +895,7 @@ def test_timeout_kills_same_process_group_descendant(tmp_path: Path) -> None:
             "deadline_seconds": None,
             "token_limit": None,
             "tokens_used": 0,
+            "live_counter": "live",
         },
         "turns": 0,
         "tool_calls": 0,

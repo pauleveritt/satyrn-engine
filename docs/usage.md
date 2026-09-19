@@ -70,6 +70,7 @@ The {term}`exit code`s are a stable contract:
 | `8` | `NO_CANDIDATE` | accepted delivery produced no candidate |
 | `9` | `MUTATION_REFUSED` | accepted replacement was safely refused; JSON carries the exact cause |
 | `10` | `ATTEMPT_FAILED` | accepted model attempt failed after preparation; artifacts are preserved when possible |
+| `15` | `ATTEMPT_OK_FORWARD_LOST` | (`attempt` only) the model attempt succeeded, but its live budget tee (`forward`) was lost for good mid-run; `deliver` treats this the same as exit `0` for candidate creation and marks the receipt's `budget.live_counter` as `"lost"` |
 
 Exit code `1` is deliberately unused: Python reports an uncaught internal
 error as `1`, so reserving it keeps a crash distinguishable from a {term}`refusal`.

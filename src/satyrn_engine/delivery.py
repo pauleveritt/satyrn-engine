@@ -450,6 +450,12 @@ class DeliveryReceipt:
                 "deadline_seconds": self.budget.deadline_seconds,
                 "token_limit": self.budget.token_limit,
                 "tokens_used": self.budget_usage.tokens_used,
+                # "lost" once the implementer's own attempt process reports
+                # its `forward` sink (deliver's live turn/token tee, R18)
+                # was dropped for good partway through -- every count above
+                # is then a floor, not an exact figure, even when `state`
+                # still reads "within". See `BudgetUsage.live_counter_lost`.
+                "live_counter": "lost" if self.budget_usage.live_counter_lost else "live",
             },
             "turns": self.turns,
             "tool_calls": self.tool_calls,
@@ -904,12 +910,27 @@ def _run_and_commit(
         counter = stream_counter if stream_counter is not None else count_spool(output)
         turns_used = counter.turns
         tokens_used = counter.tokens_out
+        # ATTEMPT_OK_FORWARD_LOST: the implementer's own attempt process
+        # succeeded but told us (the only channel left, since the dropped
+        # sink *is* that process's own stdout/stderr -- see
+        # `AttemptResult.exit_code`) that `forward`, the live stream this
+        # function counts turns/tokens from, was dropped for good partway
+        # through. Treat the exit as a plain success for candidate creation
+        # (the whole point of 0af4f97's fix), but mark the counts above as
+        # untrustworthy from that point on instead of silently reporting a
+        # false "within".
+        live_counter_lost = process.returncode == ExitCode.ATTEMPT_OK_FORWARD_LOST
+        effective_returncode = 0 if live_counter_lost else process.returncode
         if exhausted is not None:
-            usage = BudgetUsage(exhausted, turns_used, seconds_used, tokens_used=tokens_used)
+            usage = BudgetUsage(exhausted, turns_used, seconds_used, tokens_used=tokens_used, live_counter_lost=live_counter_lost)
         elif context.budget.declared:
-            usage = BudgetUsage(BudgetState.WITHIN, turns_used, seconds_used, tokens_used=tokens_used)
+            usage = BudgetUsage(
+                BudgetState.WITHIN, turns_used, seconds_used, tokens_used=tokens_used, live_counter_lost=live_counter_lost
+            )
         else:
-            usage = BudgetUsage(BudgetState.NOT_DECLARED, turns_used, seconds_used, tokens_used=tokens_used)
+            usage = BudgetUsage(
+                BudgetState.NOT_DECLARED, turns_used, seconds_used, tokens_used=tokens_used, live_counter_lost=live_counter_lost
+            )
         _write_attempt_output(output)
         if timed_out:
             return _context_receipt(
@@ -924,7 +945,7 @@ def _run_and_commit(
                 tokens_out=counter.tokens_out,
                 guard_firings=GuardFirings.from_counter(counter),
             )
-        if exhausted is None and process.returncode != 0:
+        if exhausted is None and effective_returncode != 0:
             return _context_receipt(
                 context,
                 DeliveryCode.COMMAND_FAILED,

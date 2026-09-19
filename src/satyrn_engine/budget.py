@@ -72,12 +72,22 @@ class Budget:
 
 @dataclass(frozen=True, slots=True)
 class BudgetUsage:
-    """What was spent, and the state that follows from it."""
+    """What was spent, and the state that follows from it.
+
+    ``live_counter_lost`` is True when the implementer's own attempt process
+    reported (via `ExitCode.ATTEMPT_OK_FORWARD_LOST`) that `forward` -- the
+    live stream `deliver` counts turns and tokens from while the attempt
+    runs -- was dropped for good partway through. The attempt itself may
+    still have succeeded and a candidate may still be created, but every
+    count on this receipt from that point on is a floor, not an exact
+    figure: it must never be read as a trustworthy `WITHIN`.
+    """
 
     state: BudgetState
     turns_used: int
     seconds_used: float
     tokens_used: int = 0
+    live_counter_lost: bool = False
 
 
 class TurnCounter:

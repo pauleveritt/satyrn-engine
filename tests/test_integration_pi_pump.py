@@ -7,6 +7,7 @@ the transcript and to `forward` (R18). If `forward` breaks (deliver killed,
 more than a pipe buffer (64 KB) and must return within the join timeout.
 """
 
+import errno
 import io
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from satyrn_engine import attempt as attempt_module
 from satyrn_engine.attempt import SubprocessPiRunner
 
 pytestmark = pytest.mark.integration
@@ -84,3 +86,91 @@ def test_a_broken_transcript_keeps_forwarding_and_raises_oserror(tmp_path: Path)
     assert isinstance(error, OSError)
     assert "transcript" in str(error)
     assert forward.getvalue() == LINE * LINES
+
+
+class FlakyForward(io.RawIOBase):
+    """Raises EAGAIN for its first ``fail_times`` calls, then accepts in full.
+
+    Models the production failure: `forward` shares an open file description
+    that a child (Pi/Node) has switched to O_NONBLOCK, so a write can return
+    EAGAIN even though the reader is alive and draining -- the write must be
+    retried, not treated as a dead sink.
+    """
+
+    def __init__(self, fail_times: int) -> None:
+        self.fail_times = fail_times
+        self.calls = 0
+        self.buffer = bytearray()
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data: bytes) -> int:  # type: ignore[override]
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable")
+        self.buffer.extend(data)
+        return len(data)
+
+
+def test_a_flaky_forward_recovers_and_receives_every_byte_in_order(tmp_path: Path) -> None:
+    forward = FlakyForward(fail_times=5)
+    with (tmp_path / "t.jsonl").open("wb") as transcript:
+        code, error = _run_bounded(transcript, forward)
+    assert (code, error) == (0, None)
+    assert bytes(forward.buffer) == LINE * LINES
+    assert forward.calls > LINES  # the first five writes were retried, not skipped
+    assert (tmp_path / "t.jsonl").read_bytes() == LINE * LINES
+
+
+class PartialForward(io.RawIOBase):
+    """Accepts only the first 10 bytes of any write, raising EAGAIN with
+    ``characters_written`` set for the rest -- the standard shape of a
+    partial non-blocking write."""
+
+    def __init__(self) -> None:
+        self.buffer = bytearray()
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data: bytes) -> int:  # type: ignore[override]
+        chunk = bytes(data[:10])
+        self.buffer.extend(chunk)
+        if len(chunk) < len(data):
+            raise BlockingIOError(errno.EAGAIN, "partial write", len(chunk))
+        return len(chunk)
+
+
+def test_a_partial_forward_write_is_completed_byte_for_byte(tmp_path: Path) -> None:
+    forward = PartialForward()
+    with (tmp_path / "t.jsonl").open("wb") as transcript:
+        code, error = _run_bounded(transcript, forward)
+    assert (code, error) == (0, None)
+    assert bytes(forward.buffer) == LINE * LINES
+    assert (tmp_path / "t.jsonl").read_bytes() == LINE * LINES
+
+
+class DeadForward(io.RawIOBase):
+    """Never becomes writable -- models a reader that is truly gone."""
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data: bytes) -> int:  # type: ignore[override]
+        raise BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable")
+
+
+def test_a_permanently_blocked_forward_is_dropped_after_the_bound_and_pi_still_completes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Keep the test fast: the bound is a production safety net, not something
+    # this row needs to wait out at full length.
+    monkeypatch.setattr(attempt_module, "FORWARD_WRITE_BOUND_SECONDS", 0.2)
+    forward = DeadForward()
+    with (tmp_path / "t.jsonl").open("wb") as transcript:
+        code, error = _run_bounded(transcript, forward)
+    assert code is None
+    assert isinstance(error, OSError)
+    assert "forward" in str(error)
+    assert (tmp_path / "t.jsonl").read_bytes() == LINE * LINES

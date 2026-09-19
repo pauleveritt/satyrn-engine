@@ -1,15 +1,18 @@
 """Run one real Pi attempt inside the caller-owned disposable worktree."""
 
+import errno
 import json
 import os
 import re
 import secrets
+import selectors
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -93,6 +96,16 @@ class AttemptResult:
     message: str = ""
     model: str | None = None
     command_exit: int | None = None
+    #: True once `forward` (the live tee to `deliver`'s budget counter, R18)
+    #: was dropped for good during this attempt (`_ForwardSinkFailed`,
+    #: raised only after `_write_retrying_backpressure` exhausts
+    #: `FORWARD_WRITE_BOUND_SECONDS`). Pi's own outcome is judged
+    #: independently either way (see `_run`'s `except _ForwardSinkFailed`),
+    #: but a caller counting turns/tokens from that same live stream
+    #: (`deliver`) undercounts everything after the drop -- this is the only
+    #: surviving channel (attempt's own process exit) that can tell it so,
+    #: since the dropped sink is attempt's own stdout/stderr.
+    forward_lost: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.code, AttemptCode):
@@ -100,7 +113,18 @@ class AttemptResult:
 
     @property
     def exit_code(self) -> ExitCode:
-        """Return the stable process exit for this detailed result."""
+        """Return the stable process exit for this detailed result.
+
+        `ATTEMPT_OK_FORWARD_LOST` is the one exception to the plain
+        code-to-exit mapping: an otherwise-successful attempt whose
+        `forward` sink was dropped for good still exits 0's neighbour, not
+        0, so `deliver` -- which has no other way to learn this, since the
+        dropped sink *is* this process's own stdout/stderr -- can still
+        create the candidate while marking its receipt's live counter
+        untrustworthy instead of silently reporting it as exact.
+        """
+        if self.code is AttemptCode.OK and self.forward_lost:
+            return ExitCode.ATTEMPT_OK_FORWARD_LOST
         return _ATTEMPT_TO_EXIT[self.code]
 
 
@@ -231,6 +255,84 @@ class _ForwardSinkFailed(OSError):
         self.exit_code = exit_code
 
 
+#: How long one write to a pump sink (`transcript` or `forward`) may spend
+#: waiting to become writable again before the pump gives up on it, the same
+#: as any other unrecoverable sink failure (R21). EAGAIN/EWOULDBLOCK on
+#: `forward` is expected to clear almost immediately when the reader
+#: (`deliver`) is alive and draining -- see `_write_retrying_backpressure`'s
+#: docstring for why the write can return EAGAIN at all even though nothing
+#: is actually wrong. This bound only matters for a reader that is truly
+#: gone (`deliver` killed, `attempt | head`); it exists so that case still
+#: cannot hang the pump forever, per R21.
+FORWARD_WRITE_BOUND_SECONDS = 30.0
+
+
+def _wait_writable(fd: int | None, timeout: float) -> None:
+    """Block up to ``timeout`` seconds for ``fd`` to accept a write.
+
+    ``fd`` is ``None`` for a sink with no real file descriptor (an in-memory
+    test double); there is nothing to poll, so this returns immediately and
+    the caller simply retries the write directly.
+    """
+    if fd is None:
+        return
+    selector = selectors.DefaultSelector()
+    try:
+        selector.register(fd, selectors.EVENT_WRITE)
+        selector.select(timeout=timeout)
+    finally:
+        selector.close()
+
+
+def _write_retrying_backpressure(sink: BinaryIO, data: bytes, *, deadline: float) -> None:
+    """Write ``data`` to ``sink`` in full, surviving EAGAIN/EWOULDBLOCK.
+
+    `forward` is attempt's own stdout, which `deliver` pipes and reads live
+    (R18). On production hosts that pipe's write end can end up sharing an
+    open file description with Pi's own stderr (Pi/Node inherits it -- see
+    `SubprocessPiRunner.run`'s docstring); Node puts pipes it inherits into
+    O_NONBLOCK, and that flag lives on the open file description, not the
+    file descriptor number, so it applies to `forward` too even though
+    attempt never asked for non-blocking I/O. The result is a `write()` that
+    raises ``BlockingIOError`` (EAGAIN/EWOULDBLOCK) or returns fewer bytes
+    than given, even though the reader (`deliver`) is alive and draining
+    normally -- the write just landed while the pipe's kernel buffer was
+    momentarily full.
+
+    Neither shape is data loss on its own: a raised ``BlockingIOError``
+    reports how much it did accept via ``characters_written`` (0 when
+    nothing was written), and a plain short return means exactly that many
+    bytes were consumed. Either way the remainder is retried, waiting for
+    writability with `select`/`poll` on the sink's own descriptor when it
+    has one (an in-memory test double does not, so retries are immediate).
+    Retrying stops once ``deadline`` (a ``time.monotonic()`` value) passes,
+    at which point a ``BlockingIOError`` is raised so the caller's existing
+    "this sink is dead" handling (R21) drops it -- a reader that is truly
+    gone must not hang the pump.
+    """
+    remaining = data
+    try:
+        fd = sink.fileno()
+    except (AttributeError, OSError, ValueError):
+        fd = None
+    while remaining:
+        try:
+            written = sink.write(remaining)
+        except BlockingIOError as exc:
+            written = getattr(exc, "characters_written", None) or 0
+        if written:
+            remaining = remaining[written:]
+            if not remaining:
+                return
+        now = time.monotonic()
+        if now >= deadline:
+            raise BlockingIOError(
+                errno.EAGAIN,
+                "sink did not accept the remaining bytes before the bound",
+            )
+        _wait_writable(fd, min(deadline - now, 1.0))
+
+
 class SubprocessGitRunner:
     """Run Git without shell interpretation and preserve exact stdout bytes."""
 
@@ -335,13 +437,23 @@ class SubprocessPiRunner:
             # already returned so `_run` can still judge the attempt by
             # Pi's own outcome. See
             # test_a_broken_forward_sink_does_not_discard_a_clean_pi_exit.
+            #
+            # A write can also fail *transiently* with EAGAIN/EWOULDBLOCK
+            # (`_write_retrying_backpressure`'s docstring has the full
+            # mechanism) even though the reader is alive and draining --
+            # that must be retried, not treated as a dead sink, or a live
+            # counter goes blind for the rest of the run while the receipt
+            # still reports it as trustworthy. See
+            # test_a_flaky_forward_recovers_and_receives_every_byte_in_order
+            # and test_a_partial_forward_write_is_completed_byte_for_byte.
             assert process.stdout is not None
             sinks = {"transcript": transcript, "forward": forward}
             try:
                 for line in process.stdout:
                     for name in [name for name in sinks if name not in sink_errors]:
                         try:
-                            sinks[name].write(line)
+                            deadline = time.monotonic() + FORWARD_WRITE_BOUND_SECONDS
+                            _write_retrying_backpressure(sinks[name], line, deadline=deadline)
                             sinks[name].flush()
                         except (OSError, ValueError) as exc:
                             sink_errors[name] = exc
@@ -920,6 +1032,7 @@ def _run(
     # Pi's pump somewhere to write when no destination was requested --
     # `stdout` is forwarded live either way, direct from the same pump.
     transcript_spool: Path | None = None
+    forward_lost = False
 
     try:
         if transcript_destination is not None:
@@ -974,7 +1087,12 @@ def _run(
         # Pi itself already exited -- judge the attempt by that exit code,
         # same as a normal `pi.run()` return, instead of discarding a
         # completed, possibly successful attempt over a dead telemetry pipe.
+        # `forward_lost` follows this AttemptResult all the way to the exit
+        # code (see `AttemptResult.exit_code`) so a caller counting turns
+        # from that same dead stream (`deliver`) can learn its count is no
+        # longer trustworthy for the rest of the run.
         command_exit = exc.exit_code
+        forward_lost = True
     except OSError as exc:
         return _failed(context.model, f"cannot run Pi: {_exception_detail(exc)}")
 
@@ -993,12 +1111,18 @@ def _run(
             environment,
         )
     except OSError as exc:
-        return _failed(context.model, f"cannot start Git diff: {exc}", command_exit=command_exit)
+        return _failed(
+            context.model,
+            f"cannot start Git diff: {exc}",
+            command_exit=command_exit,
+            forward_lost=forward_lost,
+        )
     if patch.returncode != 0:
         return _failed(
             context.model,
             _git_message("cannot produce attempt patch", patch),
             command_exit=command_exit,
+            forward_lost=forward_lost,
         )
     if patch.stdout and artifacts.patch is not None:
         try:
@@ -1008,6 +1132,7 @@ def _run(
                 context.model,
                 f"cannot publish patch: {_exception_detail(exc)}",
                 command_exit=command_exit,
+                forward_lost=forward_lost,
             )
 
     if command_exit != 0:
@@ -1015,8 +1140,9 @@ def _run(
             context.model,
             f"Pi exited with status {command_exit}",
             command_exit=command_exit,
+            forward_lost=forward_lost,
         )
-    return AttemptResult(AttemptCode.OK, model=context.model, command_exit=0)
+    return AttemptResult(AttemptCode.OK, model=context.model, command_exit=0, forward_lost=forward_lost)
 
 
 def _clean_environment(source: Mapping[str, str]) -> dict[str, str]:
@@ -1383,12 +1509,19 @@ def _exception_detail(error: BaseException) -> str:
     return "; ".join((str(error), *notes))
 
 
-def _failed(model: str, message: str, *, command_exit: int | None = None) -> AttemptResult:
+def _failed(
+    model: str,
+    message: str,
+    *,
+    command_exit: int | None = None,
+    forward_lost: bool = False,
+) -> AttemptResult:
     return AttemptResult(
         AttemptCode.ATTEMPT_FAILED,
         message=message,
         model=model,
         command_exit=command_exit,
+        forward_lost=forward_lost,
     )
 
 

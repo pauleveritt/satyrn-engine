@@ -57,6 +57,7 @@ def test_an_undeclared_budget_payload_is_not_declared() -> None:
         "deadline_seconds": None,
         "token_limit": None,
         "tokens_used": 0,
+        "live_counter": "live",
     }
 
 
@@ -76,6 +77,7 @@ def test_a_declared_budget_receipt_reports_within_and_the_declaration() -> None:
         "deadline_seconds": 5.0,
         "token_limit": None,
         "tokens_used": 0,
+        "live_counter": "live",
     }
 
 

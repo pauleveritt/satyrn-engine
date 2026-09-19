@@ -29,3 +29,4 @@ class ExitCode(IntEnum):
     TEST_COMMAND_NOT_ALLOWED = 12  # a model-supplied bash command did not match the contract's test_command
     TESTS_FAILED = 13  # the engine's own run of the contract's tests failed
     BUDGET_EXHAUSTED = 14  # a whole-attempt turn/deadline budget was spent
+    ATTEMPT_OK_FORWARD_LOST = 15  # attempt succeeded but its live budget tee (forward) was lost mid-run
