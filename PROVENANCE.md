@@ -149,3 +149,5 @@
 | tests/fixtures/events/self-test-detected-later-bare.json | created in release-one |
 | tests/fixtures/events/self-test-not-detected.json | created in release-one |
 | tests/fixtures/events/self-test-not-detected-fresh.json | created in release-one |
+| tests/test_integration_steered_session.py | created in release-one |
+| tests/test_pi_extensions_manifest.py | created in release-one |
