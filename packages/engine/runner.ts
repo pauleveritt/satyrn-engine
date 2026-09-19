@@ -304,9 +304,10 @@ export function enforcedMessage(resultText: string): string {
 export const FINISH_STEER =
 	"self_test passes on the current tree. If the requested change is complete, stop now and " +
 	"report what you changed. Do not commit, add provenance rows, run the full repository suite, " +
-	"run linters or type checkers, or change your tests to match a count; the developer reviews " +
-	"the candidate and does those. If something in the request is still missing, say which part " +
-	"and continue.";
+	"run linters, type checkers or `just` recipes, remove unused code, tidy or refactor, do a " +
+	"final check, or change your tests to match a count; the developer reviews the candidate and " +
+	"does those. Editing a passing tree can only break it. If something in the request is still " +
+	"missing, say which part and continue.";
 
 /** A path whose mutation is not a source mutation (plan Ruling 2). The
  * basename patterns require the `.py` extension -- `test_harness.rs` or
