@@ -5,6 +5,7 @@ import json
 import os
 import re
 import secrets
+import select
 import selectors
 import shutil
 import stat
@@ -458,25 +459,49 @@ class SubprocessPiRunner:
         # C1's retry stays the belt to this pair of braces for the case
         # that still matters, `forward`'s own real production sharing (a
         # different open file description than this pipe, still real).
+        # M-B: `stderr_read_fd` is only ever closed by `drain_stderr`'s
+        # `os.fdopen(..., closefd=True)`, once that thread starts below. If
+        # `Popen` raises (missing executable) or `_forward_termination`
+        # raises before the thread starts, nothing else owns the read end
+        # and it leaks for the life of the process. Guard both paths here
+        # and close it ourselves before propagating.
         stderr_read_fd, stderr_write_fd = os.pipe()
         try:
-            process = subprocess.Popen(
-                command,
-                cwd=cwd,
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=stderr_write_fd,
-                start_new_session=os.name == "posix",
-            )
-        finally:
-            # Our own copy of the write end: Pi's `Popen` already dup'd it
-            # onto the child's fd 2, so closing ours here does not affect
-            # the child, and is required for our own read to ever see EOF.
-            os.close(stderr_write_fd)
-        self._process = process
-        self._forward_termination()
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=cwd,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=stderr_write_fd,
+                    start_new_session=os.name == "posix",
+                )
+            finally:
+                # Our own copy of the write end: Pi's `Popen` already dup'd it
+                # onto the child's fd 2, so closing ours here does not affect
+                # the child, and is required for our own read to ever see EOF.
+                os.close(stderr_write_fd)
+            self._process = process
+            self._forward_termination()
+        except BaseException:
+            os.close(stderr_read_fd)
+            raise
         sink_errors: dict[str, BaseException] = {}
+
+        # M-D: in production `deliver` spawns `attempt` with `stderr=STDOUT`,
+        # so `forward` (attempt's own stdout, written by `pump` below) and
+        # `stderr` (written by `drain_stderr`) can be two `BufferedWriter`s
+        # over two fds on one open file description -- one pipe. POSIX only
+        # guarantees a write of `PIPE_BUF` bytes or fewer is atomic against a
+        # concurrent write to that same pipe from another thread; nothing
+        # here holds `forward`'s own per-line writes to that floor, so an
+        # in-progress relayed write and an in-progress forwarded write could
+        # still interleave into a single corrupted line without a stronger
+        # guarantee. Two separate `BufferedWriter` instances give no such
+        # guarantee on their own, so this lock serializes every write+flush
+        # on either sink -- see its uses in `drain_stderr` and `pump`.
+        pipe_lock = threading.Lock()
 
         def drain_stderr() -> None:
             """Relay Pi's own stderr, line by line as it is read, to
@@ -490,17 +515,54 @@ class SubprocessPiRunner:
             `subprocess.DEVNULL`, as some test doubles do) when it wants
             Pi's stderr discarded rather than captured -- draining without
             relaying is exactly that.
+
+            M-A: reads with `read1()`, not `read()` -- a `BufferedReader`'s
+            `read(n)` blocks until it has `n` bytes or hits EOF, so nothing
+            was relayed until either 64 KB accumulated or Pi exited,
+            contradicting this docstring and losing everything buffered if
+            `attempt` is killed first (deliver's process-group kill on a
+            timeout). `read1()` returns as soon as any data is available.
+
+            M-D: relays whole lines where the data allows it, and never
+            hands a single `write()` call more than `select.PIPE_BUF` bytes
+            (the POSIX atomicity floor) -- see `pipe_lock` above.
             """
             stopped_relaying = False
+            pending = bytearray()
+
+            def relay(data: bytes) -> None:
+                nonlocal stopped_relaying
+                # One lock hold for the whole line, not per PIPE_BUF chunk:
+                # releasing it between chunks would let `pump` interleave a
+                # complete `forward` line between two chunks of this one,
+                # and that inserted line's own trailing newline would become
+                # the first newline `deliver` sees -- merging this line's
+                # partial bytes onto the front of it. Holding the lock for
+                # the whole relay keeps this line's chunks contiguous in the
+                # pipe; `pump` simply waits its turn.
+                with pipe_lock:
+                    for offset in range(0, len(data), select.PIPE_BUF):
+                        chunk = data[offset : offset + select.PIPE_BUF]
+                        try:
+                            stderr.write(chunk)
+                            stderr.flush()
+                        except (OSError, ValueError, AttributeError):
+                            stopped_relaying = True
+                            return
+
             with os.fdopen(stderr_read_fd, "rb", closefd=True) as reader:
-                while chunk := reader.read(65536):
+                while chunk := reader.read1(65536):
                     if stopped_relaying:
                         continue
-                    try:
-                        stderr.write(chunk)
-                        stderr.flush()
-                    except (OSError, ValueError, AttributeError):
-                        stopped_relaying = True
+                    pending.extend(chunk)
+                    *complete_lines, pending = pending.split(b"\n")
+                    pending = bytearray(pending)
+                    for line in complete_lines:
+                        relay(bytes(line) + b"\n")
+                        if stopped_relaying:
+                            break
+                if pending and not stopped_relaying:
+                    relay(bytes(pending))
 
         def pump() -> None:
             # R18: a reader thread over Popen.stdout, not a post-exit copy --
@@ -549,8 +611,19 @@ class SubprocessPiRunner:
                             # attempt is deliver's own command deadline, not
                             # this one.
                             deadline = time.monotonic() + FORWARD_WRITE_BOUND_SECONDS
-                            _write_retrying_backpressure(sinks[name], line, deadline=deadline)
-                            _flush_retrying_backpressure(sinks[name], deadline=deadline)
+                            # M-D: `forward` can share a pipe with `stderr`
+                            # (see `pipe_lock`'s docstring above) -- hold the
+                            # same lock `drain_stderr` uses so its relayed
+                            # writes can never land in the middle of this
+                            # one. `transcript` never shares a descriptor
+                            # with anything, so it is not locked.
+                            if name == "forward":
+                                with pipe_lock:
+                                    _write_retrying_backpressure(sinks[name], line, deadline=deadline)
+                                    _flush_retrying_backpressure(sinks[name], deadline=deadline)
+                            else:
+                                _write_retrying_backpressure(sinks[name], line, deadline=deadline)
+                                _flush_retrying_backpressure(sinks[name], deadline=deadline)
                         except (OSError, ValueError) as exc:
                             sink_errors[name] = exc
             except BaseException as exc:  # noqa: BLE001 - surfaced by run(), not swallowed
@@ -572,7 +645,11 @@ class SubprocessPiRunner:
             # I4: bounded, not join() -- see PI_STDERR_DRAIN_BOUND_SECONDS.
             # A daemon thread left running past this bound does not hang
             # process exit; it only means the tail of a wayward
-            # descendant's diagnostics was not relayed.
+            # descendant's diagnostics was not relayed. M-C: when the bound
+            # expires the thread is not stopped, only abandoned -- it is
+            # still alive, still holds the read end of Pi's dedicated
+            # stderr pipe open, and may still write to `stderr` at any
+            # point after `run()` has already returned.
             stderr_reader.join(PI_STDERR_DRAIN_BOUND_SECONDS)
             self._process = None
             if process.stdout is not None:

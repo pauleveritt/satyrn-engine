@@ -14,13 +14,20 @@ from pathlib import Path
 def main() -> int:
     mode = os.environ.get("SATYRN_FAKE_PI_MODE", "replace")
     if mode == "steered":
-        # I3: reproduce Node's own behaviour on its inherited stderr -- when
-        # `deliver` spawns `attempt` with stderr=STDOUT and `attempt` hands
-        # that same fd to Pi as Pi's own stderr (SubprocessPiRunner.run),
-        # Node puts that shared open file description into O_NONBLOCK. This
-        # is the exact condition C1 fixes; setting it here, on our own
-        # inherited fd 2, reproduces it end to end through real subprocesses
-        # instead of a mocked sink.
+        # I3: reproduce Node's own behaviour on its inherited stderr -- the
+        # way Node puts an inherited pipe fd into O_NONBLOCK. M-E (Opus
+        # review, 2026-09-19): before I4 (0c2dea8), `attempt` handed Pi its
+        # own `stderr` (attempt's fd 2) directly, so this landed on the same
+        # open file description as `forward` (attempt's fd 1, shared via
+        # `deliver`'s stderr=STDOUT) and forced a real EAGAIN there -- the
+        # exact condition C1 fixes. Since I4, Pi gets its own dedicated
+        # stderr pipe (SubprocessPiRunner.run), so setting O_NONBLOCK here
+        # now only affects that private pipe and never reaches `forward` --
+        # the reviewer instrumented this and confirmed zero EAGAINs occur.
+        # Kept anyway: it still exercises Pi's stderr being relayed through
+        # `SubprocessPiRunner.run`'s drain thread end to end. See
+        # test_integration_steered_session.py's module docstring for the
+        # coverage that replaced the lost EAGAIN path.
         flags = fcntl.fcntl(2, fcntl.F_GETFL)
         fcntl.fcntl(2, fcntl.F_SETFL, flags | os.O_NONBLOCK)
     print(json.dumps({"type": "agent_start", "argv": sys.argv[1:]}), flush=True)
@@ -160,9 +167,19 @@ def steered(context_text: str, engine_repo: Path) -> int:
     """I3: a model-free session shaped like a real steered one -- mutate,
     a large self-test tool result, `self_test_detected` and `finish_nudged`
     guard entries, the engine's steer message, then a clean no-tool-call
-    stop. Exercises the exact production wiring (`forward` as a real pipe,
-    Pi's stderr sharing attempt's stdout's open file description -- see
-    ``main``'s O_NONBLOCK call) that C1/I2/M5's fixes were written for.
+    stop. Exercises the exact production wiring (`forward` as a real pipe)
+    that C1/I2/M5's fixes were written for.
+
+    M-E (Opus review, 2026-09-19): this docstring, and the comment below on
+    the large tool-result line, used to claim ``main``'s O_NONBLOCK call
+    forced a real EAGAIN on `forward` by sharing its open file description
+    with Pi's stderr. Since I4 (0c2dea8) gave Pi its own dedicated stderr
+    pipe, that sharing no longer exists -- ``main``'s O_NONBLOCK call now
+    only affects Pi's own private pipe, and `forward` sees zero EAGAINs
+    here (the reviewer instrumented this run and confirmed it). See
+    test_integration_steered_session.py's module docstring and
+    ``test_a_steered_session_with_forwards_own_fd_forced_non_blocking`` for
+    the coverage that exercises `forward`'s own EAGAIN path directly.
     """
     context = json.loads(context_text)
     [path] = list(context["revisions"])
@@ -210,10 +227,10 @@ def steered(context_text: str, engine_repo: Path) -> int:
             Path(out).write_text(test.stdout, encoding="utf-8")
         # A single large event line (comfortably past any pipe's kernel
         # buffer capacity), like a compact self-test summary, emitted as one
-        # `emit` -- i.e. one write+flush in attempt's pump loop. On a
-        # non-blocking forward (this process's O_NONBLOCK stderr, shared with
-        # attempt's own stdout -- see ``main``) that single write cannot
-        # complete in one syscall, forcing at least one real EAGAIN.
+        # `emit` -- i.e. one write+flush in attempt's pump loop. This no
+        # longer forces an EAGAIN on `forward` (M-E: since I4, `main`'s own
+        # O_NONBLOCK call only touches Pi's private stderr pipe), but it
+        # still exercises a large single write+flush through a real pipe.
         large_summary = "PASS tests/test_value.py::test_value\n" * 8000  # ~300 KB
         emit({"type": "tool_result", "toolCallId": "t1", "content": [{"type": "text", "text": large_summary}]})
         emit({"type": "entry_appended", "entry": {"type": "custom", "customType": "self_test_detected", "data": {"generation": 1}}})

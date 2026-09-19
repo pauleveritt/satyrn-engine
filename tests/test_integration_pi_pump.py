@@ -10,7 +10,9 @@ more than a pipe buffer (64 KB) and must return within the join timeout.
 import errno
 import fcntl
 import io
+import json
 import os
+import select
 import subprocess
 import sys
 import threading
@@ -306,3 +308,166 @@ def test_pi_gets_its_own_stderr_pipe_and_forwards_fd_stays_blocking(tmp_path: Pa
         received.extend(chunk)
     os.close(read_fd)
     assert b"hello from pi stderr" in bytes(received)
+
+
+def _open_fd_count() -> int:
+    return len(os.listdir("/dev/fd"))
+
+
+# M-B (Opus review, 2026-09-19): `run()` opens `os.pipe()` for Pi's own
+# dedicated stderr (I4) before `Popen`. The old code's `try`/`finally` around
+# `Popen` closed only the write end; if `Popen` raises (missing executable)
+# or `_forward_termination` raises before the drain thread ever starts, the
+# read end is handed to no one and leaks for the life of the process. Run it
+# enough times that a per-call leak is unmistakable against the handful of
+# fds pytest itself holds open (stdio, the collected test files, etc).
+def test_a_missing_pi_executable_does_not_leak_the_stderr_pipes_read_end(tmp_path: Path) -> None:
+    baseline = _open_fd_count()
+    forward = io.BytesIO()
+    with (tmp_path / "t.jsonl").open("wb") as transcript:
+        for _ in range(50):
+            with pytest.raises(FileNotFoundError):
+                SubprocessPiRunner().run(
+                    ["/nonexistent/satyrn-fake-pi-binary"], Path.cwd(), {}, transcript, forward, subprocess.DEVNULL  # type: ignore[arg-type]
+                )
+    assert _open_fd_count() <= baseline + 5, "the stderr pipe's read end leaked across missing-executable runs"
+
+
+class _RecordingSink(io.RawIOBase):
+    """Records every `write()` call's own bytes, in order, under a lock so a
+    polling reader thread can inspect it while the writer thread keeps
+    running."""
+
+    def __init__(self) -> None:
+        self.calls: list[bytes] = []
+        self.lock = threading.Lock()
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data: bytes) -> int:  # type: ignore[override]
+        with self.lock:
+            self.calls.append(bytes(data))
+        return len(data)
+
+    def snapshot(self) -> bytes:
+        with self.lock:
+            return b"".join(self.calls)
+
+
+# M-A (Opus review, 2026-09-19): the drain thread's docstring promises Pi's
+# stderr is relayed "line by line as it is read", but the old body called
+# `reader.read(65536)` on a `BufferedReader` -- `read(n)` blocks until it has
+# `n` bytes or hits EOF, so nothing is relayed until either the pipe fills
+# with 64 KB or Pi exits. A short line followed by a long silent stretch (the
+# common shape of a hung/slow descendant) sat unrelayed the whole time, and if
+# `attempt` is killed under deliver's process-group kill on a timeout, it is
+# lost outright. `read1()` returns as soon as any data is available, matching
+# the docstring.
+def test_pi_stderr_is_relayed_promptly_not_only_at_eof(tmp_path: Path) -> None:
+    child_script = (
+        "import sys, time\n"
+        "sys.stderr.write('quick line\\n')\n"
+        "sys.stderr.flush()\n"
+        "time.sleep(2)\n"
+    )
+    command = [sys.executable, "-c", child_script]
+    forward = io.BytesIO()
+    stderr_sink = _RecordingSink()
+    outcome: dict[str, object] = {}
+
+    def target() -> None:
+        with (tmp_path / "t.jsonl").open("wb") as transcript:
+            outcome["code"] = SubprocessPiRunner().run(
+                command, Path.cwd(), {}, transcript, forward, stderr_sink  # type: ignore[arg-type]
+            )
+
+    worker = threading.Thread(target=target, daemon=True)
+    worker.start()
+    deadline = time.monotonic() + 0.5
+    seen = False
+    while time.monotonic() < deadline:
+        if b"quick line" in stderr_sink.snapshot():
+            seen = True
+            break
+        time.sleep(0.01)
+    assert worker.is_alive(), "the child should still be sleeping when this assertion runs"
+    assert seen, "Pi's stderr line was not relayed within 0.5s -- still buffered until EOF/64KB"
+    worker.join(JOIN_SECONDS)
+    assert not worker.is_alive()
+    assert outcome.get("code") == 0
+
+
+# M-D (Opus review, 2026-09-19): under deliver's real spawn shape
+# (`stderr=STDOUT`), attempt's own stdout (`forward`, the JSONL stream
+# deliver parses) and stderr (what the drain thread relays Pi's stderr onto)
+# are two fds on one open file description -- the same pipe. A write of more
+# than PIPE_BUF bytes is not atomic against a concurrent write from another
+# thread to that same pipe, so a single large relayed blob could interleave
+# with -- and corrupt -- a `forward` JSONL line mid-write. Deterministic
+# proof: relay one stderr line far larger than PIPE_BUF and assert every
+# write the sink actually received was capped at PIPE_BUF (the atomicity
+# floor) and flushed as its own call, not handed to `write()` in one shot.
+def test_pi_stderr_relay_caps_each_write_at_pipe_buf(tmp_path: Path) -> None:
+    big_line = b"z" * 5000 + b"\n"
+    child_script = f"import sys\nsys.stderr.buffer.write({big_line!r})\nsys.stderr.buffer.flush()\n"
+    command = [sys.executable, "-c", child_script]
+    forward = io.BytesIO()
+    sink = _RecordingSink()
+    with (tmp_path / "t.jsonl").open("wb") as transcript:
+        code = SubprocessPiRunner().run(command, Path.cwd(), {}, transcript, forward, sink)  # type: ignore[arg-type]
+    assert code == 0
+    assert sink.calls, "no data was relayed"
+    assert all(len(chunk) <= select.PIPE_BUF for chunk in sink.calls), [len(c) for c in sink.calls]
+    assert sink.snapshot() == big_line
+
+
+# M-D, end to end: a large stderr line and a stream of small forwarded JSONL
+# lines sharing one pipe (the same shared-OFD construction I4's test above
+# uses), proving no splice reaches `forward`'s own stream once the relay is
+# capped and both sinks' write+flush calls are serialized under one lock.
+def test_a_large_relayed_stderr_line_does_not_splice_into_forwarded_jsonl(tmp_path: Path) -> None:
+    read_fd, write_fd = os.pipe()
+    forward = io.BufferedWriter(io.FileIO(write_fd, "wb", closefd=True), 8192)
+    stderr_sink = io.BufferedWriter(io.FileIO(os.dup(write_fd), "wb", closefd=True), 8192)
+
+    child_script = (
+        "import json, sys\n"
+        "big = ('y' * 199999 + '\\n').encode()\n"
+        "for i in range(200):\n"
+        "    sys.stdout.buffer.write((json.dumps({'type': 'turn_start', 'i': i}) + '\\n').encode())\n"
+        "    sys.stdout.buffer.flush()\n"
+        "    if i % 20 == 0:\n"
+        "        sys.stderr.buffer.write(big)\n"
+        "        sys.stderr.buffer.flush()\n"
+    )
+    command = [sys.executable, "-c", child_script]
+
+    received = bytearray()
+
+    def drain() -> None:
+        while True:
+            chunk = os.read(read_fd, 65536)
+            if not chunk:
+                return
+            received.extend(chunk)
+
+    reader_thread = threading.Thread(target=drain, daemon=True)
+    reader_thread.start()
+
+    with (tmp_path / "t.jsonl").open("wb") as transcript:
+        code = SubprocessPiRunner().run(command, Path.cwd(), {}, transcript, forward, stderr_sink)
+    assert code == 0
+
+    forward.close()
+    stderr_sink.close()
+    reader_thread.join(JOIN_SECONDS)
+    assert not reader_thread.is_alive()
+    os.close(read_fd)
+
+    turn_lines = 0
+    for raw in bytes(received).splitlines():
+        if raw.startswith(b'{"type": "turn_start"'):
+            json.loads(raw)  # a splice would corrupt this line and raise
+            turn_lines += 1
+    assert turn_lines == 200
