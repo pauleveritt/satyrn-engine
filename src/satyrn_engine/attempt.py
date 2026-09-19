@@ -215,6 +215,22 @@ class PiRunner(Protocol):
     ) -> int: ...
 
 
+class _ForwardSinkFailed(OSError):
+    """`forward` (attempt's own stdout, tee'd live to `deliver`'s budget
+    counter -- R18) failed while Pi was running, independently of Pi
+    itself. `SubprocessPiRunner.run` still raises for it -- an operator or
+    `deliver` losing that live tee is worth surfacing
+    (test_integration_pi_pump.py) -- but it carries the exit code
+    `process.wait()` already returned, so `_run` can judge the attempt by
+    what Pi actually did instead of by the health of a sink that stopped
+    mattering the moment Pi exited.
+    """
+
+    def __init__(self, message: str, *, exit_code: int) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
 class SubprocessGitRunner:
     """Run Git without shell interpretation and preserve exact stdout bytes."""
 
@@ -302,7 +318,23 @@ class SubprocessPiRunner:
             # transcript cannot be written, the pump keeps draining Pi's
             # stdout into the surviving sink, so Pi never blocks on a full
             # pipe and `process.wait()` returns. The first error per sink is
-            # raised by run() after Pi exits.
+            # raised by run() after Pi exits (test_integration_pi_pump.py
+            # pins this: the caller must learn a sink died even though the
+            # read loop kept going).
+            #
+            # `forward` exists only to tee live output to `deliver`'s budget
+            # counter (R18) while Pi runs; once `process.wait()` has
+            # returned, that counter has nothing left to watch. A plain
+            # `OSError` here does not know that -- and on 2026-09-19, three
+            # self-hosted route-proof cells whose Pi child ended cleanly
+            # (`agent_end`, `stop`, a landed mutation) after a `forward`
+            # write failure came back ATTEMPT_FAILED with a 0-byte patch:
+            # `_run`'s `except OSError` treated a dead telemetry pipe the
+            # same as Pi itself failing and returned before `git diff` ever
+            # ran. `_ForwardSinkFailed` carries the exit code `process.wait`
+            # already returned so `_run` can still judge the attempt by
+            # Pi's own outcome. See
+            # test_a_broken_forward_sink_does_not_discard_a_clean_pi_exit.
             assert process.stdout is not None
             sinks = {"transcript": transcript, "forward": forward}
             try:
@@ -331,7 +363,10 @@ class SubprocessPiRunner:
         for name in ("pipe", "transcript", "forward"):
             if name in sink_errors:
                 exc = sink_errors[name]
-                raise OSError(f"cannot {'read Pi output' if name == 'pipe' else 'write Pi output to ' + name}: {exc}") from exc
+                message = f"cannot {'read Pi output' if name == 'pipe' else 'write Pi output to ' + name}: {exc}"
+                if name == "forward":
+                    raise _ForwardSinkFailed(message, exit_code=exit_code) from exc
+                raise OSError(message) from exc
         return exit_code
 
 
@@ -934,6 +969,12 @@ def _run(
                     active_exception.add_note(f"secondary cleanup failure: {detail}")
                 else:
                     _raise_cleanup_failure(cleanup_error, detail)
+    except _ForwardSinkFailed as exc:
+        # `forward` (the live tee to `deliver`'s budget counter) died, but
+        # Pi itself already exited -- judge the attempt by that exit code,
+        # same as a normal `pi.run()` return, instead of discarding a
+        # completed, possibly successful attempt over a dead telemetry pipe.
+        command_exit = exc.exit_code
     except OSError as exc:
         return _failed(context.model, f"cannot run Pi: {_exception_detail(exc)}")
 

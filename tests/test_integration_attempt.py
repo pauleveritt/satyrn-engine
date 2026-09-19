@@ -122,6 +122,53 @@ def test_attempt_uses_shipped_e4_mutator_and_exports_artifacts(tmp_path: Path) -
     assert b"exercise_mutator:" not in stderr
 
 
+class _BrokenForward(io.BytesIO):
+    """A `forward` sink (E10's live stdout tee) that always fails to write.
+
+    Models the 2026-09-19 route-proof defect: three self-hosted cells whose
+    Pi child ended cleanly (`agent_end`, `stop`) after the finish-on-green
+    steer still came back ATTEMPT_FAILED with a 0-byte patch, because the
+    live pump's write to the *forward* sink (attempt's own stdout, tee'd to
+    `deliver`'s budget counter -- R18) hit a transient write failure and
+    `SubprocessPiRunner.run` re-raised it *after* Pi had already exited 0.
+    R21's own docstring says a failing sink "is dropped, never the read
+    loop" -- but the post-run check in `run()` did not honor that for
+    `forward`, discarding a fully mutated, successfully-tested candidate
+    over a sink that exists only to feed a live budget counter which no
+    longer needed feeding once Pi had exited.
+    """
+
+    def write(self, data: object) -> int:  # noqa: ARG002 - Protocol shape
+        raise OSError("simulated broken forward pipe (e.g. `attempt | head`)")
+
+
+def test_a_broken_forward_sink_does_not_discard_a_clean_pi_exit(tmp_path: Path) -> None:
+    repo, contract, target, environment = _fixture(tmp_path)
+    patch = tmp_path / "patch.diff"
+    transcript = tmp_path / "transcript.jsonl"
+    environment[PATCH_ENV] = str(patch)
+    environment[TRANSCRIPT_ENV] = str(transcript)
+
+    with tempfile.TemporaryFile() as stderr:
+        result = attempt(
+            repo,
+            contract,
+            "fixture/model",
+            environment=environment,
+            stdout=_BrokenForward(),
+            stderr=stderr,
+        )
+
+    # Pi (fake_pi.py) exited 0 and the mutator landed its edit; a forward-sink
+    # failure must not turn that into ATTEMPT_FAILED nor leave the patch empty.
+    assert result.code is AttemptCode.OK, result.message
+    assert target.read_text(encoding="utf-8") == "def value():\n    return 2\n"
+    assert b"-    return 1" in patch.read_bytes()
+    assert b"+    return 2" in patch.read_bytes()
+    # The transcript -- the artifact of record -- is unaffected by forward's failure.
+    assert b'"type": "agent_start"' in transcript.read_bytes()
+
+
 def test_attempt_refuses_an_exact_writable_path_that_is_a_real_tracked_symlink(tmp_path: Path) -> None:
     """R14 (review of Task 9's Ruling 12): `writable_paths` names only the
     exact path `app.py`. Once that tracked entry is a real symlink rather
