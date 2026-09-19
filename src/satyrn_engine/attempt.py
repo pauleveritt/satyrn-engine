@@ -266,6 +266,16 @@ class _ForwardSinkFailed(OSError):
 #: cannot hang the pump forever, per R21.
 FORWARD_WRITE_BOUND_SECONDS = 30.0
 
+#: How long `run()` waits, after Pi exits, for the stderr-drain thread (I4)
+#: to see EOF on Pi's own dedicated stderr pipe and finish relaying it to
+#: attempt's own stderr. Ordinarily this is instant: once Pi exits, its
+#: process-table entry (and any grandchild that inherited the pipe's write
+#: end, in the ordinary case) closes its copy, and the kernel delivers EOF
+#: to the read end as soon as no writable copy remains open anywhere. This
+#: bound exists only so a wayward descendant that kept the write end open
+#: cannot hang `run()` forever -- diagnostics are not worth that.
+PI_STDERR_DRAIN_BOUND_SECONDS = 5.0
+
 
 def _wait_writable(fd: int | None, timeout: float) -> None:
     """Block up to ``timeout`` seconds for ``fd`` to accept a write.
@@ -437,18 +447,60 @@ class SubprocessPiRunner:
         forward: BinaryIO,
         stderr: BinaryIO,
     ) -> int:
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=stderr,
-            start_new_session=os.name == "posix",
-        )
+        # I4: give Pi its own dedicated stderr pipe rather than handing it
+        # `stderr` (attempt's own stderr) directly. In production `deliver`
+        # spawns `attempt` with stderr=STDOUT, so attempt's own stdout
+        # (`forward`) and stderr share one open file description; handing
+        # that same descriptor straight to Pi meant whatever Node does to
+        # its own inherited stderr (O_NONBLOCK, the condition C1 retries
+        # around) landed on `forward` too. A private pipe here means Pi's
+        # own fd-flag changes never reach `forward`'s descriptor at all --
+        # C1's retry stays the belt to this pair of braces for the case
+        # that still matters, `forward`'s own real production sharing (a
+        # different open file description than this pipe, still real).
+        stderr_read_fd, stderr_write_fd = os.pipe()
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=stderr_write_fd,
+                start_new_session=os.name == "posix",
+            )
+        finally:
+            # Our own copy of the write end: Pi's `Popen` already dup'd it
+            # onto the child's fd 2, so closing ours here does not affect
+            # the child, and is required for our own read to ever see EOF.
+            os.close(stderr_write_fd)
         self._process = process
         self._forward_termination()
         sink_errors: dict[str, BaseException] = {}
+
+        def drain_stderr() -> None:
+            """Relay Pi's own stderr, line by line as it is read, to
+            attempt's own stderr -- so `deliver` still captures Pi's
+            diagnostics in the same stream it always has. Best-effort: a
+            failure to relay is not a reason to raise (Pi's own outcome
+            does not depend on this stream), so it just stops relaying and
+            keeps draining the pipe until EOF, the same R21 shape the main
+            pump uses for a dead sink. `AttributeError` is included: a
+            caller may pass a bare sentinel with no `write`/`flush` (e.g.
+            `subprocess.DEVNULL`, as some test doubles do) when it wants
+            Pi's stderr discarded rather than captured -- draining without
+            relaying is exactly that.
+            """
+            stopped_relaying = False
+            with os.fdopen(stderr_read_fd, "rb", closefd=True) as reader:
+                while chunk := reader.read(65536):
+                    if stopped_relaying:
+                        continue
+                    try:
+                        stderr.write(chunk)
+                        stderr.flush()
+                    except (OSError, ValueError, AttributeError):
+                        stopped_relaying = True
 
         def pump() -> None:
             # R18: a reader thread over Popen.stdout, not a post-exit copy --
@@ -505,7 +557,11 @@ class SubprocessPiRunner:
                 sink_errors.setdefault("pipe", exc)
 
         reader = threading.Thread(target=pump, name="satyrn-attempt-pi-pump", daemon=True)
+        stderr_reader = threading.Thread(
+            target=drain_stderr, name="satyrn-attempt-pi-stderr", daemon=True
+        )
         reader.start()
+        stderr_reader.start()
         try:
             exit_code = process.wait()
         finally:
@@ -513,6 +569,11 @@ class SubprocessPiRunner:
             # `process.wait()` by a few scheduler ticks, and the transcript
             # must be complete before `_run` flushes/closes it.
             reader.join()
+            # I4: bounded, not join() -- see PI_STDERR_DRAIN_BOUND_SECONDS.
+            # A daemon thread left running past this bound does not hang
+            # process exit; it only means the tail of a wayward
+            # descendant's diagnostics was not relayed.
+            stderr_reader.join(PI_STDERR_DRAIN_BOUND_SECONDS)
             self._process = None
             if process.stdout is not None:
                 process.stdout.close()

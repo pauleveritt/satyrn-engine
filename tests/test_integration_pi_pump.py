@@ -260,3 +260,49 @@ def test_a_real_buffered_writer_over_a_nonblocking_pipe_receives_every_byte(tmp_
     assert bytes(received) == transcript_bytes
     assert _counts(bytes(received)) == _counts(transcript_bytes)
     assert _counts(transcript_bytes) == (EVENT_LINES, EVENT_LINES * 10, EVENT_LINES * 20)
+
+
+# I4 (Opus review, 2026-09-19): give Pi its own dedicated stderr pipe instead
+# of sharing attempt's own stdout/stderr open file description with it.
+# Production shares that OFD because `deliver` spawns `attempt` with
+# stderr=STDOUT, so `attempt`'s own `sys.stdout` and `sys.stderr` are two fds
+# on the same open file description; the old `SubprocessPiRunner.run` handed
+# its own `stderr` parameter straight to Pi's `Popen(stderr=...)`, so
+# whatever Node does to Pi's inherited stderr (O_NONBLOCK) landed on that
+# shared OFD -- and therefore on `forward` too, C1's whole scenario. This
+# test constructs that same shared-OFD relationship directly (`os.dup`, the
+# same mechanism `stderr=STDOUT` uses) and proves the fix: Pi never touches
+# either descriptor, so `forward`'s own fd must stay blocking no matter what
+# the child does to its own stderr, and Pi's stderr text must still reach
+# attempt's own stderr sink.
+def test_pi_gets_its_own_stderr_pipe_and_forwards_fd_stays_blocking(tmp_path: Path) -> None:
+    read_fd, write_fd = os.pipe()
+    forward = io.BufferedWriter(io.FileIO(write_fd, "wb", closefd=True), 8192)
+    # The same mechanism `subprocess.Popen(stderr=subprocess.STDOUT)` uses:
+    # a second fd on the very same open file description as `forward`.
+    stderr_sink = io.BufferedWriter(io.FileIO(os.dup(write_fd), "wb", closefd=True), 8192)
+
+    child_script = (
+        "import fcntl, os, sys\n"
+        "flags = fcntl.fcntl(2, fcntl.F_GETFL)\n"
+        "fcntl.fcntl(2, fcntl.F_SETFL, flags | os.O_NONBLOCK)\n"
+        "sys.stderr.write('hello from pi stderr\\n')\n"
+        "sys.stderr.flush()\n"
+    )
+    command = [sys.executable, "-c", child_script]
+
+    with (tmp_path / "t.jsonl").open("wb") as transcript:
+        code = SubprocessPiRunner().run(command, Path.cwd(), {}, transcript, forward, stderr_sink)
+    assert code == 0
+
+    forward_flags = fcntl.fcntl(forward.fileno(), fcntl.F_GETFL)
+    assert not (forward_flags & os.O_NONBLOCK), "forward's own fd must remain blocking after Pi exits"
+
+    forward.close()
+    stderr_sink.close()
+    os.set_blocking(read_fd, True)
+    received = bytearray()
+    while chunk := os.read(read_fd, 65536):
+        received.extend(chunk)
+    os.close(read_fd)
+    assert b"hello from pi stderr" in bytes(received)
