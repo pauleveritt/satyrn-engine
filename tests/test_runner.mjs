@@ -19,6 +19,7 @@ import runnerExtension, {
 	RESUME_MESSAGE,
 } from "../packages/engine/runner.ts";
 import { createEngineExchange, parseMutationContext } from "../packages/engine/mutator.ts";
+import { NOTE_MARKER, fenceNote } from "../packages/engine/bounds.ts";
 
 const context = () => ({
 	version: 1,
@@ -227,6 +228,27 @@ test("a pytest summary line carries a numeric count and a duration on one line",
 	assert.equal(hasPytestSummary("3 passed\nin 0.5s"), false);
 });
 
+test("DETECTED_SENTENCE carries the same fence bounds.ts uses, so a model reading a result cannot mistake either note for command output", () => {
+	assert.equal(fenceNote(DETECTED_SENTENCE), `\n\n${NOTE_MARKER}\n${DETECTED_SENTENCE}`);
+});
+
+test("a result already carrying bounds.ts's fenced note (as it would once both extensions are live) gets exactly one more note appended, never a second copy of either", async () => {
+	const pi = fakePi();
+	registerRunner(pi.api, context(), async () => success({ exit_code: 0, output: "4 passed in 0.1s\n" }));
+	const [onResult] = pi.handlers.tool_result;
+	await onResult(SOURCE_EDIT);
+	const boundsNote = fenceNote("Commands here are bounded at 120 seconds; on timeout Pi kills the process group.");
+	const patch = await onResult({
+		toolCallId: "b1", toolName: "bash", input: { command: "uv run pytest -q" },
+		isError: false, content: [{ type: "text", text: `3 passed in 0.5s${boundsNote}` }], details: undefined,
+	});
+	const text = patch.content[0].text;
+	// Both notes present, each exactly once, bounds' note first (it was
+	// already in the incoming event) and the detection note appended after.
+	assert.equal(text.split(NOTE_MARKER).length - 1, 2, `expected exactly two markers in ${JSON.stringify(text)}`);
+	assert.ok(text.indexOf("Commands here are bounded") < text.indexOf(DETECTED_SENTENCE));
+});
+
 test("a bash result carrying a pytest summary after a landed source edit runs self_test once, records it, and appends the compact result", async () => {
 	const pi = fakePi();
 	const requests = [];
@@ -241,7 +263,7 @@ test("a bash result carrying a pytest summary after a landed source edit runs se
 		isError: false, content: [{ type: "text", text: "3 passed in 0.5s" }], details: undefined,
 	});
 	assert.deepEqual(patch, {
-		content: [{ type: "text", text: `3 passed in 0.5s\n${DETECTED_SENTENCE}\nTest command exited 0\n4 passed in 0.1s\n` }],
+		content: [{ type: "text", text: `3 passed in 0.5s${fenceNote(DETECTED_SENTENCE)}\nTest command exited 0\n4 passed in 0.1s\n` }],
 		isError: false,
 	});
 	assert.equal(requests.length, 1);

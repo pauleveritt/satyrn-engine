@@ -295,10 +295,17 @@ One fresh Pi runs in a worktree branched from `HEAD` with the guards loaded
 child): the loop breaker; `edit`/`write` refused outside `writable_paths`; an
 `edit` or `write` that would remove a symbol the base defines refused with
 what to do instead; bash `timeout` set to 120 s when absent and clamped at
-300 s, the result naming the bound and the self-test; a bash command left
+300 s, with the bound and the self-test named in a fenced note -- `[satyrn-engine
+note -- not part of the command's output]` on its own line, then the
+sentence -- appended only to the first bash result of the session and to any
+result whose command timed out, so an unfenced trailing sentence is never
+mistaken for a file's own last line by a model reading it back through
+`cat`/`tail`/`sed -n`, and ordinary results carry no reminder at all; a bash
+command left
 exactly as the model wrote it, with pytest's summary line in its output
 detected so the Engine runs its own self-test once when a source mutation has
-landed since the last one (`self_test_detected`); and, when the model stops
+landed since the last one (`self_test_detected`), its own note fenced the
+same way as the bound's; and, when the model stops
 with no self-test since its last `edit` or `write`, one run by the Engine
 whose failure goes back to the model as a single follow-up message
 (`self_test_enforced`). When a self-test that completed inside a turn -- the

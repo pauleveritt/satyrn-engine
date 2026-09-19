@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import boundsExtension, { DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, bashSentence, boundTimeout, registerBounds } from "../packages/engine/bounds.ts";
+import boundsExtension, { DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, NOTE_MARKER, bashSentence, boundTimeout, fenceNote, registerBounds } from "../packages/engine/bounds.ts";
 
 const CONTEXT = JSON.stringify({ version: 1, repo: "/w", contract: "/w/c.yaml", revisions: {},
 	writable_paths: ["src/*"], test_command: ["uv", "run", "python", "-m", "pytest", "-q"], symbols: {},
@@ -55,27 +55,44 @@ test("other tools are untouched", async () => {
 	assert.deepEqual(event.input, { path: "a" });
 });
 
-test("the bash result gains exactly one sentence naming the bound and the self-test; a timeout is recorded", async () => {
+test("the first bash result of a session gains a fenced note naming the bound and the self-test; a timeout is recorded", async () => {
 	const { pi, handlers, entries } = fakePi();
 	registerBounds(pi, CMD);
 	await handlers.tool_call[0]({ toolCallId: "1", toolName: "bash", input: { command: "ls" } });
 	const patch = await handlers.tool_result[0]({ toolCallId: "1", toolName: "bash", input: { command: "ls", timeout: 120 }, isError: false,
 		content: [{ type: "text", text: "a\nb\n" }], details: {} });
-	assert.deepEqual(patch, { content: [{ type: "text", text: "a\nb\n\n" + bashSentence(120, CMD) }] });
+	assert.deepEqual(patch, { content: [{ type: "text", text: "a\nb\n" + fenceNote(bashSentence(120, CMD)) }] });
 	assert.equal(bashSentence(120, CMD),
 		'Commands here are bounded at 120 seconds; on timeout Pi kills the process group. The self-test is "uv run python -m pytest -q"; run it with the self_test tool.');
 	assert.equal(bashSentence(300, []), "Commands here are bounded at 300 seconds; on timeout Pi kills the process group.");
-	await handlers.tool_call[0]({ toolCallId: "2", toolName: "bash", input: { command: "find /" } });
-	await handlers.tool_result[0]({ toolCallId: "2", toolName: "bash", input: { command: "find /", timeout: 120 }, isError: true,
+	assert.equal(fenceNote("X"), `\n\n${NOTE_MARKER}\nX`);
+	// A second, ordinary bash result in the same session carries no note at all.
+	await handlers.tool_call[0]({ toolCallId: "2", toolName: "bash", input: { command: "echo hi" } });
+	const ordinary = await handlers.tool_result[0]({ toolCallId: "2", toolName: "bash", input: { command: "echo hi", timeout: 120 }, isError: false,
+		content: [{ type: "text", text: "hi\n" }], details: {} });
+	assert.equal(ordinary, undefined);
+	// A later timed-out result still carries the note.
+	await handlers.tool_call[0]({ toolCallId: "3", toolName: "bash", input: { command: "find /" } });
+	const timedOut = await handlers.tool_result[0]({ toolCallId: "3", toolName: "bash", input: { command: "find /", timeout: 120 }, isError: true,
 		content: [{ type: "text", text: "partial\n\nCommand timed out after 120 seconds" }], details: {} });
-	assert.deepEqual(entries.at(-1), { kind: "command_timed_out", data: { toolCallId: "2", timeout: 120 } });
+	assert.deepEqual(timedOut, {
+		content: [{ type: "text", text: "partial\n\nCommand timed out after 120 seconds" + fenceNote(bashSentence(120, CMD)) }],
+	});
+	assert.deepEqual(entries.at(-1), { kind: "command_timed_out", data: { toolCallId: "3", timeout: 120 } });
 	assert.equal(await handlers.tool_result[0]({ toolCallId: "9", toolName: "read", content: [], details: {} }), undefined);
+});
+
+test("the fenced note cannot be mistaken for the command's own output", () => {
+	assert.equal(NOTE_MARKER, "[satyrn-engine note — not part of the command's output]");
+	const fenced = fenceNote(bashSentence(120, CMD));
+	assert.match(fenced, /^\n\n\[satyrn-engine note — not part of the command's output\]\n/);
 });
 
 test("the timeout phrase in a successful result's own text is not recorded as a firing", async () => {
 	// Final review fix: `echo`/`grep` output can contain the exact phrase
 	// without the command ever having timed out. Only `isError: true` plus
-	// the phrase counts; the bound sentence is still appended either way.
+	// the phrase counts; the note is still appended either way, on the first
+	// bash result of the session.
 	const { pi, handlers, entries } = fakePi();
 	registerBounds(pi, CMD);
 	await handlers.tool_call[0]({ toolCallId: "3", toolName: "bash", input: { command: "echo 'Command timed out after 120 seconds'" } });
@@ -88,7 +105,7 @@ test("the timeout phrase in a successful result's own text is not recorded as a 
 		details: {},
 	});
 	assert.deepEqual(patch, {
-		content: [{ type: "text", text: "Command timed out after 120 seconds\n" + bashSentence(120, CMD) }],
+		content: [{ type: "text", text: "Command timed out after 120 seconds" + fenceNote(bashSentence(120, CMD)) }],
 	});
 	assert.equal(entries.some((entry) => entry.kind === "command_timed_out"), false);
 });

@@ -1,0 +1,31 @@
+{
+  "name": "bounds-second-call-no-note",
+  "extension": "bounds.ts",
+  "context": {
+    "version": 1,
+    "repo": "/w",
+    "contract": "/w/c.yaml",
+    "revisions": {},
+    "writable_paths": ["src/*"],
+    "test_command": ["uv", "run", "python", "-m", "pytest", "-q"],
+    "symbols": {},
+    "carried": [],
+    "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "events": [
+    {"type": "tool_call", "toolCallId": "c1", "toolName": "bash", "input": {"command": "ls"},
+     "expect": {"blocked": false, "input": {"command": "ls", "timeout": 120}}},
+    {"type": "tool_result", "toolCallId": "c1", "toolName": "bash", "input": {"command": "ls", "timeout": 120},
+     "isError": false, "content": [{"type": "text", "text": "a\nb\n"}], "details": {},
+     "expect": {"contentEndsWith": "run it with the self_test tool."}},
+    {"type": "tool_call", "toolCallId": "c2", "toolName": "bash", "input": {"command": "echo hi"},
+     "expect": {"blocked": false, "input": {"command": "echo hi", "timeout": 120}}},
+    {"type": "tool_result", "toolCallId": "c2", "toolName": "bash", "input": {"command": "echo hi", "timeout": 120},
+     "isError": false, "content": [{"type": "text", "text": "hi\n"}], "details": {},
+     "expect": {"patched": false}}
+  ],
+  "expectedEntries": [
+    {"kind": "command_bounded", "data": {"toolCallId": "c1", "action": "set", "timeout": 120}},
+    {"kind": "command_bounded", "data": {"toolCallId": "c2", "action": "set", "timeout": 120}}
+  ]
+}

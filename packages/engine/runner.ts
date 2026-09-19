@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { fenceNote } from "./bounds.ts";
 import {
 	createEngineExchange,
 	MUTATION_CONTEXT_ENV,
@@ -428,7 +429,7 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 			await maybeSteer(result.details);
 			await note("self_test_detected", { generation });
 			return {
-				content: [{ type: "text", text: `${original}\n${DETECTED_SENTENCE}\n${result.content[0].text}` }],
+				content: [{ type: "text", text: `${original}${fenceNote(DETECTED_SENTENCE)}\n${result.content[0].text}` }],
 				isError: (isRecord(event) && event.isError === true) || result.details.ok !== true,
 			};
 		}

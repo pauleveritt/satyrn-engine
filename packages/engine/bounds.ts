@@ -31,12 +31,37 @@ export function bashSentence(seconds: number, testCommand: readonly string[]): s
 	return `${bound} The self-test is "${testCommand.join(" ")}"; run it with the self_test tool.`;
 }
 
+/**
+ * A route-proof cell (route-proof-engine-selfhost-run-record-gate) copied the
+ * bound sentence straight into `src/satyrn_evals/cli.py` at turn 17: when a
+ * model views a file through `cat`/`tail`/`sed -n`, an unfenced trailing
+ * sentence reads as the file's own last line. `NOTE_MARKER` opens a delimited
+ * block so an Engine note can never be mistaken for the command's output; the
+ * em dash and brackets are chosen to be unlikely output from a real command.
+ * `runner.ts`'s `DETECTED_SENTENCE` reuses this exact marker so the two notes
+ * are recognizable as the same kind of thing wherever both land on one
+ * result.
+ */
+export const NOTE_MARKER = "[satyrn-engine note — not part of the command's output]";
+
+/** Fence one note behind a blank line and `NOTE_MARKER`, for appending after
+ * a command's real output. */
+export function fenceNote(sentence: string): string {
+	return `\n\n${NOTE_MARKER}\n${sentence}`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 export function registerBounds(pi: ExtensionAPI, testCommand: readonly string[]): void {
 	const bounded = new Map<string, number>();
+	// The note only needs to orient the model once per session (it never
+	// changes) and on every timeout (the one case worth repeating, since it
+	// explains an error the model just hit). Every other bash result is
+	// returned untouched -- unfenced or not, a repeated reminder on every call
+	// spends tokens for nothing after the first.
+	let announced = false;
 	const note = async (kind: string, data: Record<string, unknown>): Promise<void> => {
 		try {
 			await pi.appendEntry(kind, data);
@@ -58,18 +83,22 @@ export function registerBounds(pi: ExtensionAPI, testCommand: readonly string[])
 		bounded.delete(event.toolCallId);
 		const content = Array.isArray(event.content) ? [...event.content] : [];
 		const last = content.length > 0 ? content[content.length - 1] : undefined;
-		if (isRecord(last) && last.type === "text" && typeof last.text === "string") {
-			// Final review fix: the phrase alone is not proof of a timeout --
-			// output from `echo` or `grep` can put it in a *successful*
-			// result's own text. Pi's bash tool only produces this sentence
-			// on a real timeout, and marks that result `isError: true`;
-			// require both before recording the firing.
-			if (event.isError === true && last.text.includes(TIMED_OUT)) {
-				await note("command_timed_out", { toolCallId: event.toolCallId, timeout: seconds });
-			}
-			content[content.length - 1] = { ...last, text: `${last.text}\n${bashSentence(seconds, testCommand)}` };
+		const lastText = isRecord(last) && last.type === "text" && typeof last.text === "string" ? last.text : undefined;
+		// Final review fix: the phrase alone is not proof of a timeout --
+		// output from `echo` or `grep` can put it in a *successful* result's
+		// own text. Pi's bash tool only produces this sentence on a real
+		// timeout, and marks that result `isError: true`; require both before
+		// recording the firing.
+		const timedOut = event.isError === true && lastText !== undefined && lastText.includes(TIMED_OUT);
+		if (timedOut) await note("command_timed_out", { toolCallId: event.toolCallId, timeout: seconds });
+		const isFirst = !announced;
+		announced = true;
+		if (!isFirst && !timedOut) return undefined;
+		const fenced = fenceNote(bashSentence(seconds, testCommand));
+		if (lastText !== undefined) {
+			content[content.length - 1] = { ...last, text: `${lastText}${fenced}` };
 		} else {
-			content.push({ type: "text", text: bashSentence(seconds, testCommand) });
+			content.push({ type: "text", text: `${NOTE_MARKER}\n${bashSentence(seconds, testCommand)}` });
 		}
 		return { content };
 	});
