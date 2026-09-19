@@ -8,16 +8,20 @@ more than a pipe buffer (64 KB) and must return within the join timeout.
 """
 
 import errno
+import fcntl
 import io
+import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from satyrn_engine import attempt as attempt_module
 from satyrn_engine.attempt import SubprocessPiRunner
+from satyrn_engine.budget import TurnCounter
 
 pytestmark = pytest.mark.integration
 
@@ -174,3 +178,85 @@ def test_a_permanently_blocked_forward_is_dropped_after_the_bound_and_pi_still_c
     assert isinstance(error, OSError)
     assert "forward" in str(error)
     assert (tmp_path / "t.jsonl").read_bytes() == LINE * LINES
+
+
+# C1 (Opus review, 2026-09-19): production's `forward` is `sys.stdout.buffer`,
+# a real `io.BufferedWriter` (default 8192-byte buffer) over a pipe Node has
+# flipped to O_NONBLOCK (`_write_retrying_backpressure`'s docstring). JSONL
+# lines are small: `write()` only fills the buffer, and the syscall -- and the
+# EAGAIN -- happens in `flush()`, which the pump called unguarded. Every
+# double above (`BrokenForward`/`FlakyForward`/`PartialForward`/`DeadForward`)
+# subclasses `io.RawIOBase`, whose `flush()` is a no-op, so none of them can
+# exercise this path.
+EVENT_LINES = 3000
+EVENT_CHILD_SCRIPT = (
+    "import json, sys\n"
+    f"for i in range({EVENT_LINES}):\n"
+    "    sys.stdout.buffer.write(json.dumps({'type': 'turn_start'}).encode() + b'\\n')\n"
+    "    sys.stdout.buffer.write(json.dumps({'type': 'message_end', 'message': "
+    "{'role': 'assistant', 'usage': {'input': 10, 'output': 20}}}).encode() + b'\\n')\n"
+)
+EVENT_CHILD = [sys.executable, "-c", EVENT_CHILD_SCRIPT]
+
+
+def _counts(data: bytes) -> tuple[int, int, int]:
+    counter = TurnCounter()
+    for raw in data.splitlines():
+        if raw:
+            counter.feed(raw.decode("utf-8"))
+    return counter.turns, counter.tokens_in, counter.tokens_out
+
+
+def test_a_real_buffered_writer_over_a_nonblocking_pipe_receives_every_byte(tmp_path: Path) -> None:
+    """A real `io.BufferedWriter` over a real non-blocking `os.pipe()`, drained
+    by a slow-but-live reader thread -- exactly production's shape. Every byte
+    must arrive, in order; `run()` must return Pi's exit code (0), never raise
+    `_ForwardSinkFailed`; and the receipt-level counts derived from `forward`
+    (what `deliver`'s live budget counter actually sees) must equal the
+    counts derived from the transcript (the artifact of record)."""
+    read_fd, write_fd = os.pipe()
+    flags = fcntl.fcntl(write_fd, fcntl.F_GETFL)
+    fcntl.fcntl(write_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    forward = io.BufferedWriter(io.FileIO(write_fd, "wb", closefd=True), 8192)
+
+    received = bytearray()
+
+    def drain() -> None:
+        while True:
+            try:
+                chunk = os.read(read_fd, 4096)
+            except BlockingIOError:
+                time.sleep(0.005)
+                continue
+            if not chunk:
+                return
+            received.extend(chunk)
+            time.sleep(0.001)  # a live but slow reader (deliver parsing JSON)
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    outcome: dict[str, object] = {}
+
+    def target() -> None:
+        try:
+            with (tmp_path / "t.jsonl").open("wb") as transcript:
+                outcome["code"] = SubprocessPiRunner().run(
+                    EVENT_CHILD, Path.cwd(), {}, transcript, forward, subprocess.DEVNULL  # type: ignore[arg-type]
+                )
+        except BaseException as exc:  # noqa: BLE001 - the row inspects it
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=target, daemon=True)
+    worker.start()
+    worker.join(JOIN_SECONDS)
+    assert not worker.is_alive(), "pump stopped draining: Pi blocked on a full pipe"
+    forward.close()
+    reader.join(JOIN_SECONDS)
+    assert not reader.is_alive(), "reader thread never saw EOF on the forward pipe"
+    os.close(read_fd)
+
+    assert (outcome.get("code"), outcome.get("error")) == (0, None)
+    transcript_bytes = (tmp_path / "t.jsonl").read_bytes()
+    assert bytes(received) == transcript_bytes
+    assert _counts(bytes(received)) == _counts(transcript_bytes)
+    assert _counts(transcript_bytes) == (EVENT_LINES, EVENT_LINES * 10, EVENT_LINES * 20)

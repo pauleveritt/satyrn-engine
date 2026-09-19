@@ -333,6 +333,37 @@ def _write_retrying_backpressure(sink: BinaryIO, data: bytes, *, deadline: float
         _wait_writable(fd, min(deadline - now, 1.0))
 
 
+def _flush_retrying_backpressure(sink: BinaryIO, *, deadline: float) -> None:
+    """Flush ``sink`` in full, surviving EAGAIN/EWOULDBLOCK the same way
+    `_write_retrying_backpressure` does for `write()`.
+
+    Production's `forward` is `sys.stdout.buffer`, a real
+    `io.BufferedWriter` (an 8192-byte buffer by default) over a pipe that
+    can share Pi's O_NONBLOCK open file description (see
+    `_write_retrying_backpressure`'s docstring). A single JSONL line is far
+    smaller than that buffer, so `write()` usually just fills it -- the
+    syscall, and any EAGAIN, happens on the next `flush()`. A
+    `BlockingIOError` from `BufferedWriter.flush()` does *not* discard the
+    unwritten bytes: CPython keeps them in the buffer for the next
+    `flush()` call. Retrying must therefore call `flush()` again, never
+    `write()` -- re-writing would duplicate whatever partial amount the
+    kernel already accepted.
+    """
+    try:
+        fd = sink.fileno()
+    except (AttributeError, OSError, ValueError):
+        fd = None
+    while True:
+        try:
+            sink.flush()
+            return
+        except BlockingIOError:
+            now = time.monotonic()
+            if now >= deadline:
+                raise
+            _wait_writable(fd, min(deadline - now, 1.0))
+
+
 class SubprocessGitRunner:
     """Run Git without shell interpretation and preserve exact stdout bytes."""
 
@@ -454,7 +485,7 @@ class SubprocessPiRunner:
                         try:
                             deadline = time.monotonic() + FORWARD_WRITE_BOUND_SECONDS
                             _write_retrying_backpressure(sinks[name], line, deadline=deadline)
-                            sinks[name].flush()
+                            _flush_retrying_backpressure(sinks[name], deadline=deadline)
                         except (OSError, ValueError) as exc:
                             sink_errors[name] = exc
             except BaseException as exc:  # noqa: BLE001 - surfaced by run(), not swallowed
