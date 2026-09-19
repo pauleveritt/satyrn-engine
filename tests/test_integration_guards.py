@@ -193,10 +193,15 @@ def test_pi_installs_and_dispatches_package_extension_in_temporary_settings(
     assert installed_package == PACKAGE.resolve()
 
     manifest = json.loads((installed_package / "package.json").read_text())
+    # M9 (Opus review, 2026-09-19): the manifest also loads the guards a real
+    # attempt always loads via attempt.build_pi_command (scope.ts, bounds.ts)
+    # -- see tests/test_pi_extensions_manifest.py.
     assert manifest["pi"]["extensions"] == [
         "./engine.ts",
         "./orchestrator.ts",
         "./mutator.ts",
+        "./scope.ts",
+        "./bounds.ts",
     ]
 
     extension_environment = environment.copy()
