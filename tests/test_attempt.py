@@ -1,8 +1,10 @@
 """Default-tier tests for E5's pure boundaries and injected attempt seams."""
 
+import errno
 import io
 import json
 import os
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -17,6 +19,7 @@ from satyrn_engine.attempt import (
     AttemptCode,
     AttemptResult,
     GitResult,
+    _write_retrying_backpressure,
     build_pi_command,
     build_prompt,
     record_invocation,
@@ -2341,4 +2344,32 @@ def test_a_carried_list_one_past_the_cap_collapses():
     prompt = build_prompt(contract, existing=(), tracked=())
     assert "tests/test_0.py" not in prompt
     assert f"{PROMPT_LIST_CAP + 1} files" in prompt
+
+
+class _NeverWritable(io.RawIOBase):
+    """A sink with no real file descriptor (``fileno()`` unsupported, like
+    every in-memory test double) that never accepts a single byte -- models
+    M6's genuine hot-loop case, not `PartialForward`'s steady progress."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data: bytes) -> int:  # type: ignore[override]
+        self.calls += 1
+        raise BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable")
+
+
+def test_a_permanently_blocked_fd_less_sink_does_not_spin_the_cpu() -> None:
+    """M6: `_wait_writable` with ``fd is None`` must not hot-loop. Bound the
+    retry deadline to a short, real wall-clock slice and assert `write()` was
+    called only a small, bounded number of times -- a hot loop with no sleep
+    calls it many thousands of times in the same window."""
+    sink = _NeverWritable()
+    deadline = time.monotonic() + 0.2
+    with pytest.raises(BlockingIOError):
+        _write_retrying_backpressure(sink, b"x" * 100, deadline=deadline)
+    assert sink.calls < 100, f"write() was called {sink.calls} times in 0.2s: _wait_writable is hot-looping"
 

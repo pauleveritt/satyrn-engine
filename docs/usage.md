@@ -355,7 +355,10 @@ for its tracked writable files, and starts Pi with `read`, native `bash`,
 `edit`, `write`, and — only when the contract declares a `test_command` —
 `self_test` (`attempt.build_pi_command`), alongside the loaded guards (the
 loop breaker, the scope, symbol and bash-bound checks, and the `self_test`
-runner). Pi skills, prompt templates, themes, context files, sessions, and
+runner). The bash-bound guard's fenced reminder is announced once per Pi
+process (on its first bash result) and again on any bash command that times
+out; every other result carries no reminder at all. Pi skills, prompt
+templates, themes, context files, sessions, and
 ambient extensions are disabled. The current worktree remains the model's
 workspace, so direct `attempt` is intended for E3's disposable worktree rather
 than a developer's checkout. Pi's own stdout is forwarded to `attempt`'s

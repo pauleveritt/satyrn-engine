@@ -271,10 +271,12 @@ def _wait_writable(fd: int | None, timeout: float) -> None:
     """Block up to ``timeout`` seconds for ``fd`` to accept a write.
 
     ``fd`` is ``None`` for a sink with no real file descriptor (an in-memory
-    test double); there is nothing to poll, so this returns immediately and
-    the caller simply retries the write directly.
+    test double); there is nothing to poll, so a retry loop around this
+    would otherwise spin at full CPU until its deadline (M6) -- sleep for a
+    short, bounded slice instead of returning immediately.
     """
     if fd is None:
+        time.sleep(min(timeout, 0.01))
         return
     selector = selectors.DefaultSelector()
     try:
@@ -330,7 +332,13 @@ def _write_retrying_backpressure(sink: BinaryIO, data: bytes, *, deadline: float
                 errno.EAGAIN,
                 "sink did not accept the remaining bytes before the bound",
             )
-        _wait_writable(fd, min(deadline - now, 1.0))
+        # M6: only fall through to `_wait_writable`'s fd-less sleep when this
+        # iteration accepted nothing at all -- a sink with no real fd that is
+        # still making partial progress (a test double modelling a partial
+        # non-blocking write) is not hot-looping and must keep retrying at
+        # full speed, or byte-at-a-time doubles become impractically slow.
+        if fd is not None or written == 0:
+            _wait_writable(fd, min(deadline - now, 1.0))
 
 
 def _flush_retrying_backpressure(sink: BinaryIO, *, deadline: float) -> None:
@@ -483,6 +491,11 @@ class SubprocessPiRunner:
                 for line in process.stdout:
                     for name in [name for name in sinks if name not in sink_errors]:
                         try:
+                            # M5: per write, not per run -- this deadline bounds
+                            # only this one line's write+flush retrying. The
+                            # total bound on a stalled sink across the whole
+                            # attempt is deliver's own command deadline, not
+                            # this one.
                             deadline = time.monotonic() + FORWARD_WRITE_BOUND_SECONDS
                             _write_retrying_backpressure(sinks[name], line, deadline=deadline)
                             _flush_retrying_backpressure(sinks[name], deadline=deadline)
