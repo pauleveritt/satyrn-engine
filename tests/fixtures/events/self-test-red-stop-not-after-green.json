@@ -1,0 +1,13 @@
+{
+  "name": "self-test-red-stop-not-after-green",
+  "extension": "runner.ts",
+  "testExitCode": 0,
+  "context": {"version": 1, "repo": "/w", "contract": "/w/c.yaml", "revisions": {"app.py": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "writable_paths": ["tools/*", "tests/*"], "test_command": ["uv", "run", "python", "-m", "pytest", "-q"], "symbols": {}, "carried": [], "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "expectedHandlers": {"tool_call": 0, "tool_result": 1, "turn_end": 1},
+  "events": [
+    {"type": "tool_result", "toolCallId": "w1", "toolName": "write", "input": {"path": "tools/review.py"}, "isError": false, "content": [{"type": "text", "text": "ok"}], "details": {}, "expect": {"patched": false}},
+    {"type": "tool_exec", "toolCallId": "s1", "toolName": "self_test", "input": {}, "expect": {"code": "OK"}},
+    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "Added tools/review.py."}]}, "expect": {"followUp": false}}
+  ],
+  "expectedEntries": []
+}

@@ -1,0 +1,13 @@
+{
+  "name": "self-test-red-stop",
+  "extension": "runner.ts",
+  "context": {"version": 1, "repo": "/w", "contract": "/w/c.yaml", "revisions": {"app.py": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "writable_paths": ["tools/*", "tests/*"], "test_command": ["uv", "run", "python", "-m", "pytest", "-q"], "symbols": {}, "carried": [], "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "expectedHandlers": {"tool_call": 0, "tool_result": 1, "turn_end": 1},
+  "events": [
+    {"type": "tool_result", "toolCallId": "w1", "toolName": "write", "input": {"path": "tools/review.py"}, "isError": false, "content": [{"type": "text", "text": "ok"}], "details": {}, "expect": {"patched": false}},
+    {"type": "tool_result", "toolCallId": "w2", "toolName": "write", "input": {"path": "tests/test_review.py"}, "isError": false, "content": [{"type": "text", "text": "ok"}], "details": {}, "expect": {"patched": false}},
+    {"type": "tool_exec", "toolCallId": "s1", "toolName": "self_test", "input": {}, "expect": {"code": "OK"}},
+    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "Added tools/review.py and its test."}]}, "expect": {"followUp": "the last self_test on the current tree did not pass"}}
+  ],
+  "expectedEntries": [{"kind": "self_test_red_stop", "data": {"generation": 2}}]
+}
