@@ -286,6 +286,23 @@ export function enforcedMessage(resultText: string): string {
 }
 
 /**
+ * The red-stop gate (2026-09-23 plan). The completion gate above only asks
+ * whether a self-test has run since the last landed mutation
+ * (`checked !== generation`); it never asks whether that run *passed*. A
+ * model that lands a mutation, runs `self_test` itself (or has it detected
+ * from a bash pytest run), sees it fail, and then stops on a tool-call-free
+ * turn satisfies the completion gate -- `checked === generation` -- and gets
+ * no message at all. Diagnosis: satyrn-evals development record
+ * `records/2026-09-23-spike-mellum-class-review-script-n6.json`, Engine cell
+ * `selfhost-review-script-20260923-130353-154738`. The tree has not changed
+ * since the red run (same generation) and carried tests are restored before
+ * every self-test, so no re-run is needed -- the stored result stands.
+ */
+export function redStopMessage(resultText: string): string {
+	return `Before you finish: the last self_test on the current tree did not pass, and nothing has changed since it ran. Fix the failure, or say which part of the request you cannot complete.\n${resultText}`;
+}
+
+/**
  * Component A, finish-on-green (design §2). Ten census cells held a
  * hidden-suite pass inside the 32k/48 line and none stopped there: they ran
  * coverage and lint gates the task never asked for, repaired their own
@@ -365,6 +382,17 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 	// last completed self-test ran against (null: none has).
 	let generation = 0;
 	let checked: number | null = null;
+	// Red-stop gate: whether the last completed self-test (model-called,
+	// detected, or enforced) passed, and its compact result text. `null`
+	// means no run has completed yet. Set wherever `checked` is set, but
+	// only on `details.ok` -- a refused exchange leaves both unchanged,
+	// matching how `checked` itself is only advanced on success.
+	let lastPassed: boolean | null = null;
+	let lastResult = "";
+	// The generation the red-stop gate (or the enforced branch's own
+	// failure follow-up, which counts the same way) last told the model
+	// about. `null`: never.
+	let redStopped: number | null = null;
 	// A second generation counting only source mutations (plan Ruling 2):
 	// the completion gate keeps using `generation`, which counts every
 	// landed mutation, while the steer must not re-arm when a cell rewrites
@@ -379,7 +407,11 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 	const run = async (toolCallId: string): Promise<RunnerToolResult> => {
 		const at = generation;
 		const result = await runner.execute(toolCallId, {});
-		if (result.details.ok) checked = at;
+		if (result.details.ok) {
+			checked = at;
+			lastPassed = result.details.result.exit_code === 0 && !result.details.result.timed_out;
+			lastResult = result.content[0].text;
+		}
 		return result;
 	};
 	const note = async (kind: string, data: Record<string, unknown>): Promise<void> => {
@@ -462,13 +494,19 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 		// Engine as the message's author; Pi hands it to the model as a
 		// user message (core/messages.js convertToLlm).
 		let gated = false;
+		let enforcedRan = false;
 		if (isFinalTurn(event.message) && checked !== generation) {
+			enforcedRan = true;
 			const at = generation;
 			const result = await runner.execute("self_test_enforced", {});
 			checked = at;
 			const details = result.details;
 			const passed = details.ok && details.result.exit_code === 0 && !details.result.timed_out;
 			const followUp = details.ok && !passed;
+			if (details.ok) {
+				lastPassed = passed;
+				lastResult = result.content[0].text;
+			}
 			await note("self_test_enforced", {
 				generation: at,
 				code: details.code,
@@ -477,11 +515,37 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 			});
 			if (followUp) {
 				gated = true;
+				// Plan Ruling 5: this follow-up tells the model its tree is
+				// red exactly as the red-stop gate would, so it counts the
+				// same way -- a model told once and stopping again on the
+				// same tree is not told a second time.
+				redStopped = at;
 				pi.sendMessage(
 					{ customType: "self_test_enforced", content: enforcedMessage(result.content[0].text), display: true, details: undefined },
 					{ deliverAs: "followUp" },
 				);
 			}
+		}
+		// Red-stop gate (plan 2026-09-23), only when the enforced branch
+		// above did not already run this turn: the completion gate is
+		// already satisfied (`checked === generation`), but the last
+		// completed run at this generation did not pass. No re-run --
+		// the tree has not changed since that run and carried tests are
+		// restored before every self-test, so the stored result stands.
+		if (
+			!enforcedRan &&
+			isFinalTurn(event.message) &&
+			checked === generation &&
+			lastPassed === false &&
+			redStopped !== generation
+		) {
+			gated = true;
+			redStopped = generation;
+			await note("self_test_red_stop", { generation });
+			pi.sendMessage(
+				{ customType: "self_test_red_stop", content: redStopMessage(lastResult), display: true, details: undefined },
+				{ deliverAs: "followUp" },
+			);
 		}
 		// Component B, runaway resume (design §3, Ruling 4): the gate goes
 		// first and suppresses the resume for this turn. Two Engine messages
