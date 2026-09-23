@@ -280,6 +280,11 @@ function resultText(event: unknown): string {
  * Engine runs `self_test` itself, once per mutation generation. A failing or
  * timed-out run goes back to the model as one follow-up message; a pass, or
  * a run the engine refuses, ends the session as it would have.
+ *
+ * This gate only asks whether a self-test *ran* since the last mutation,
+ * never whether it *passed* -- see `redStopMessage` below for the sibling
+ * gate that covers a turn where this one is already satisfied but the last
+ * completed run was red.
  */
 export function enforcedMessage(resultText: string): string {
 	return `Before you finish: the Engine ran self_test because nothing had run it since the last change, and it did not pass.\n${resultText}`;

@@ -108,7 +108,15 @@ revision
 self_test
   The engine's registered tool that restores {term}`carried` tests, runs the
   contract's ``test_command`` and the checks, and returns failed ids with
-  their first assertion line.
+  their first assertion line. Two gates around it live in
+  ``packages/engine/runner.ts``: the completion gate runs it once, on a
+  tool-call-free turn, when nothing has run it since the last landed
+  mutation; the red-stop gate sends one follow-up instead of re-running it
+  when that turn is otherwise silent and the last completed run at the
+  current mutation generation did not pass -- the tree has not changed, and
+  carried tests are restored before every run, so the stored result still
+  holds. Each fires at most once per mutation generation, and counts the
+  other's failure follow-up on the same generation as already told.
 
 receipt
   The one versioned UTF-8 JSON result written by an accepted ``deliver``

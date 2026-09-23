@@ -308,15 +308,30 @@ landed since the last one (`self_test_detected`), its own note fenced the
 same way as the bound's; and, when the model stops
 with no self-test since its last `edit` or `write`, one run by the Engine
 whose failure goes back to the model as a single follow-up message
-(`self_test_enforced`). When a self-test that completed inside a turn -- the
-model's own `self_test` call, or the Engine's run after a detected bash test
-run, never the enforced gate -- passes, and a source file has changed since
-the last pass, the Engine sends one message saying the change
+(`self_test_enforced`). The completion gate only asks whether a self-test has
+*run* since the last landed mutation, not whether it *passed* -- so a model
+that runs (or has the Engine detect) a failing self-test and then stops on a
+tool-call-free turn satisfies that gate silently. The red-stop gate closes
+that gap: on such a turn, when the last self-test completed at the current
+mutation generation did not pass, the Engine sends one follow-up
+(`self_test_red_stop`) saying so, without re-running the suite -- the tree
+has not changed since that run and carried tests are restored before every
+`self_test`, so the stored result still holds. It fires at most once per
+generation, and an enforced-gate failure follow-up on the same generation
+counts the same way, so a model told once is not told twice for the same
+tree. Diagnosed from satyrn-evals development record
+`records/2026-09-23-spike-mellum-class-review-script-n6.json`, Engine cell
+`selfhost-review-script-20260923-130353-154738`. When a self-test that
+completed inside a turn -- the model's own `self_test` call, or the Engine's
+run after a detected bash test run, never the enforced gate -- passes, and a
+source file has changed since the last pass, the Engine sends one message
+saying the change
 may be complete and that commits, provenance rows, repository-wide suites,
 linters and test-count edits are the developer's. When a turn hits the
 per-turn output cap with no tool call, the Engine asks once for a concrete
 next step, at most twice per session; it stays silent when the completion
-gate has just sent its own follow-up on that turn. `preserve`, `checks`,
+gate or the red-stop gate has just sent its own follow-up on that turn.
+`preserve`, `checks`,
 tracked `conftest.py` files and tracked pytest configuration
 (`pyproject.toml`, `pytest.ini`, `setup.cfg`, `tox.ini`) are restored from the
 base into the worktree before every `self_test` run and before validation, so
