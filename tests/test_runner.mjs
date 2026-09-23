@@ -451,25 +451,33 @@ test("a timed-out enforced run is a failure and goes back to the model", async (
 	assert.match(gate.pi.sent[0].message.content, /timed out/);
 });
 
-// Red-stop gate (plan 2026-09-23): a final turn whose last completed
-// self-test, at the current generation, did not pass gets one follow-up
-// even though the completion gate above is already satisfied (`checked ===
-// generation`), so it never re-runs the suite.
+// Red-stop gate (plan 2026-09-23, Revision 1 after Opus review): a final
+// turn whose last completed self-test, at the current generation, did not
+// pass gets a fresh re-run through the same exchange as the enforced
+// branch, once, and a follow-up only if that re-run is still red. The
+// re-run (not the stored result) is what the message and the recorded
+// entry reflect.
 
-test("redStopMessage carries the design's text over the result", () => {
+test("redStopMessage carries the design's text over the (fresh) result", () => {
 	assert.equal(
 		redStopMessage("R"),
-		"Before you finish: the last self_test on the current tree did not pass, and nothing has changed since it ran. Fix the failure, or say which part of the request you cannot complete.\nR",
+		"Before you finish: your last self_test did not pass, so the Engine ran it again on the current tree, and it still does not pass.\nR",
 	);
 });
 
-test("fires: a red self_test the model ran, then a final turn with nothing further, is a red stop", async () => {
-	const gate = gated([success({ exit_code: 1, output: "FAILED tests/test_app.py::test_home - assert 404 == 200" })]);
+test("fires: a red self_test the model ran, then a final turn with nothing further, re-runs and is a red stop", async () => {
+	const gate = gated([
+		success({ exit_code: 1, output: "FAILED tests/test_app.py::test_home - assert 404 == 200" }),
+		success({ exit_code: 1, output: "FAILED tests/test_app.py::test_home - assert 404 == 200" }),
+	]);
 	await gate.result(LANDED_EDIT);
 	await gate.pi.tool.execute("s1", {});
 	await gate.turnEnd(FINAL);
-	assert.equal(gate.exchanges(), 1);
-	assert.deepEqual(gate.pi.entries, [{ kind: "self_test_red_stop", data: { generation: 1 } }]);
+	// One exchange for the model's own call, a second for the gate's re-run.
+	assert.equal(gate.exchanges(), 2);
+	assert.deepEqual(gate.pi.entries, [
+		{ kind: "self_test_red_stop", data: { generation: 1, code: "OK", exit_code: 1, follow_up: true } },
+	]);
 	assert.deepEqual(gate.pi.sent, [
 		{
 			message: {
@@ -483,7 +491,7 @@ test("fires: a red self_test the model ran, then a final turn with nothing furth
 	]);
 });
 
-test("sibling, green: a mutation and a green self_test after a red one leaves the red stop silent", async () => {
+test("sibling, green: a mutation and a green self_test after a red one leaves the red stop silent (no re-run, lastPassed is already true)", async () => {
 	const gate = gated([
 		success({ exit_code: 1, output: "FAILED" }),
 		success({ exit_code: 0, output: "3 passed" }),
@@ -498,14 +506,53 @@ test("sibling, green: a mutation and a green self_test after a red one leaves th
 	assert.deepEqual(gate.pi.sent, []);
 });
 
+test("bash-fix re-run: a red self_test, then a final turn whose re-run comes back green (a fix landed outside the tracked mutation tools) sends nothing but still records the check", async () => {
+	const gate = gated([
+		success({ exit_code: 1, output: "FAILED" }),
+		success({ exit_code: 0, output: "3 passed" }),
+	]);
+	await gate.result(LANDED_EDIT);
+	await gate.pi.tool.execute("s1", {});
+	await gate.turnEnd(FINAL);
+	assert.equal(gate.exchanges(), 2);
+	assert.deepEqual(gate.pi.entries, [
+		{ kind: "self_test_red_stop", data: { generation: 1, code: "OK", exit_code: 0, follow_up: false } },
+	]);
+	assert.deepEqual(gate.pi.sent, []);
+});
+
+test("refused re-run: a red self_test, then a final turn whose re-run the engine refuses sends nothing and nulls lastPassed", async () => {
+	const gate = gated([
+		success({ exit_code: 1, output: "FAILED" }),
+		{ version: 1, ok: false, code: "TEST_COMMAND_UNAVAILABLE", message: "gone", result: null },
+	]);
+	await gate.result(LANDED_EDIT);
+	await gate.pi.tool.execute("s1", {});
+	await gate.turnEnd(FINAL);
+	assert.equal(gate.exchanges(), 2);
+	assert.deepEqual(gate.pi.entries, [
+		{ kind: "self_test_red_stop", data: { generation: 1, code: "TEST_COMMAND_UNAVAILABLE", exit_code: null, follow_up: false } },
+	]);
+	assert.deepEqual(gate.pi.sent, []);
+	// A further final turn with no mutation does not re-fire: `lastPassed`
+	// is null (refused), not `false`.
+	await gate.turnEnd(FINAL);
+	assert.equal(gate.exchanges(), 2);
+	assert.equal(gate.pi.entries.length, 1);
+});
+
 test("sibling, once: a red stop fires once per generation; a further final turn with no mutation sends nothing more", async () => {
-	const gate = gated([success({ exit_code: 1, output: "FAILED" })]);
+	const gate = gated([
+		success({ exit_code: 1, output: "FAILED" }),
+		success({ exit_code: 1, output: "FAILED again" }),
+	]);
 	await gate.result(LANDED_EDIT);
 	await gate.pi.tool.execute("s1", {});
 	await gate.turnEnd(FINAL);
 	assert.equal(gate.pi.sent.length, 1);
+	assert.equal(gate.exchanges(), 2);
 	await gate.turnEnd(FINAL);
-	assert.equal(gate.exchanges(), 1);
+	assert.equal(gate.exchanges(), 2);
 	assert.equal(gate.pi.sent.length, 1);
 });
 
@@ -539,8 +586,36 @@ test("sibling, new mutation re-arms the enforced gate, not red-stop: a red self_
 	]);
 });
 
-test("detected route counts: a bash-detected red self_test then a final turn is a red stop too", async () => {
-	const gate = gated([success({ exit_code: 1, output: "FAILED tests/test_app.py::test_home - assert 404 == 200" })]);
+test("refused-enforced stale case (Revision 1 regression): a red self_test at gen 1, a mutation to gen 2, a length-cut final turn whose enforced run is refused resumes as a runaway, not a red stop, and a later final turn stays silent", async () => {
+	const gate = gated([
+		success({ exit_code: 1, output: "FAILED" }),
+		{ version: 1, ok: false, code: "TEST_COMMAND_UNAVAILABLE", message: "gone", result: null },
+	]);
+	await gate.result(LANDED_EDIT);
+	await gate.pi.tool.execute("s1", {});
+	await gate.result(LANDED_EDIT);
+	await gate.turnEnd({ role: "assistant", stopReason: "length", content: [{ type: "text", text: "..." }] });
+	assert.equal(gate.exchanges(), 2);
+	assert.deepEqual(gate.pi.entries, [
+		{ kind: "self_test_enforced", data: { generation: 2, code: "TEST_COMMAND_UNAVAILABLE", exit_code: null, follow_up: false } },
+		{ kind: "runaway_resumed", data: { resume: 1, output_tokens: null } },
+	]);
+	// Before Revision 1, `checked` had already advanced to generation 2 here
+	// while `lastPassed` still held generation 1's `false` -- the stale
+	// combination this test pins. The model stops again with no new
+	// mutation; the refusal nulled `lastPassed`, so no red stop fires with
+	// generation 1's failure text.
+	await gate.turnEnd(FINAL);
+	assert.equal(gate.exchanges(), 2);
+	assert.equal(gate.pi.entries.length, 2);
+	assert.deepEqual(gate.pi.sent.map((entry) => entry.message.customType), ["runaway_resumed"]);
+});
+
+test("detected route counts: a bash-detected red self_test then a final turn re-runs and is a red stop too", async () => {
+	const gate = gated([
+		success({ exit_code: 1, output: "FAILED tests/test_app.py::test_home - assert 404 == 200" }),
+		success({ exit_code: 1, output: "FAILED tests/test_app.py::test_home - assert 404 == 200" }),
+	]);
 	await gate.result(SOURCE_EDIT);
 	await gate.result({
 		toolCallId: "b1",
@@ -550,16 +625,21 @@ test("detected route counts: a bash-detected red self_test then a final turn is 
 		details: undefined,
 	});
 	await gate.turnEnd(FINAL);
-	assert.equal(gate.exchanges(), 1);
+	assert.equal(gate.exchanges(), 2);
 	assert.deepEqual(gate.pi.entries.map((entry) => entry.kind), ["self_test_detected", "self_test_red_stop"]);
 });
 
-test("length-cut red stop: a stopReason: length final turn with a red last run is a red stop, not a runaway resume", async () => {
-	const gate = gated([success({ exit_code: 1, output: "FAILED" })]);
+test("length-cut red stop: a stopReason: length final turn with a red last run re-runs, is a red stop, not a runaway resume", async () => {
+	const gate = gated([
+		success({ exit_code: 1, output: "FAILED" }),
+		success({ exit_code: 1, output: "FAILED again" }),
+	]);
 	await gate.result(LANDED_EDIT);
 	await gate.pi.tool.execute("s1", {});
 	await gate.turnEnd({ role: "assistant", stopReason: "length", content: [{ type: "text", text: "..." }] });
-	assert.deepEqual(gate.pi.entries, [{ kind: "self_test_red_stop", data: { generation: 1 } }]);
+	assert.deepEqual(gate.pi.entries, [
+		{ kind: "self_test_red_stop", data: { generation: 1, code: "OK", exit_code: 1, follow_up: true } },
+	]);
 	assert.equal(gate.pi.sent.length, 1);
 	assert.equal(gate.pi.sent[0].message.customType, "self_test_red_stop");
 });
@@ -577,6 +657,26 @@ test("refused exchange: a self_test call the engine refuses leaves the red-stop 
 	assert.deepEqual(gate.pi.entries, [
 		{ kind: "self_test_enforced", data: { generation: 1, code: "OK", exit_code: 1, follow_up: true } },
 	]);
+});
+
+test("guard: the enforced branch running this turn is the only self_test exchange -- the red-stop branch does not also run", async () => {
+	// Regression for a reviewer finding: the `!enforcedRan` guard on the
+	// red-stop branch was not pinned by any test -- deleting it left all
+	// existing tests passing. This asserts the observable invariant the
+	// guard exists to protect: when the enforced branch runs this turn,
+	// exactly one self_test exchange happens, never two. (Note: under
+	// Revision 1's conditions, this same invariant also holds with the
+	// guard removed, because a failing enforced run sets `redStopped = at`
+	// before the red-stop branch's own condition is evaluated, and a
+	// refused or passing enforced run leaves `lastPassed` unable to satisfy
+	// `=== false`. The guard is still kept because the design names it
+	// explicitly and a future change to that ordering should not have to
+	// re-derive this proof; see the report for the full argument.)
+	const gate = gated([success({ exit_code: 1, output: "FAILED" })]);
+	await gate.result(LANDED_EDIT);
+	await gate.turnEnd(FINAL);
+	assert.equal(gate.exchanges(), 1);
+	assert.deepEqual(gate.pi.entries.map((entry) => entry.kind), ["self_test_enforced"]);
 });
 
 test("default extension leaves the tool set alone without explicit context", () => {

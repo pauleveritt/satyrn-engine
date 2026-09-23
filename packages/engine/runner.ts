@@ -291,20 +291,29 @@ export function enforcedMessage(resultText: string): string {
 }
 
 /**
- * The red-stop gate (2026-09-23 plan). The completion gate above only asks
- * whether a self-test has run since the last landed mutation
- * (`checked !== generation`); it never asks whether that run *passed*. A
- * model that lands a mutation, runs `self_test` itself (or has it detected
- * from a bash pytest run), sees it fail, and then stops on a tool-call-free
- * turn satisfies the completion gate -- `checked === generation` -- and gets
- * no message at all. Diagnosis: satyrn-evals development record
+ * The red-stop gate (2026-09-23 plan, revised after review). The completion
+ * gate above only asks whether a self-test has run since the last landed
+ * mutation (`checked !== generation`); it never asks whether that run
+ * *passed*. A model that lands a mutation, runs `self_test` itself (or has
+ * it detected from a bash pytest run), sees it fail, and then stops on a
+ * tool-call-free turn satisfies the completion gate -- `checked ===
+ * generation` -- and gets no message at all. Diagnosis: satyrn-evals
+ * development record
  * `records/2026-09-23-spike-mellum-class-review-script-n6.json`, Engine cell
- * `selfhost-review-script-20260923-130353-154738`. The tree has not changed
- * since the red run (same generation) and carried tests are restored before
- * every self-test, so no re-run is needed -- the stored result stands.
+ * `selfhost-review-script-20260923-130353-154738`.
+ *
+ * **Revision 1.** The first version reused the stored result instead of
+ * re-running. Review found two ways that goes stale: a refused enforced run
+ * advances `checked` without updating the last-run state, so a later
+ * generation can report an earlier generation's failure; and a fix made
+ * outside the tracked mutation tools (a bash `sed`/`git checkout`) changes
+ * the tree without advancing `generation`, so "nothing has changed" can be
+ * false. This gate now re-runs `self_test` through the same exchange as the
+ * enforced branch and acts on that fresh result -- the cost is one full-suite
+ * run, only in the red-stop case.
  */
 export function redStopMessage(resultText: string): string {
-	return `Before you finish: the last self_test on the current tree did not pass, and nothing has changed since it ran. Fix the failure, or say which part of the request you cannot complete.\n${resultText}`;
+	return `Before you finish: your last self_test did not pass, so the Engine ran it again on the current tree, and it still does not pass.\n${resultText}`;
 }
 
 /**
@@ -387,16 +396,17 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 	// last completed self-test ran against (null: none has).
 	let generation = 0;
 	let checked: number | null = null;
-	// Red-stop gate: whether the last completed self-test (model-called,
-	// detected, or enforced) passed, and its compact result text. `null`
-	// means no run has completed yet. Set wherever `checked` is set, but
-	// only on `details.ok` -- a refused exchange leaves both unchanged,
-	// matching how `checked` itself is only advanced on success.
+	// Red-stop gate (Revision 1): whether the last completed self-test
+	// (model-called, detected, or enforced) passed, and the generation it
+	// ran at. Both are set together on a successful exchange (`details.ok`);
+	// a refused exchange -- model, detected, or enforced -- nulls
+	// `lastPassed` instead of leaving a stale value from an earlier
+	// generation in place (the bug Revision 1 fixes). `lastAt === null`
+	// means no run has completed yet.
 	let lastPassed: boolean | null = null;
-	let lastResult = "";
-	// The generation the red-stop gate (or the enforced branch's own
-	// failure follow-up, which counts the same way) last told the model
-	// about. `null`: never.
+	let lastAt: number | null = null;
+	// The generation the red-stop gate, or the enforced branch's own failure
+	// follow-up, last told the model about. `null`: never.
 	let redStopped: number | null = null;
 	// A second generation counting only source mutations (plan Ruling 2):
 	// the completion gate keeps using `generation`, which counts every
@@ -415,7 +425,11 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 		if (result.details.ok) {
 			checked = at;
 			lastPassed = result.details.result.exit_code === 0 && !result.details.result.timed_out;
-			lastResult = result.content[0].text;
+			lastAt = at;
+		} else {
+			// Revision 1: a refused exchange nulls `lastPassed` rather than
+			// leaving an earlier generation's value in place.
+			lastPassed = null;
 		}
 		return result;
 	};
@@ -510,7 +524,13 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 			const followUp = details.ok && !passed;
 			if (details.ok) {
 				lastPassed = passed;
-				lastResult = result.content[0].text;
+				lastAt = at;
+			} else {
+				// Revision 1: a refused enforced run nulls `lastPassed` too --
+				// this used to leave an earlier generation's value in place
+				// while `checked` (below) still advanced, which is exactly the
+				// staleness Revision 1 fixes.
+				lastPassed = null;
 			}
 			await note("self_test_enforced", {
 				generation: at,
@@ -531,26 +551,52 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 				);
 			}
 		}
-		// Red-stop gate (plan 2026-09-23), only when the enforced branch
-		// above did not already run this turn: the completion gate is
-		// already satisfied (`checked === generation`), but the last
-		// completed run at this generation did not pass. No re-run --
-		// the tree has not changed since that run and carried tests are
-		// restored before every self-test, so the stored result stands.
+		// Red-stop gate (plan 2026-09-23, Revision 1), only when the enforced
+		// branch above did not already run this turn: the last self-test to
+		// complete, at the current mutation generation, did not pass. Revision
+		// 1: re-run rather than reuse the stored result -- a refused enforced
+		// run could otherwise leave `checked` advanced past a stale
+		// `lastPassed`, and a fix made outside the tracked mutation tools (a
+		// bash `sed`/`git checkout`) changes the tree without advancing
+		// `generation`, so a stored result can go stale either way. `lastAt`,
+		// not `checked`, gates this: `checked` also advances on a refused
+		// enforced run, but `lastAt` only advances alongside `lastPassed`, on
+		// a completed run.
 		if (
 			!enforcedRan &&
 			isFinalTurn(event.message) &&
-			checked === generation &&
 			lastPassed === false &&
+			lastAt === generation &&
 			redStopped !== generation
 		) {
-			gated = true;
+			const at = generation;
+			const result = await runner.execute("self_test_red_stop", {});
+			checked = at;
+			const details = result.details;
+			const passed = details.ok && details.result.exit_code === 0 && !details.result.timed_out;
+			const followUp = details.ok && !passed;
+			if (details.ok) {
+				lastPassed = passed;
+				lastAt = at;
+			} else {
+				lastPassed = null;
+			}
+			// Told about this generation either way: a pass means there is
+			// nothing to tell, and a refusal is not a confirmed red tree.
 			redStopped = generation;
-			await note("self_test_red_stop", { generation });
-			pi.sendMessage(
-				{ customType: "self_test_red_stop", content: redStopMessage(lastResult), display: true, details: undefined },
-				{ deliverAs: "followUp" },
-			);
+			await note("self_test_red_stop", {
+				generation: at,
+				code: details.code,
+				exit_code: details.ok ? details.result.exit_code : null,
+				follow_up: followUp,
+			});
+			if (followUp) {
+				gated = true;
+				pi.sendMessage(
+					{ customType: "self_test_red_stop", content: redStopMessage(result.content[0].text), display: true, details: undefined },
+					{ deliverAs: "followUp" },
+				);
+			}
 		}
 		// Component B, runaway resume (design §3, Ruling 4): the gate goes
 		// first and suppresses the resume for this turn. Two Engine messages

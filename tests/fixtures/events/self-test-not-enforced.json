@@ -6,10 +6,10 @@
   "events": [
     {"type": "tool_result", "toolCallId": "e1", "toolName": "edit", "input": {"path": "app.py", "edits": [{"oldText": "a", "newText": "b"}]}, "isError": false, "content": [{"type": "text", "text": "1 b"}], "details": {"satyrn": true, "ok": true, "code": "OK", "result": {"path": "app.py", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "region": "1 b"}}, "expect": {"patched": false}},
     {"type": "tool_result", "toolCallId": "b1", "toolName": "bash", "input": {"command": "uv run python -m pytest -q 2>&1 | tail -5"}, "isError": false, "content": [{"type": "text", "text": "3 passed in 0.5s"}], "details": {}, "expect": {"contentEndsWith": "assert 404 == 200"}},
-    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "The fix is in app.py."}]}, "expect": {"followUp": "the last self_test on the current tree did not pass"}}
+    {"type": "turn_end", "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "The fix is in app.py."}]}, "expect": {"followUp": "so the Engine ran it again on the current tree, and it still does not pass"}}
   ],
   "expectedEntries": [
     {"kind": "self_test_detected", "data": {"generation": 1}},
-    {"kind": "self_test_red_stop", "data": {"generation": 1}}
+    {"kind": "self_test_red_stop", "data": {"generation": 1, "code": "OK", "exit_code": 1, "follow_up": true}}
   ]
 }

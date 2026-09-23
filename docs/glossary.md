@@ -111,12 +111,12 @@ self_test
   their first assertion line. Two gates around it live in
   ``packages/engine/runner.ts``: the completion gate runs it once, on a
   tool-call-free turn, when nothing has run it since the last landed
-  mutation; the red-stop gate sends one follow-up instead of re-running it
-  when that turn is otherwise silent and the last completed run at the
-  current mutation generation did not pass -- the tree has not changed, and
-  carried tests are restored before every run, so the stored result still
-  holds. Each fires at most once per mutation generation, and counts the
-  other's failure follow-up on the same generation as already told.
+  mutation; the red-stop gate, when that turn is otherwise silent and the
+  last completed run at the current mutation generation did not pass, runs
+  it again and sends one follow-up only if that fresh run is still red.
+  Each fires at most once per mutation generation, and an enforced-gate
+  failure follow-up on a generation also satisfies the red-stop gate for
+  that same generation.
 
 receipt
   The one versioned UTF-8 JSON result written by an accepted ``deliver``

@@ -152,5 +152,5 @@
 | tests/test_integration_steered_session.py | created in release-one |
 | tests/test_pi_extensions_manifest.py | created in release-one |
 | tests/fixtures/events/self-test-red-stop.json | created in release-one |
-| tests/fixtures/events/self-test-red-stop-not-after-green.json | created in release-one |
+| tests/fixtures/events/self-test-not-red-stopped.json | created in release-one |
 | tests/fixtures/events/self-test-red-stop-once.json | created in release-one |
