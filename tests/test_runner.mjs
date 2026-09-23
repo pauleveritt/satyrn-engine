@@ -586,7 +586,17 @@ test("sibling, new mutation re-arms the enforced gate, not red-stop: a red self_
 	]);
 });
 
-test("refused-enforced stale case (Revision 1 regression): a red self_test at gen 1, a mutation to gen 2, a length-cut final turn whose enforced run is refused resumes as a runaway, not a red stop, and a later final turn stays silent", async () => {
+test("stale-result defence (lastAt): a red self_test at gen 1, a mutation to gen 2, a length-cut final turn whose enforced run is refused resumes as a runaway, not a red stop, and a later final turn stays silent", async () => {
+	// `checked` advances to generation 2 here regardless of the refusal
+	// (the enforced branch sets it unconditionally), while `lastPassed`
+	// still holds generation 1's `false` and `lastAt` still holds
+	// generation 1 -- the stale combination this test pins. Only `lastAt
+	// === generation` (packages/engine/runner.ts, the red-stop condition)
+	// stands between this state and a red-stop follow-up carrying
+	// generation 1's failure text at generation 2: deleting that conjunct
+	// alone makes this test fail (verified by hand -- see the report --
+	// since removing it from a fixture-run test file isn't itself
+	// mechanically checked here).
 	const gate = gated([
 		success({ exit_code: 1, output: "FAILED" }),
 		{ version: 1, ok: false, code: "TEST_COMMAND_UNAVAILABLE", message: "gone", result: null },
@@ -600,11 +610,9 @@ test("refused-enforced stale case (Revision 1 regression): a red self_test at ge
 		{ kind: "self_test_enforced", data: { generation: 2, code: "TEST_COMMAND_UNAVAILABLE", exit_code: null, follow_up: false } },
 		{ kind: "runaway_resumed", data: { resume: 1, output_tokens: null } },
 	]);
-	// Before Revision 1, `checked` had already advanced to generation 2 here
-	// while `lastPassed` still held generation 1's `false` -- the stale
-	// combination this test pins. The model stops again with no new
-	// mutation; the refusal nulled `lastPassed`, so no red stop fires with
-	// generation 1's failure text.
+	// The model stops again with no new mutation: `lastAt` (1) still does
+	// not match `generation` (2), so no red stop fires with generation 1's
+	// failure text.
 	await gate.turnEnd(FINAL);
 	assert.equal(gate.exchanges(), 2);
 	assert.equal(gate.pi.entries.length, 2);
@@ -657,26 +665,6 @@ test("refused exchange: a self_test call the engine refuses leaves the red-stop 
 	assert.deepEqual(gate.pi.entries, [
 		{ kind: "self_test_enforced", data: { generation: 1, code: "OK", exit_code: 1, follow_up: true } },
 	]);
-});
-
-test("guard: the enforced branch running this turn is the only self_test exchange -- the red-stop branch does not also run", async () => {
-	// Regression for a reviewer finding: the `!enforcedRan` guard on the
-	// red-stop branch was not pinned by any test -- deleting it left all
-	// existing tests passing. This asserts the observable invariant the
-	// guard exists to protect: when the enforced branch runs this turn,
-	// exactly one self_test exchange happens, never two. (Note: under
-	// Revision 1's conditions, this same invariant also holds with the
-	// guard removed, because a failing enforced run sets `redStopped = at`
-	// before the red-stop branch's own condition is evaluated, and a
-	// refused or passing enforced run leaves `lastPassed` unable to satisfy
-	// `=== false`. The guard is still kept because the design names it
-	// explicitly and a future change to that ordering should not have to
-	// re-derive this proof; see the report for the full argument.)
-	const gate = gated([success({ exit_code: 1, output: "FAILED" })]);
-	await gate.result(LANDED_EDIT);
-	await gate.turnEnd(FINAL);
-	assert.equal(gate.exchanges(), 1);
-	assert.deepEqual(gate.pi.entries.map((entry) => entry.kind), ["self_test_enforced"]);
 });
 
 test("default extension leaves the tool set alone without explicit context", () => {

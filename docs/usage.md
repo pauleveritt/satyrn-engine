@@ -316,17 +316,12 @@ that gap: on such a turn, when the last self-test completed at the current
 mutation generation did not pass, the Engine runs `self_test` again and,
 only if that fresh run is still red, sends one follow-up
 (`self_test_red_stop`) with its result (a pass, or a run the engine
-refuses, sends nothing). Revision 1 (after review) replaced an earlier
-version that reused the stored result instead of re-running: a refused
-enforced run could leave that stored result attached to a later generation
-than it actually ran at, and a fix made outside the tracked mutation tools
-(a bash `sed`/`git checkout`) changes the tree without advancing the
-generation the gate keys on -- reusing the result was wrong either way. It
-fires at most once per generation; an enforced-gate failure follow-up on
-the same generation also counts as having told the model, so it does not
-run a second check right after. Diagnosed from satyrn-evals development
-record `records/2026-09-23-spike-mellum-class-review-script-n6.json`,
-Engine cell `selfhost-review-script-20260923-130353-154738`. When a self-test that
+refuses, sends nothing). It fires at most once per generation; an
+enforced-gate failure follow-up on the same generation also counts as
+having told the model, so it does not run a second check right after.
+Diagnosed from satyrn-evals development record
+`records/2026-09-23-spike-mellum-class-review-script-n6.json`, Engine cell
+`selfhost-review-script-20260923-130353-154738`. When a self-test that
 completed inside a turn -- the model's own `self_test` call, or the Engine's
 run after a detected bash test run, never the enforced gate -- passes, and a
 source file has changed since the last pass, the Engine sends one message

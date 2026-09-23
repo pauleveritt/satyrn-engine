@@ -396,13 +396,17 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 	// last completed self-test ran against (null: none has).
 	let generation = 0;
 	let checked: number | null = null;
-	// Red-stop gate (Revision 1): whether the last completed self-test
-	// (model-called, detected, or enforced) passed, and the generation it
-	// ran at. Both are set together on a successful exchange (`details.ok`);
-	// a refused exchange -- model, detected, or enforced -- nulls
-	// `lastPassed` instead of leaving a stale value from an earlier
-	// generation in place (the bug Revision 1 fixes). `lastAt === null`
-	// means no run has completed yet.
+	// Red-stop gate: whether the last completed self-test (model-called,
+	// detected, or enforced) passed, and the generation it ran at. `lastAt`
+	// only ever advances in the same assignment as `lastPassed`, on a
+	// successful exchange (`details.ok`), so `lastAt === generation`
+	// guarantees `lastPassed` reflects a run that completed at the current
+	// generation, not an older one -- `checked` cannot substitute for this,
+	// because the enforced and red-stop exchanges advance `checked` even
+	// when refused. That guarantee is what the red-stop condition below
+	// actually relies on, regardless of what a given refused exchange does
+	// to `lastPassed` itself. `lastAt === null` means no run has completed
+	// yet.
 	let lastPassed: boolean | null = null;
 	let lastAt: number | null = null;
 	// The generation the red-stop gate, or the enforced branch's own failure
@@ -522,15 +526,14 @@ export function registerRunner(pi: ExtensionAPI, context: MutationContext, excha
 			const details = result.details;
 			const passed = details.ok && details.result.exit_code === 0 && !details.result.timed_out;
 			const followUp = details.ok && !passed;
+			// A refused exchange here leaves `lastPassed`/`lastAt` alone --
+			// see the field comments above `lastPassed`: `lastAt` staying
+			// behind `generation` is what makes the red-stop condition below
+			// safe on a stale `lastPassed`, so nulling it here on refusal
+			// would be a second, redundant guard for the same case.
 			if (details.ok) {
 				lastPassed = passed;
 				lastAt = at;
-			} else {
-				// Revision 1: a refused enforced run nulls `lastPassed` too --
-				// this used to leave an earlier generation's value in place
-				// while `checked` (below) still advanced, which is exactly the
-				// staleness Revision 1 fixes.
-				lastPassed = null;
 			}
 			await note("self_test_enforced", {
 				generation: at,
