@@ -33,6 +33,11 @@ PATCH_ENV = "SATYRN_ATTEMPT_PATCH"
 TRANSCRIPT_ENV = "SATYRN_ATTEMPT_TRANSCRIPT"
 MUTATION_CONTEXT_ENV = "SATYRN_MUTATION_CONTEXT"
 ENGINE_REPO_ENV = "SATYRN_ENGINE_REPO"
+#: Extra Pi extensions the caller wants loaded beside the always-loaded guards,
+#: os.pathsep-separated (the eval harness uses this to add its shared
+#: confinement extension to both arms). Appended after the guards; an empty or
+#: absent value changes nothing.
+EXTRA_EXTENSIONS_ENV = "SATYRN_EXTRA_EXTENSIONS"
 
 _SYMBOL = re.compile(rb"^[ \t]*(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)", re.MULTILINE)
 
@@ -770,6 +775,7 @@ def build_pi_command(
     prompt: str,
     *,
     test_command: tuple[str, ...] = (),
+    extra_extensions: Sequence[str] = (),
 ) -> tuple[str, ...]:
     """Return the exact hermetic Pi child argv.
 
@@ -777,6 +783,12 @@ def build_pi_command(
     `--extension .../runner.ts` (the `self_test` tool, Ruling 1) is added
     only when the contract declares `test_command`, and `self_test` is then
     the only addition to `--tools` -- native `bash` is kept in both arms.
+
+    `extra_extensions` are paths the caller adds through
+    `$SATYRN_EXTRA_EXTENSIONS`; each is appended after the guards, so a
+    condition shared across arms (the eval harness's confinement extension)
+    loads on this arm too without the engine knowing what it is. Empty means
+    the argv is byte-identical to before the seam existed.
     """
     package = engine_repo / "packages" / "engine"
     extensions: tuple[str, ...] = (
@@ -791,6 +803,8 @@ def build_pi_command(
     )
     if test_command:
         extensions += ("--extension", os.fspath(package / "runner.ts"))
+    for path in extra_extensions:
+        extensions += ("--extension", os.fspath(path))
     return (
         "pi",
         "--print",
@@ -1196,11 +1210,17 @@ def _run(
     child_environment[ENGINE_REPO_ENV] = os.fspath(context.engine_repo)
     child_environment[MUTATION_CONTEXT_ENV] = mutation_context
     prompt = build_prompt(context.contract, tuple(sorted(context.revisions)), context.tracked_writable)
+    extra_extensions = tuple(
+        part
+        for part in child_environment.get(EXTRA_EXTENSIONS_ENV, "").split(os.pathsep)
+        if part
+    )
     command = build_pi_command(
         context.engine_repo,
         context.model,
         prompt,
         test_command=context.contract.test_command,
+        extra_extensions=extra_extensions,
     )
     # Written before pi starts: the assembled system prompt is a function of
     # this argv, pi's version and the cwd, and pi retains none of it.

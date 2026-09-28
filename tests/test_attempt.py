@@ -345,6 +345,78 @@ def test_pi_command_without_a_test_command_has_no_runner_and_no_self_test(tmp_pa
     assert command[command.index("--tools") + 1] == "read,bash,edit,write"
 
 
+def test_pi_command_appends_the_callers_extra_extensions_after_the_guards(tmp_path: Path) -> None:
+    command = build_pi_command(
+        tmp_path, "m", "p", extra_extensions=("/evals/confinement.ts", "/evals/second.ts")
+    )
+    extensions = [command[i + 1] for i, token in enumerate(command) if token == "--extension"]
+    assert extensions[-2:] == ["/evals/confinement.ts", "/evals/second.ts"]
+    assert "--no-extensions" in command
+
+
+def test_pi_command_without_extra_extensions_adds_none(tmp_path: Path) -> None:
+    """The sibling: no seam value leaves the four guards, nothing more."""
+    assert build_pi_command(tmp_path, "m", "p").count("--extension") == 4
+
+
+def test_attempt_loads_the_extra_extensions_named_in_the_environment(tmp_path: Path) -> None:
+    """The harness seam: `$SATYRN_EXTRA_EXTENSIONS`, os.pathsep-separated, reaches
+    the Pi argv after the always-loaded guards and leaves the prompt alone."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+    contract = repo / "contract.yaml"
+    contract.write_text(
+        "id: seam\ntask: keep one\nwritable_paths:\n  - app.py\n", encoding="utf-8"
+    )
+    pi = FakePi()
+    result = attempt_module.attempt(
+        repo,
+        contract,
+        "provider/model",
+        environment={
+            attempt_module.ENGINE_REPO_ENV: str(Path(__file__).parents[1]),
+            attempt_module.EXTRA_EXTENSIONS_ENV: "/evals/confinement.ts:/evals/second.ts",
+        },
+        git_runner=FakeGit(repo),
+        pi_runner=pi,
+        stdout=io.BytesIO(),
+        stderr=io.BytesIO(),
+    )
+    assert result.code is AttemptCode.OK
+    assert pi.command is not None
+    extensions = [pi.command[i + 1] for i, token in enumerate(pi.command) if token == "--extension"]
+    assert extensions[-2:] == ["/evals/confinement.ts", "/evals/second.ts"]
+    assert "confinement" not in pi.command[-1]
+
+
+def test_attempt_without_the_extra_extensions_variable_loads_only_the_guards(tmp_path: Path) -> None:
+    """The sibling: an absent variable is the four guards, nothing else."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+    contract = repo / "contract.yaml"
+    contract.write_text(
+        "id: seam\ntask: keep one\nwritable_paths:\n  - app.py\n", encoding="utf-8"
+    )
+    pi = FakePi()
+    result = attempt_module.attempt(
+        repo,
+        contract,
+        "provider/model",
+        environment={attempt_module.ENGINE_REPO_ENV: str(Path(__file__).parents[1])},
+        git_runner=FakeGit(repo),
+        pi_runner=pi,
+        stdout=io.BytesIO(),
+        stderr=io.BytesIO(),
+    )
+    assert result.code is AttemptCode.OK
+    assert pi.command is not None
+    assert pi.command.count("--extension") == 4
+
+
 def test_attempt_result_has_exhaustive_stable_exit_mapping() -> None:
     expected = {
         AttemptCode.OK: ExitCode.OK,
