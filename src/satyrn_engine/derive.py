@@ -38,6 +38,7 @@ DEFAULT_TOKEN_BUDGET = 32000
 DEFAULT_TURN_BUDGET = 48
 DEFAULT_SELF_TEST = ("uv", "run", "python", "-m", "pytest", "-q")
 _TOKEN = re.compile(r"[A-Za-z0-9_./-]+")
+_TOP_LEVEL_MODULE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\.py\Z")
 _PRESERVE_PATTERNS = ("tests/test_*.py", "tests/*/test_*.py", "tests/*_test.py", "tests/*/*_test.py")
 _TEST_SUPPORT_BASENAMES = ("conftest.py", "__init__.py", "pytest.ini", "setup.cfg", "tox.ini")
 
@@ -306,6 +307,8 @@ def _writable_paths(request: str, tracked: tuple[str, ...], preserve: tuple[str,
             candidates.append(f"{token}/*")
         elif "/" in token and token.rsplit("/", 1)[0] in directories and token not in preserve:
             candidates.append(token)                       # a file the task will create
+        elif _TOP_LEVEL_MODULE.match(token) and not _is_test_file(token):
+            candidates.append(token)                       # a top-level module the task will create
         if candidates and token.endswith(".py") and not _is_test_file(token):
             test = _test_for(token, tracked)
             if test not in preserve:

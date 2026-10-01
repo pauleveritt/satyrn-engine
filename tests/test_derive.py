@@ -186,6 +186,19 @@ def test_a_flat_layout_derives_the_sibling_test_and_preserves_the_existing_one()
     assert contract.preserve == ("tests/test_value.py",)
 
 
+def test_a_new_top_level_module_is_writable_with_its_new_test() -> None:
+    tracked = ("pyproject.toml", "uv.lock", "templates/.gitkeep")
+    contract = derive_contract("Create app.py and templates/home.html", RepoFacts(tracked, PYPROJECT, HEAD))
+    assert contract.writable_paths == ("app.py", "tests/test_app.py", "templates/home.html")
+
+
+def test_a_dotted_word_that_is_not_a_module_name_stays_out_of_writable_paths() -> None:
+    tracked = ("pyproject.toml", "app.py")
+    request = "Import TestClient from starlette.testclient into app.py, e.g. as in 1.0.py or my-app.py"
+    contract = derive_contract(request, RepoFacts(tracked, PYPROJECT, HEAD))
+    assert contract.writable_paths == ("app.py", "tests/test_app.py")
+
+
 def test_a_repo_without_a_pyproject_is_refused() -> None:
     with pytest.raises(DeriveError, match="pyproject"):
         derive_contract("Fix src/app/gate.py", RepoFacts(TRACKED, "", HEAD))
