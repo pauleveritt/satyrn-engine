@@ -4,8 +4,8 @@ Read `BRIEF.md`, then `satyrn-evals` `ROADMAP.md`, the release-two R0
 constraints (`docs/superpowers/specs/2026-09-15-release-two-r0-constraints.md`),
 and the current stage spec; then the plan for the current phase. The
 release-one design (`docs/superpowers/specs/2026-09-13-release-one-design.md`)
-is evidence, not guidance, same as the tag `pre-release-one-2026-09-13` on
-`main`.
+is evidence, not guidance, same as the tag `pre-release-one-2026-09-13`,
+which holds the old `main` lineage that `main` no longer contains.
 
 Default tests use no model, network, or subprocess (`tests/conftest.py`
 enforces it); process behaviour is the `integration` tier. A refusal test has

@@ -154,4 +154,5 @@ not justify a session-scoped process.
 The release-one design lives in `satyrn-evals` at
 `docs/superpowers/specs/2026-09-13-release-one-design.md`; this tree
 implements its Phase 1 (`/implement` v1). Everything before this tree is
-tagged `pre-release-one-2026-09-13` on `main`.
+tagged `pre-release-one-2026-09-13`; `main` was replaced by this tree on
+2026-10-02 and no longer contains that history.
