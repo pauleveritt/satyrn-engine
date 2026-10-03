@@ -6,6 +6,8 @@ lines. Every refusal has a sibling success (binding rule 4).
 """
 
 import json
+import re
+from pathlib import Path
 
 import pytest
 
@@ -112,14 +114,33 @@ def test_counter_sums_assistant_usage_tool_calls_and_guard_firings_only() -> Non
         '{"type":"tool_execution_start","toolName":"bash"}', _assistant(20, 70),
         '{"type":"message_update","usage":{"output":5000}}',
         _entry("loop_broken"), _entry("command_bounded"), _entry("command_bounded"), _entry("unknown_kind"),
-        _entry("self_test_redirected"), _entry("self_test_enforced"),
+        _entry("self_test_red_stop"), _entry("self_test_redirected"), _entry("self_test_enforced"),
     ):
         counter.feed(line)
     assert (counter.turns, counter.tokens_in, counter.tokens_out, counter.tool_calls) == (1, 120, 120, 1)
     assert counter.guard_firings == {"loop_broken": 1, "scope_refused": 0, "symbol_preserved": 0,
-                                     "command_bounded": 2, "command_timed_out": 0, "self_test_redirected": 1,
+                                     "command_bounded": 2, "command_timed_out": 0, "self_test_red_stop": 1,
                                      "self_test_detected": 0, "self_test_enforced": 1, "finish_nudged": 0,
                                      "runaway_resumed": 0}
+
+
+def test_guard_kinds_carries_self_test_red_stop() -> None:
+    assert "self_test_red_stop" in GUARD_KINDS
+
+
+def test_guard_kinds_no_longer_carries_the_retired_redirect() -> None:
+    assert "self_test_redirected" not in GUARD_KINDS
+
+
+def test_every_emitted_guard_kind_is_counted_and_every_counted_kind_is_emitted() -> None:
+    sources = sorted((Path(__file__).resolve().parent.parent / "packages" / "engine").glob("*.ts"))
+    assert sources
+    text = "\n".join(source.read_text() for source in sources)
+    emitted = set(re.findall(r'note\("(\w+)"', text)) | set(re.findall(r'appendEntry\("(\w+)"', text))
+    # engine.ts emits loop_broken through a decision object, not a call form.
+    assert re.search(r'kind: "loop_broken"', text)
+    emitted.add("loop_broken")
+    assert emitted == set(GUARD_KINDS)
 
 
 def test_guard_kinds_carries_self_test_detected() -> None:
