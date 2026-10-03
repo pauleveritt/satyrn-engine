@@ -38,6 +38,10 @@ ENGINE_REPO_ENV = "SATYRN_ENGINE_REPO"
 #: confinement extension to both arms). Appended after the guards; an empty or
 #: absent value changes nothing.
 EXTRA_EXTENSIONS_ENV = "SATYRN_EXTRA_EXTENSIONS"
+#: The root the caller's confinement extension confines Pi to. The Pi it
+#: confines runs here, so the root this process hands Pi is `context.repo`;
+#: present only when the caller set it (it is moved, never added).
+CONFINEMENT_ROOT_ENV = "SATYRN_CONFINEMENT_ROOT"
 
 _SYMBOL = re.compile(rb"^[ \t]*(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)", re.MULTILINE)
 
@@ -1209,6 +1213,8 @@ def _run(
     child_environment = dict(environment)
     child_environment[ENGINE_REPO_ENV] = os.fspath(context.engine_repo)
     child_environment[MUTATION_CONTEXT_ENV] = mutation_context
+    if CONFINEMENT_ROOT_ENV in child_environment:
+        child_environment[CONFINEMENT_ROOT_ENV] = os.fspath(context.repo)
     prompt = build_prompt(context.contract, tuple(sorted(context.revisions)), context.tracked_writable)
     extra_extensions = tuple(
         part

@@ -417,6 +417,64 @@ def test_attempt_without_the_extra_extensions_variable_loads_only_the_guards(tmp
     assert pi.command.count("--extension") == 4
 
 
+def _run_with_environment(tmp_path: Path, extra: dict[str, str]) -> tuple[Path, FakePi]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+    contract = repo / "contract.yaml"
+    contract.write_text(
+        "id: seam\ntask: keep one\nwritable_paths:\n  - app.py\n", encoding="utf-8"
+    )
+    pi = FakePi()
+    result = attempt_module.attempt(
+        repo,
+        contract,
+        "provider/model",
+        environment={attempt_module.ENGINE_REPO_ENV: str(Path(__file__).parents[1]), **extra},
+        git_runner=FakeGit(repo),
+        pi_runner=pi,
+        stdout=io.BytesIO(),
+        stderr=io.BytesIO(),
+    )
+    assert result.code is AttemptCode.OK
+    assert pi.environment is not None
+    return repo, pi
+
+
+def test_attempt_moves_the_confinement_root_to_its_own_worktree(tmp_path: Path) -> None:
+    """The caller's root names a worktree this process does not run in; the Pi it
+    confines runs in `context.repo`, so the root moves there. The plural roots
+    pass through untouched."""
+    repo, pi = _run_with_environment(
+        tmp_path,
+        {
+            attempt_module.CONFINEMENT_ROOT_ENV: "/evals/worktree",
+            "SATYRN_CONFINEMENT_ROOTS": "/evals/tasks:/evals/tasks/t",
+        },
+    )
+    assert pi.environment is not None
+    assert pi.environment[attempt_module.CONFINEMENT_ROOT_ENV] == os.fspath(repo)
+    assert pi.environment[attempt_module.CONFINEMENT_ROOT_ENV] != "/evals/worktree"
+    assert pi.environment["SATYRN_CONFINEMENT_ROOTS"] == "/evals/tasks:/evals/tasks/t"
+
+
+def test_attempt_without_a_confinement_root_adds_none(tmp_path: Path) -> None:
+    """The sibling: the root moves and is never added."""
+    _, pi = _run_with_environment(tmp_path, {})
+    assert pi.environment is not None
+    assert attempt_module.CONFINEMENT_ROOT_ENV not in pi.environment
+
+
+def test_the_moved_root_is_the_mutation_contexts_repo(tmp_path: Path) -> None:
+    _, pi = _run_with_environment(
+        tmp_path, {attempt_module.CONFINEMENT_ROOT_ENV: "/evals/worktree"}
+    )
+    assert pi.environment is not None
+    context = json.loads(pi.environment[attempt_module.MUTATION_CONTEXT_ENV])
+    assert context["repo"] == pi.environment[attempt_module.CONFINEMENT_ROOT_ENV]
+
+
 def test_attempt_result_has_exhaustive_stable_exit_mapping() -> None:
     expected = {
         AttemptCode.OK: ExitCode.OK,
