@@ -615,6 +615,73 @@ test("the bounded edit registers a prompt snippet naming its restriction", () =>
 	);
 });
 
+// --- 2026-10-03: Pi 0.85.1's descriptions and guidelines, adapted where the
+// Engine applies edits in order (plan D5). Text and metadata only.
+
+const EDIT_GUIDELINES = [
+	"Use edit for precise changes (edits[].oldText must match exactly)",
+	"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
+	"edits[] entries are applied in order: each oldText is matched after the earlier entries are applied. Merge nearby changes into one edit.",
+	"Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+];
+
+function registeredEdit() {
+	const registered = [];
+	registerMutator(
+		{ registerTool: (tool) => registered.push(tool), on: () => undefined },
+		context(),
+		async () => success(),
+	);
+	return registered.find((tool) => tool.name === "edit");
+}
+
+function propertyDescriptions(schema) {
+	const found = [];
+	for (const [name, property] of Object.entries(schema.properties)) {
+		found.push([name, property.description]);
+		if (property.items) found.push(...propertyDescriptions(property.items).map(([n, d]) => [`${name}.items.${n}`, d]));
+	}
+	return found;
+}
+
+test("every edit parameter, at both levels, carries a description", () => {
+	const described = propertyDescriptions(EditParameters);
+	assert.deepEqual(
+		described.map(([name]) => name).sort(),
+		["edits", "edits.items.newText", "edits.items.oldText", "edits.items.path", "path"],
+	);
+	for (const [name, description] of described) {
+		assert.equal(typeof description, "string", `${name} has a description`);
+		assert.ok(description.length > 0, `${name} description is not empty`);
+	}
+});
+
+test("the registered edit carries Pi's four guidelines, the third adapted", () => {
+	assert.deepEqual(registeredEdit().promptGuidelines, EDIT_GUIDELINES);
+});
+
+test("no registered edit text claims matching against the original file", () => {
+	const edit = registeredEdit();
+	const strings = [
+		edit.description,
+		edit.promptSnippet,
+		...edit.promptGuidelines,
+		...propertyDescriptions(EditParameters).map(([, description]) => description),
+	];
+	for (const text of strings) {
+		assert.equal(typeof text, "string");
+		assert.doesNotMatch(text, /original file|not incrementally/i);
+	}
+});
+
+test("the edit schema keeps its structure while gaining descriptions", () => {
+	assert.deepEqual(EditParameters.required, ["path", "edits"]);
+	assert.equal(EditParameters.additionalProperties, false);
+	assert.equal(EditParameters.properties.edits.items.additionalProperties, false);
+	assert.equal(EditParameters.properties.edits.maxItems, 16);
+	assert.deepEqual(EditParameters.properties.edits.items.required, ["oldText", "newText"]);
+});
+
 test("the edit schema takes up to sixteen replacements", () => {
 	const schema = EditParameters.properties.edits;
 	assert.equal(schema.maxItems, 16);

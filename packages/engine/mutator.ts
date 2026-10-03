@@ -129,9 +129,11 @@ export const EditParameters = {
 	additionalProperties: false,
 	required: ["path", "edits"],
 	properties: {
-		path: { type: "string", minLength: 1 },
+		path: { type: "string", minLength: 1, description: "Path to the file to edit (relative or absolute)" },
 		edits: {
 			type: "array",
+			description:
+				"One to sixteen targeted replacements, applied in order: each oldText is matched against the file as the earlier replacements left it. If two changes touch the same block or nearby lines, merge them into one edit instead.",
 			minItems: 1,
 			maxItems: MAX_EDITS,
 			items: {
@@ -139,8 +141,13 @@ export const EditParameters = {
 				additionalProperties: false,
 				required: ["oldText", "newText"],
 				properties: {
-					oldText: { type: "string", minLength: 1 },
-					newText: { type: "string" },
+					oldText: {
+						type: "string",
+						minLength: 1,
+						description:
+							"Exact text for one targeted replacement. It must appear exactly once in the file as the earlier replacements in this call left it.",
+					},
+					newText: { type: "string", description: "Replacement text for this targeted edit." },
 					// Tolerated, not required, and never authoritative. Models
 					// routinely repeat the file path inside the item as well as
 					// at the top level, where this schema requires it. Refusing
@@ -151,7 +158,11 @@ export const EditParameters = {
 					// item stays otherwise closed, and `parseEditInput` refuses
 					// a value that contradicts the top-level path rather than
 					// guessing which file was meant.
-					path: { type: "string", minLength: 1 },
+					path: {
+						type: "string",
+						minLength: 1,
+						description: "Optional. If given, it must equal the top-level path.",
+					},
 				},
 			},
 		},
@@ -401,7 +412,17 @@ export function registerMutator(pi: ExtensionAPI, context: MutationContext, exch
 		// schema it had to satisfy was this one.
 		promptSnippet:
 			"replaces up to sixteen exact unique text anchors, in order, in one contract-declared file; not a general file writer",
-		description: "Replace one or more exact unique text anchors, applied in order, in one contract-declared file.",
+		description:
+			"Edit one contract-declared file using exact text replacement. Replacements apply in order and all-or-nothing; each edits[].oldText must match exactly one region of the file as the earlier replacements left it. Do not include large unchanged regions just to connect distant changes.",
+		// Pi 0.85.1 edit.js guidelines, verbatim except the third, which
+		// Pi words as matching "against the original file"; this tool applies
+		// the entries in order against the evolving buffer (plan D5).
+		promptGuidelines: [
+			"Use edit for precise changes (edits[].oldText must match exactly)",
+			"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
+			"edits[] entries are applied in order: each oldText is matched after the earlier entries are applied. Merge nearby changes into one edit.",
+			"Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+		],
 		parameters: EditParameters,
 		execute: mutator.execute,
 	});
