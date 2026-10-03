@@ -1,0 +1,39 @@
+{
+  "name": "multi-file-nested",
+  "source": "recorded cell 2026-10-02-eb0-agentclinic-repair-depth-3/engine/agentclinic-repair-depth-3-20261003-015326-428491 (rejected edit call, 'Validation failed'): keys and paths verbatim, oldText/newText cut. Three files in one call: stays refused.",
+  "input": {
+    "edits": [
+      {
+        "path": "templates/base.html",
+        "edits": [
+          {
+            "oldText": "<html>\n<head>",
+            "newText": "<html lang=\"en\">\n<head>"
+          }
+        ]
+      },
+      {
+        "path": "models.py",
+        "edits": [
+          {
+            "oldText": "from datetime import datetime",
+            "newText": "from datetime import datetime, timezone"
+          }
+        ]
+      },
+      {
+        "path": "app.py",
+        "edits": [
+          {
+            "oldText": "return RedirectResponse(\"/complaints\")",
+            "newText": "return RedirectResponse(\"/complaints\", status_code=303)"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "prepared": null,
+    "unchanged": true
+  }
+}

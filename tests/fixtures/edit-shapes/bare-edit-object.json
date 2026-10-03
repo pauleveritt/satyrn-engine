@@ -1,0 +1,23 @@
+{
+  "name": "bare-edit-object",
+  "source": "synthetic: no recorded instance (0 in EB0, 0 in R2). Pi wraps a bare edit object.",
+  "input": {
+    "path": "src/app.py",
+    "edits": {
+      "oldText": "return 1",
+      "newText": "return 2"
+    }
+  },
+  "expected": {
+    "prepared": {
+      "path": "src/app.py",
+      "edits": [
+        {
+          "oldText": "return 1",
+          "newText": "return 2"
+        }
+      ]
+    },
+    "unchanged": false
+  }
+}

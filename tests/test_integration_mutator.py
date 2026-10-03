@@ -205,3 +205,100 @@ def test_exercise_harness_has_distinct_usage_failure() -> None:
     assert completed.returncode == 2
     assert completed.stdout == ""
     assert "usage: node --experimental-strip-types tools/exercise_mutator.mjs" in completed.stderr
+
+
+PI_VERSION = "0.85.1"
+PI_PACKAGE = "@earendil-works/pi-coding-agent"
+EDIT_SHAPES = ROOT / "tests" / "fixtures" / "edit-shapes"
+
+# Prepare each fixture exactly as Pi's agent loop does (the registered tool's
+# own prepareArguments), then hand the result to Pi's own validator.
+VALIDATE_SHAPES = """
+import { readFileSync, readdirSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [validationPath, mutatorPath, shapesDir] = process.argv.slice(1);
+const { validateToolArguments } = await import(pathToFileURL(validationPath).href);
+const { registerMutator } = await import(pathToFileURL(mutatorPath).href);
+const tools = [];
+registerMutator({ registerTool: (t) => tools.push(t), on: () => undefined },
+  { version: 1, repo: "/workspace", contract: "/workspace/c.yaml", revisions: {},
+    writable_paths: ["src/*"], test_command: ["true"], symbols: {}, carried: [],
+    base_commit: "b".repeat(40) }, async () => { throw new Error("no exchange"); });
+const tool = tools.find((t) => t.name === "edit");
+const out = {};
+for (const name of readdirSync(shapesDir).filter((n) => n.endsWith(".json")).sort()) {
+  const shape = JSON.parse(readFileSync(`${shapesDir}/${name}`, "utf8"));
+  const prepared = tool.prepareArguments(structuredClone(shape.input));
+  try {
+    validateToolArguments(tool, { type: "toolCall", id: "c", name: "edit", arguments: prepared });
+    out[shape.name] = { valid: true };
+  } catch (error) {
+    out[shape.name] = { valid: false, message: String(error.message).slice(0, 200) };
+  }
+}
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+def _pi_ai_validation() -> Path:
+    """Pi 0.85.1's validator, from the existing install; skip, never install."""
+    candidates: list[str] = []
+    if on_path := shutil.which("pi"):
+        candidates.append(on_path)
+    if volta := shutil.which("volta"):
+        found = subprocess.run(
+            [volta, "which", "pi"], capture_output=True, text=True, check=False
+        )
+        if found.returncode == 0 and found.stdout.strip():
+            candidates.append(found.stdout.strip())
+    for candidate in candidates:
+        for parent in Path(candidate).resolve().parents:
+            manifest = parent / "package.json"
+            if not manifest.is_file():
+                continue
+            package = json.loads(manifest.read_text(encoding="utf-8"))
+            if package.get("name") != PI_PACKAGE:
+                continue
+            if package.get("version") != PI_VERSION:
+                pytest.skip(f"Pi {package.get('version')} is installed, not {PI_VERSION}")
+            validation = (
+                parent / "node_modules" / "@earendil-works" / "pi-ai" / "dist" / "utils" / "validation.js"
+            )
+            if not validation.is_file():
+                pytest.skip(f"Pi {PI_VERSION} has no {validation.relative_to(parent)}")
+            return validation
+    pytest.skip(f"Pi {PI_VERSION} ({PI_PACKAGE}) is not installed where `pi` resolves")
+
+
+def test_pis_own_validator_accepts_repaired_shapes_and_refuses_the_rest() -> None:
+    validation = _pi_ai_validation()
+    completed = subprocess.run(
+        [
+            _node(),
+            "--experimental-strip-types",
+            "--input-type=module",
+            "-e",
+            VALIDATE_SHAPES,
+            str(validation),
+            str(ROOT / "packages" / "engine" / "mutator.ts"),
+            str(EDIT_SHAPES),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    verdicts = json.loads(completed.stdout)
+    shapes = {
+        path.stem: json.loads(path.read_text(encoding="utf-8"))
+        for path in EDIT_SHAPES.glob("*.json")
+    }
+    assert set(verdicts) == {shape["name"] for shape in shapes.values()}
+    for shape in shapes.values():
+        verdict = verdicts[shape["name"]]
+        repaired = shape["expected"]["prepared"] is not None
+        if repaired or shape["name"] == "canonical":
+            assert verdict["valid"], (shape["name"], verdict)
+        else:
+            assert not verdict["valid"], (shape["name"], verdict)

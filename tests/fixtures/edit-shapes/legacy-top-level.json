@@ -1,0 +1,31 @@
+{
+  "name": "legacy-top-level",
+  "source": "synthetic: no recorded instance (0 in EB0, 0 in R2). Pi folds top-level oldText/newText into edits, appended last, and drops the two keys.",
+  "input": {
+    "path": "src/app.py",
+    "edits": [
+      {
+        "oldText": "x = 1",
+        "newText": "x = 2"
+      }
+    ],
+    "oldText": "return 1",
+    "newText": "return 2"
+  },
+  "expected": {
+    "prepared": {
+      "path": "src/app.py",
+      "edits": [
+        {
+          "oldText": "x = 1",
+          "newText": "x = 2"
+        },
+        {
+          "oldText": "return 1",
+          "newText": "return 2"
+        }
+      ]
+    },
+    "unchanged": false
+  }
+}

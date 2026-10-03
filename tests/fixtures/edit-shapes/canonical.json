@@ -1,0 +1,17 @@
+{
+  "name": "canonical",
+  "source": "synthetic: the canonical shape the schema accepts; Pi's prepareToolCallArguments keeps identity when nothing is repaired.",
+  "input": {
+    "path": "src/app.py",
+    "edits": [
+      {
+        "oldText": "return 1",
+        "newText": "return 2"
+      }
+    ]
+  },
+  "expected": {
+    "prepared": null,
+    "unchanged": true
+  }
+}

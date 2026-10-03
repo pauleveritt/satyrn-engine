@@ -220,6 +220,51 @@ export function parseMutationContext(text: string): MutationContext {
 	};
 }
 
+function isSingleEditInput(value: unknown): boolean {
+	return isRecord(value) && typeof value.oldText === "string" && typeof value.newText === "string";
+}
+
+/**
+ * Pi 0.85.1's `prepareEditArguments` (dist/core/tools/edit.js), ported: the
+ * three repairs Pi makes before validation and nothing else (plan D3). `edits`
+ * as a JSON string is parsed, but only when it parses to an array or to one
+ * edit object; a bare edit object in `edits` is wrapped; legacy top-level
+ * `oldText`/`newText` is appended to `edits` and dropped from the top level.
+ *
+ * One deliberate difference from Pi: Pi assigns `args.edits` on the object the
+ * model sent; this returns a new object when it repairs and the same object
+ * when it does not, so the session history keeps what the model sent. It never
+ * reads, moves or invents `path`: a per-item path, a nested `{path, edits}`
+ * item and a multi-file call are returned unchanged and stay refused.
+ */
+export function prepareEditArguments(input: unknown): unknown {
+	if (!isRecord(input)) {
+		return input;
+	}
+	let args: Record<string, unknown> = input;
+	if (typeof args.edits === "string") {
+		try {
+			const parsed: unknown = JSON.parse(args.edits);
+			if (Array.isArray(parsed)) {
+				args = { ...args, edits: parsed };
+			} else if (isSingleEditInput(parsed)) {
+				args = { ...args, edits: [parsed] };
+			}
+		} catch {
+			// not JSON: leave it for the validator to refuse
+		}
+	} else if (isSingleEditInput(args.edits)) {
+		args = { ...args, edits: [args.edits] };
+	}
+	if (typeof args.oldText !== "string" || typeof args.newText !== "string") {
+		return args;
+	}
+	const edits = Array.isArray(args.edits) ? [...args.edits] : [];
+	edits.push({ oldText: args.oldText, newText: args.newText });
+	const { oldText: _oldText, newText: _newText, ...rest } = args;
+	return { ...rest, edits };
+}
+
 function parseEditInput(input: unknown): EditInput {
 	if (!isRecord(input) || typeof input.path !== "string" || input.path.length === 0) {
 		throw new AdapterRefusal("INVALID_REQUEST", "edit path must be a non-empty string");
@@ -424,6 +469,8 @@ export function registerMutator(pi: ExtensionAPI, context: MutationContext, exch
 			"Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
 		],
 		parameters: EditParameters,
+		// Pi runs this before schema validation (agent-loop.js prepareToolCall).
+		prepareArguments: prepareEditArguments,
 		execute: mutator.execute,
 	});
 	// Two `tool_result` listeners are registered on `pi` (this one and the

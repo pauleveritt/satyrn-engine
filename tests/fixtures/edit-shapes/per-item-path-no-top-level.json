@@ -1,0 +1,17 @@
+{
+  "name": "per-item-path-no-top-level",
+  "source": "recorded cell 2026-10-02-eb0-selfhost-review-script/engine/selfhost-review-script-20261003-035532-056108 (rejected edit call, 'Validation failed'): keys and path verbatim, oldText/newText cut. No top-level path: stays refused.",
+  "input": {
+    "edits": [
+      {
+        "path": "tools/review.py",
+        "oldText": "import argparse\nimport subprocess",
+        "newText": "import argparse"
+      }
+    ]
+  },
+  "expected": {
+    "prepared": null,
+    "unchanged": true
+  }
+}

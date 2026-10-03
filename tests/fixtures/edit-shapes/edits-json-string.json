@@ -1,0 +1,24 @@
+{
+  "name": "edits-json-string",
+  "source": "synthetic: no recorded string parses (EB0 and R2 recorded 1 and 5, all unparseable). Pi repairs a string that parses to an array.",
+  "input": {
+    "path": "src/app.py",
+    "edits": "[{\"oldText\": \"return 1\", \"newText\": \"return 2\"}, {\"oldText\": \"x = 1\", \"newText\": \"x = 2\"}]"
+  },
+  "expected": {
+    "prepared": {
+      "path": "src/app.py",
+      "edits": [
+        {
+          "oldText": "return 1",
+          "newText": "return 2"
+        },
+        {
+          "oldText": "x = 1",
+          "newText": "x = 2"
+        }
+      ]
+    },
+    "unchanged": false
+  }
+}

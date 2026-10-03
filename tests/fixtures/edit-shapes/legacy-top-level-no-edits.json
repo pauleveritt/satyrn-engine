@@ -1,0 +1,21 @@
+{
+  "name": "legacy-top-level-no-edits",
+  "source": "synthetic: legacy top-level with no edits key; Pi builds edits from the two keys.",
+  "input": {
+    "path": "src/app.py",
+    "oldText": "return 1",
+    "newText": "return 2"
+  },
+  "expected": {
+    "prepared": {
+      "path": "src/app.py",
+      "edits": [
+        {
+          "oldText": "return 1",
+          "newText": "return 2"
+        }
+      ]
+    },
+    "unchanged": false
+  }
+}
