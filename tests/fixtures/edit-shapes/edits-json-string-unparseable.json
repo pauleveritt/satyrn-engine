@@ -1,0 +1,11 @@
+{
+  "name": "edits-json-string-unparseable",
+  "source": "recorded cell 2026-10-02-eb0-agentclinic-repair-depth-3/engine/agentclinic-repair-depth-3-20261003-020155-346531 (rejected edit call, 'Validation failed'): argument keys verbatim; the string is the recorded truncated string, so it does not parse. Pi leaves it, its validator refuses it.",
+  "input": {
+    "edits": "[{\"path\":"
+  },
+  "expected": {
+    "prepared": null,
+    "unchanged": true
+  }
+}

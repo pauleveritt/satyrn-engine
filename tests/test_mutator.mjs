@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
 
 import { AdapterRefusal, parseResponse } from "../packages/engine/orchestrator.ts";
 import mutationExtension, {
@@ -10,6 +11,7 @@ import mutationExtension, {
 	createMutator,
 	parseMutationContext,
 	parseReplacementResponse,
+	prepareEditArguments,
 	registerMutator,
 	removedSymbols,
 } from "../packages/engine/mutator.ts";
@@ -615,6 +617,73 @@ test("the bounded edit registers a prompt snippet naming its restriction", () =>
 	);
 });
 
+// --- 2026-10-03: Pi 0.85.1's descriptions and guidelines, adapted where the
+// Engine applies edits in order (plan D5). Text and metadata only.
+
+const EDIT_GUIDELINES = [
+	"Use edit for precise changes (edits[].oldText must match exactly)",
+	"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
+	"edits[] entries are applied in order: each oldText is matched after the earlier entries are applied. Merge nearby changes into one edit.",
+	"Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+];
+
+function registeredEdit() {
+	const registered = [];
+	registerMutator(
+		{ registerTool: (tool) => registered.push(tool), on: () => undefined },
+		context(),
+		async () => success(),
+	);
+	return registered.find((tool) => tool.name === "edit");
+}
+
+function propertyDescriptions(schema) {
+	const found = [];
+	for (const [name, property] of Object.entries(schema.properties)) {
+		found.push([name, property.description]);
+		if (property.items) found.push(...propertyDescriptions(property.items).map(([n, d]) => [`${name}.items.${n}`, d]));
+	}
+	return found;
+}
+
+test("every edit parameter, at both levels, carries a description", () => {
+	const described = propertyDescriptions(EditParameters);
+	assert.deepEqual(
+		described.map(([name]) => name).sort(),
+		["edits", "edits.items.newText", "edits.items.oldText", "edits.items.path", "path"],
+	);
+	for (const [name, description] of described) {
+		assert.equal(typeof description, "string", `${name} has a description`);
+		assert.ok(description.length > 0, `${name} description is not empty`);
+	}
+});
+
+test("the registered edit carries Pi's four guidelines, the third adapted", () => {
+	assert.deepEqual(registeredEdit().promptGuidelines, EDIT_GUIDELINES);
+});
+
+test("no registered edit text claims matching against the original file", () => {
+	const edit = registeredEdit();
+	const strings = [
+		edit.description,
+		edit.promptSnippet,
+		...edit.promptGuidelines,
+		...propertyDescriptions(EditParameters).map(([, description]) => description),
+	];
+	for (const text of strings) {
+		assert.equal(typeof text, "string");
+		assert.doesNotMatch(text, /original file|not incrementally/i);
+	}
+});
+
+test("the edit schema keeps its structure while gaining descriptions", () => {
+	assert.deepEqual(EditParameters.required, ["path", "edits"]);
+	assert.equal(EditParameters.additionalProperties, false);
+	assert.equal(EditParameters.properties.edits.items.additionalProperties, false);
+	assert.equal(EditParameters.properties.edits.maxItems, 16);
+	assert.deepEqual(EditParameters.properties.edits.items.required, ["oldText", "newText"]);
+});
+
 test("the edit schema takes up to sixteen replacements", () => {
 	const schema = EditParameters.properties.edits;
 	assert.equal(schema.maxItems, 16);
@@ -631,4 +700,106 @@ test("a two-replacement edit becomes one replace request carrying both", () => {
 		{ old_text: "c", new_text: "d" },
 	]);
 	assert.equal(request.old_text, undefined);
+});
+
+// Pi's argument repairs (plan D3 = A): Pi 0.85.1's three repairs and nothing
+// else, run before validation. The Engine's function copies; Pi's assigns.
+const EDIT_SHAPES = new URL("./fixtures/edit-shapes/", import.meta.url);
+const editShapes = readdirSync(EDIT_SHAPES)
+	.filter((name) => name.endsWith(".json"))
+	.sort()
+	.map((name) => JSON.parse(readFileSync(new URL(name, EDIT_SHAPES), "utf8")));
+
+const deepFreeze = (value) => {
+	if (value !== null && typeof value === "object") {
+		for (const item of Object.values(value)) deepFreeze(item);
+		Object.freeze(value);
+	}
+	return value;
+};
+
+test("every edit-shape fixture names its source and its expected result", () => {
+	assert.equal(editShapes.length, 10);
+	for (const shape of editShapes) {
+		assert.equal(typeof shape.source, "string", shape.name);
+		assert.ok(shape.source.length > 0, shape.name);
+		assert.equal(typeof shape.expected.unchanged, "boolean", shape.name);
+	}
+});
+
+for (const shape of editShapes) {
+	test(`prepareEditArguments: ${shape.name}`, () => {
+		const given = structuredClone(shape.input);
+		const prepared = prepareEditArguments(given);
+		if (shape.expected.unchanged) {
+			assert.equal(prepared, given, "an unrepaired call comes back as the same object");
+			assert.deepEqual(prepared, shape.input);
+		} else {
+			assert.notEqual(prepared, given, "a repaired call comes back as a new object");
+			assert.deepEqual(prepared, shape.expected.prepared);
+		}
+	});
+
+	test(`prepareEditArguments does not mutate its input: ${shape.name}`, () => {
+		const frozen = deepFreeze(structuredClone(shape.input));
+		const prepared = prepareEditArguments(frozen);
+		assert.deepEqual(frozen, shape.input);
+		if (shape.expected.unchanged) assert.equal(prepared, frozen);
+		else assert.deepEqual(prepared, shape.expected.prepared);
+	});
+
+	test(`a prepared ${shape.name} call: ${shape.expected.unchanged ? "refused before exchange" : "reaches the exchange once"}`, async () => {
+		let exchanges = 0;
+		const mutator = createMutator(context(), async () => {
+			exchanges += 1;
+			return success();
+		});
+		const prepared = prepareEditArguments(structuredClone(shape.input));
+		const response = await mutator.execute("call", prepared);
+		const refusedShapes = new Set([
+			"edits-json-string-unparseable",
+			"per-item-path-no-top-level",
+			"nested-one-file",
+			"multi-file-nested",
+		]);
+		if (refusedShapes.has(shape.name)) {
+			assert.equal(exchanges, 0);
+			assert.equal(response.details.ok, false);
+			assert.equal(response.details.code, "INVALID_REQUEST");
+			assert.match(response.content[0].text, /^INVALID_REQUEST: edit path must be a non-empty string$/);
+		} else {
+			assert.equal(exchanges, 1);
+			assert.equal(response.details.ok, true);
+		}
+	});
+}
+
+test("the normalizer never reads, moves or invents a path", () => {
+	for (const shape of editShapes) {
+		const prepared = prepareEditArguments(structuredClone(shape.input));
+		assert.equal(prepared.path, shape.input.path, shape.name);
+		assert.equal("path" in prepared, "path" in shape.input, shape.name);
+	}
+});
+
+test("legacy oldText/newText is appended after existing edits, and an unparseable string is replaced by it", () => {
+	const prepared = prepareEditArguments({
+		path: "src/app.py",
+		edits: "[{",
+		oldText: "a",
+		newText: "b",
+	});
+	assert.deepEqual(prepared, { path: "src/app.py", edits: [{ oldText: "a", newText: "b" }] });
+	assert.equal(prepareEditArguments(null), null);
+	assert.equal(prepareEditArguments("text"), "text");
+});
+
+test("the registered edit tool prepares arguments with prepareEditArguments", () => {
+	const registered = [];
+	registerMutator(
+		{ registerTool: (tool) => registered.push(tool), on: () => undefined },
+		context(),
+		async () => success(),
+	);
+	assert.equal(registered.find((tool) => tool.name === "edit").prepareArguments, prepareEditArguments);
 });

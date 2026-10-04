@@ -129,9 +129,11 @@ export const EditParameters = {
 	additionalProperties: false,
 	required: ["path", "edits"],
 	properties: {
-		path: { type: "string", minLength: 1 },
+		path: { type: "string", minLength: 1, description: "Path to the file to edit (relative or absolute)" },
 		edits: {
 			type: "array",
+			description:
+				"One to sixteen targeted replacements, applied in order: each oldText is matched against the file as the earlier replacements left it. If two changes touch the same block or nearby lines, merge them into one edit instead.",
 			minItems: 1,
 			maxItems: MAX_EDITS,
 			items: {
@@ -139,8 +141,13 @@ export const EditParameters = {
 				additionalProperties: false,
 				required: ["oldText", "newText"],
 				properties: {
-					oldText: { type: "string", minLength: 1 },
-					newText: { type: "string" },
+					oldText: {
+						type: "string",
+						minLength: 1,
+						description:
+							"Exact text for one targeted replacement. It must appear exactly once in the file as the earlier replacements in this call left it.",
+					},
+					newText: { type: "string", description: "Replacement text for this targeted edit." },
 					// Tolerated, not required, and never authoritative. Models
 					// routinely repeat the file path inside the item as well as
 					// at the top level, where this schema requires it. Refusing
@@ -151,7 +158,11 @@ export const EditParameters = {
 					// item stays otherwise closed, and `parseEditInput` refuses
 					// a value that contradicts the top-level path rather than
 					// guessing which file was meant.
-					path: { type: "string", minLength: 1 },
+					path: {
+						type: "string",
+						minLength: 1,
+						description: "Optional. If given, it must equal the top-level path.",
+					},
 				},
 			},
 		},
@@ -207,6 +218,51 @@ export function parseMutationContext(text: string): MutationContext {
 		carried: parsed.carried,
 		base_commit: parsed.base_commit,
 	};
+}
+
+function isSingleEditInput(value: unknown): boolean {
+	return isRecord(value) && typeof value.oldText === "string" && typeof value.newText === "string";
+}
+
+/**
+ * Pi 0.85.1's `prepareEditArguments` (dist/core/tools/edit.js), ported: the
+ * three repairs Pi makes before validation and nothing else (plan D3). `edits`
+ * as a JSON string is parsed, but only when it parses to an array or to one
+ * edit object; a bare edit object in `edits` is wrapped; legacy top-level
+ * `oldText`/`newText` is appended to `edits` and dropped from the top level.
+ *
+ * One deliberate difference from Pi: Pi assigns `args.edits` on the object the
+ * model sent; this returns a new object when it repairs and the same object
+ * when it does not, so the session history keeps what the model sent. It never
+ * reads, moves or invents `path`: a per-item path, a nested `{path, edits}`
+ * item and a multi-file call are returned unchanged and stay refused.
+ */
+export function prepareEditArguments(input: unknown): unknown {
+	if (!isRecord(input)) {
+		return input;
+	}
+	let args: Record<string, unknown> = input;
+	if (typeof args.edits === "string") {
+		try {
+			const parsed: unknown = JSON.parse(args.edits);
+			if (Array.isArray(parsed)) {
+				args = { ...args, edits: parsed };
+			} else if (isSingleEditInput(parsed)) {
+				args = { ...args, edits: [parsed] };
+			}
+		} catch {
+			// not JSON: leave it for the validator to refuse
+		}
+	} else if (isSingleEditInput(args.edits)) {
+		args = { ...args, edits: [args.edits] };
+	}
+	if (typeof args.oldText !== "string" || typeof args.newText !== "string") {
+		return args;
+	}
+	const edits = Array.isArray(args.edits) ? [...args.edits] : [];
+	edits.push({ oldText: args.oldText, newText: args.newText });
+	const { oldText: _oldText, newText: _newText, ...rest } = args;
+	return { ...rest, edits };
 }
 
 function parseEditInput(input: unknown): EditInput {
@@ -401,8 +457,20 @@ export function registerMutator(pi: ExtensionAPI, context: MutationContext, exch
 		// schema it had to satisfy was this one.
 		promptSnippet:
 			"replaces up to sixteen exact unique text anchors, in order, in one contract-declared file; not a general file writer",
-		description: "Replace one or more exact unique text anchors, applied in order, in one contract-declared file.",
+		description:
+			"Edit one contract-declared file using exact text replacement. Replacements apply in order and all-or-nothing; each edits[].oldText must match exactly one region of the file as the earlier replacements left it. Do not include large unchanged regions just to connect distant changes.",
+		// Pi 0.85.1 edit.js guidelines, verbatim except the third, which
+		// Pi words as matching "against the original file"; this tool applies
+		// the entries in order against the evolving buffer (plan D5).
+		promptGuidelines: [
+			"Use edit for precise changes (edits[].oldText must match exactly)",
+			"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
+			"edits[] entries are applied in order: each oldText is matched after the earlier entries are applied. Merge nearby changes into one edit.",
+			"Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+		],
 		parameters: EditParameters,
+		// Pi runs this before schema validation (agent-loop.js prepareToolCall).
+		prepareArguments: prepareEditArguments,
 		execute: mutator.execute,
 	});
 	// Two `tool_result` listeners are registered on `pi` (this one and the

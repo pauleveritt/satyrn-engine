@@ -1,0 +1,20 @@
+{
+  "name": "edits-json-string-single-object",
+  "source": "synthetic: Pi also repairs a string that parses to one edit object.",
+  "input": {
+    "path": "src/app.py",
+    "edits": "{\"oldText\": \"return 1\", \"newText\": \"return 2\"}"
+  },
+  "expected": {
+    "prepared": {
+      "path": "src/app.py",
+      "edits": [
+        {
+          "oldText": "return 1",
+          "newText": "return 2"
+        }
+      ]
+    },
+    "unchanged": false
+  }
+}

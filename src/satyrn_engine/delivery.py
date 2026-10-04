@@ -265,9 +265,11 @@ class GuardFirings:
     symbol_preserved: int = 0
     command_bounded: int = 0
     command_timed_out: int = 0
-    self_test_redirected: int = 0
     self_test_detected: int = 0
     self_test_enforced: int = 0
+    # One per gate run, pass or follow-up, as self_test_enforced counts
+    # (runner.ts appends self_test_red_stop on every run).
+    self_test_red_stop: int = 0
     finish_nudged: int = 0
     runaway_resumed: int = 0
 

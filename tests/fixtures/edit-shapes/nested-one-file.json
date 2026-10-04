@@ -1,0 +1,21 @@
+{
+  "name": "nested-one-file",
+  "source": "recorded cell 2026-10-02-eb0-selfhost-guard-prefixes/engine/selfhost-guard-prefixes-20261003-022519-184362 (rejected edit call, 'Validation failed'): keys and path verbatim, oldText/newText cut. One file nested as {path, edits}: stays refused.",
+  "input": {
+    "edits": [
+      {
+        "path": "tools/hooks/guard.py",
+        "edits": [
+          {
+            "oldText": "_PI_LEAD = re.compile(r\"^[\\s(]*pi\\b\")",
+            "newText": "_PI_LEAD = re.compile(r\"^[\\s(]*(?:uv run)?\\s*pi\\b\")"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "prepared": null,
+    "unchanged": true
+  }
+}

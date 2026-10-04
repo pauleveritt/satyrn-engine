@@ -154,3 +154,13 @@
 | tests/fixtures/events/self-test-red-stop.json | created in release-one |
 | tests/fixtures/events/self-test-not-red-stopped.json | created in release-one |
 | tests/fixtures/events/self-test-red-stop-once.json | created in release-one |
+| tests/fixtures/edit-shapes/bare-edit-object.json | created in EB re-pin |
+| tests/fixtures/edit-shapes/canonical.json | created in EB re-pin |
+| tests/fixtures/edit-shapes/edits-json-string-single-object.json | created in EB re-pin |
+| tests/fixtures/edit-shapes/edits-json-string-unparseable.json | created in EB re-pin |
+| tests/fixtures/edit-shapes/edits-json-string.json | created in EB re-pin |
+| tests/fixtures/edit-shapes/legacy-top-level-no-edits.json | created in EB re-pin |
+| tests/fixtures/edit-shapes/legacy-top-level.json | created in EB re-pin |
+| tests/fixtures/edit-shapes/multi-file-nested.json | created in EB re-pin |
+| tests/fixtures/edit-shapes/nested-one-file.json | created in EB re-pin |
+| tests/fixtures/edit-shapes/per-item-path-no-top-level.json | created in EB re-pin |

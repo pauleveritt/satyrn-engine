@@ -19,9 +19,9 @@ GUARD_KINDS: tuple[str, ...] = (
     "symbol_preserved",
     "command_bounded",
     "command_timed_out",
-    "self_test_redirected",
     "self_test_detected",
     "self_test_enforced",
+    "self_test_red_stop",
     "finish_nudged",
     "runaway_resumed",
 )
