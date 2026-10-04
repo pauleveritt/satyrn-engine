@@ -16,7 +16,9 @@ attempt
   One E5 run of an explicitly selected Pi model. Standalone invocation expects
   the caller to supply a clean disposable Git worktree; it does not create
   isolation itself. ``/implement`` supplies that worktree through E3 delivery.
-  The model receives only ``read`` and E4's bounded ``edit``. The transcript
+  The model receives Pi's native ``read``, ``bash`` and ``write``, E4's bounded
+  ``edit`` in place of Pi's, and ``self_test`` only when the contract declares
+  a ``test_command``. The transcript
   and patch are evidence artifacts published through pinned directories
   outside every registered worktree and Git administrative directory, not a
   grading verdict; E3 decides whether the resulting tree becomes a candidate.
@@ -32,6 +34,15 @@ carried
   restored from the accepted base into the worktree before every
   {term}`self_test` run and before validation, so the model's edits to them
   never count.
+
+argument repair
+  One of Pi 0.85.1's three repairs to an ``edit`` call before validation,
+  ported as ``prepareEditArguments`` in ``packages/engine/mutator.ts``:
+  ``edits`` sent as a JSON string that parses to an array or one edit, a bare
+  edit object in ``edits``, and legacy top-level ``oldText``/``newText``. It
+  returns a new object rather than mutating the model's call, and never reads,
+  moves or invents a path, so per-item, nested and multi-file shapes stay
+  refused.
 
 candidate
   A commit produced by one successful delivery attempt and published at
@@ -53,6 +64,20 @@ contract
   ignored. See {doc}`usage` for the accepted shape. The spec's ``objective``
   and ``self_test_command`` are this file's ``task`` and ``test_command``.
 
+confinement root
+  The ``SATYRN_CONFINEMENT_ROOT`` variable a caller's confinement extension
+  reads. When the caller set it, the attempt points it at its own worktree
+  for the inner Pi; it never adds the variable, and
+  ``SATYRN_CONFINEMENT_ROOTS`` passes through untouched
+  (``src/satyrn_engine/attempt.py``).
+
+edit parity
+  The Engine's ``edit`` presents Pi 0.85.1's tool description, parameter
+  descriptions and guidelines, verbatim except three sentences adapted
+  because this tool applies entries in order against the evolving buffer,
+  and runs Pi's {term}`argument repair` before validation
+  (``packages/engine/mutator.ts``).
+
 engine
   The Python core of satyrn-engine: a library and command-line tool that
   parses and validates a contract, applies one bounded replacement, runs one
@@ -68,21 +93,35 @@ exit code
   a crash, never a refusal. A delivery receipt or mutation JSON response gives
   the precise cause.
 
+finish nudge
+  The steer ``packages/engine/runner.ts`` sends when a ``self_test`` run
+  inside a turn passes after a change to a non-test path, at most once per
+  such change: it tells the model to stop and report if the change is
+  complete, and stops nothing itself. Each one records a ``finish_nudged``
+  {term}`guard firing`.
+
 guard
   A small TypeScript check that observes an ordinary Pi tool call before it
   runs. Four guards ship: the loop breaker, which remembers the last twenty
   admitted call keys and refuses a sixth exact repeat while five matches remain
   in that window, and runs in every Pi session (``engine.ts``); writable-path
-  scope, symbol preservation, and command bounds, which register only inside
-  the ``/implement`` child (``scope.ts``, ``bounds.ts``, loaded there by explicit
-  ``--extension`` flags, not through the package's own extension list). Each
+  scope (the scope guard, over ``write`` and ``edit``), symbol preservation,
+  and command bounds, which register only inside the ``/implement`` child
+  (``scope.ts``, ``mutator.ts``, ``bounds.ts``, loaded there by explicit
+  ``--extension`` flags, not through the package's own extension list).
+  Command bounds also records a timed-out ``bash`` result after it runs. Each
   guard's state belongs to one extension registration. A guard is not a
   mutation policy or a Python engine operation.
 
 guard firing
   A ``pi.appendEntry`` custom entry a guard records when it acts. The receipt
   counts these from the child's json stream as ``entry_appended`` events; no
-  file the model's shell can reach is evidence.
+  file the model's shell can reach is evidence. ``GUARD_KINDS``
+  (``src/satyrn_engine/budget.py``) names the ten counted kinds: the guards'
+  ``loop_broken``, ``scope_refused``, ``symbol_preserved``,
+  ``command_bounded`` and ``command_timed_out``, and ``runner.ts``'s
+  ``self_test_detected``, ``self_test_enforced``, ``self_test_red_stop``,
+  ``finish_nudged`` and ``runaway_resumed``.
 
 integration tier
   The marked test tier (``@pytest.mark.integration``) that starts real
@@ -116,7 +155,17 @@ self_test
   it again and sends one follow-up only if that fresh run is still red.
   Each fires at most once per mutation generation, and an enforced-gate
   failure follow-up on a generation also satisfies the red-stop gate for
-  that same generation.
+  that same generation. When a ``bash`` result carries a pytest summary and no
+  self-test has run since the last landed mutation, the runner also runs
+  ``self_test`` and records ``self_test_detected``. Each gate run records a
+  {term}`guard firing`, ``self_test_enforced`` or ``self_test_red_stop``.
+
+runaway resume
+  The follow-up ``packages/engine/runner.ts`` sends when an assistant turn hits
+  the per-turn output cap with no tool call, telling the model to make the next
+  change with a tool call. It is sent at most twice per session, never on a
+  turn where a ``self_test`` gate already sent a follow-up, and records a
+  ``runaway_resumed`` {term}`guard firing`.
 
 receipt
   The one versioned UTF-8 JSON result written by an accepted ``deliver``
