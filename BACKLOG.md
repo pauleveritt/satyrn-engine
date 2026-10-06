@@ -14,16 +14,13 @@ Phase 1 as native `write` under guard 3 and the `self_test` tool.
 every engine commit the Engine arms use is a new Engine condition, so they
 land on `main` together, before one re-pin.
 
-- **Receipts miss red-stop firings.** `packages/engine/runner.ts` emits
-  `self_test_red_stop`; `src/satyrn_engine/budget.py` `GUARD_KINDS` counts
-  the retired `self_test_redirected` instead. Built 2026-10-03 as `d979cba`
-  on branch `eb-confinement-parity`; closes when evals re-pins (evals plan
-  `2026-10-03-engine-confinement-and-edit-parity.md`, Task 5), which also
-  updates evals' own guard vocabulary.
-- **Vendored task manifests.** `tests/fixtures/derive_size/selfhost-preflight-quiet.json`
-  declares ten symbols where the live evals task declares nine, and
-  `tests/test_derive_size.py` finds the evals tree by an absolute path on one
-  machine. Coordination plan Task 4; on `main` before the re-pin.
+- **Receipts count red-stop firings: done.** `d979cba`, merged as `5b681b0`;
+  evals has pinned it since `23a0ef6`.
+- **Vendored task manifests: done** on branch `cleanup-derive-size-fixture`:
+  `selfhost-preflight-quiet` re-vendored at nine symbols, and the evals tree
+  found through `SATYRN_EVALS_TASKS` or the sibling checkout. It lands with
+  `eb-head-tolerance` in one merge, which evals pins in its ledger entry
+  "Engine re-pin for head tolerance".
 - **Path admission differs between `mutation.py` (fnmatch, honours `[seq]`)
   and `scope.ts` (`*` and `?` only).** Pin one behaviour with a bracket
   fixture when any contract pattern uses brackets; until then, a known gap.
