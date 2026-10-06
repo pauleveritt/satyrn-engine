@@ -175,7 +175,7 @@ stdout stays machine-readable. The receipt always contains these fields:
 | `command_exit` | direct command status; null when it never started or timed out |
 | `worktree_path` | retained cleanup path requiring operator action, otherwise null |
 | `size_refusal` | the advisory medium-class refusal text `derive` printed, or null when the request was within class or no request was measured |
-| `head_moved` | true when the command moved a detached HEAD (the model ran `git commit`); the candidate is still the worktree's tree with `base_commit` as its only parent |
+| `head_moved` | true when HEAD was inspected after the command and is detached at a commit other than `base_commit` (for example, the model ran `git commit`); false when it is at `base_commit`, when the attempt was refused for an attached HEAD, or when HEAD was never inspected (the command failed, timed out, or never ran). The candidate is always the worktree's tree with `base_commit` as its only parent |
 | `validation_output_bytes` | byte length of the self-test output captured for this delivery, or null when none ran |
 
 Success exits `0`. Contract refusals retain codes `3`–`6`. All other handled

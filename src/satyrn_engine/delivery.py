@@ -742,10 +742,11 @@ def head_disposition(head: str, base_commit: str, attached: bool) -> Literal["at
     An attached HEAD means the command created or switched to a branch; a
     linked worktree shares refs with the source repository, so that branch
     now exists there, and the attempt is refused (COMMAND_CHANGED_HEAD). A
-    detached HEAD that moved means the model ran `git commit`; the candidate
-    is built from the worktree's tree with `base_commit` as its only parent,
-    never from HEAD, so the commit is recorded on the receipt and tolerated
-    (parity with the harness's Baseline harvest, which diffs from the base).
+    detached HEAD that moved (the model ran `git commit`, or a detached
+    checkout or reset) is tolerated: the candidate is built from the
+    worktree's tree with `base_commit` as its only parent, never from HEAD,
+    so the move is recorded on the receipt (parity with the harness's
+    Baseline harvest, which diffs from the base).
     """
     if attached:
         return "attached"

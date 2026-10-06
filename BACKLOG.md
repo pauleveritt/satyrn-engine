@@ -43,12 +43,17 @@ land on `main` together, before one re-pin.
 - **Gates that nothing runs:** `pyrefly`, `pytest-cov`, `types-pyyaml` and
   the coverage and pyrefly sections. Gate them or remove them; decided once
   for both repositories (evals `ROADMAP.md`, "Gates that nothing runs").
-
-**Done 2026-10-06, on branch `eb-head-tolerance`.**
-
-- **2026-10-06: a model `git commit` no longer discards the candidate**
+- **A model `git commit` no longer discards the candidate**
   (`COMMAND_CHANGED_HEAD` now means an attached HEAD only); evals ledger
-  2026-10-06 ruling 2. The receipt records `head_moved`. Done by the commit
-  that adds `head_disposition` to `delivery.py`; a branch the model creates
-  still refuses, because linked worktrees share refs with the source
-  repository. Closes when evals re-pins.
+  2026-10-06 ruling 2. The receipt records `head_moved`. Built 2026-10-06 on
+  branch `eb-head-tolerance`; closes when evals re-pins. A branch the model
+  creates still refuses, because linked worktrees share refs with the source
+  repository.
+- **`source_snapshot` in the integration tests omits `for-each-ref`.** Model
+  ref writes outside HEAD (`git branch` without switching, tags, stash,
+  `update-ref`) go undetected by `assert_source_unchanged`. Pre-existing.
+- **Three receipts in `delivery.py` are rebuilt from `pending` field by
+  field** (CLEANUP_FAILED in `_attempt`; CANDIDATE_EXISTS and GIT_FAILED in
+  `_publish`), so a new receipt field can be dropped silently, as
+  `head_moved` was until the 2026-10-06 fix. Consider `dataclasses.replace`
+  at a later re-pin.

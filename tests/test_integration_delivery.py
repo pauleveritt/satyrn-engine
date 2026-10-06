@@ -666,11 +666,15 @@ def test_attached_head_at_base_is_discarded_without_candidate(tmp_path: Path) ->
 def test_empty_commit_on_detached_head_is_no_changes_and_recorded(tmp_path: Path) -> None:
     repo = make_repo(tmp_path / "repo")
     contract = write_contract(tmp_path / "contract.yaml", "empty-commit")
+    before = source_snapshot(repo)
 
-    _, receipt = run_delivery(repo, contract, ("git", "commit", "--allow-empty", "--quiet", "-m", "moved"))
+    proc, receipt = run_delivery(repo, contract, ("git", "commit", "--allow-empty", "--quiet", "-m", "moved"))
 
+    assert proc.returncode == 8
     assert receipt["code"] == "NO_CHANGES", receipt
     assert receipt["head_moved"] is True
+    assert git(repo, "show-ref", "--verify", str(receipt["candidate_ref"])).returncode != 0
+    assert_source_unchanged(repo, before)
 
 
 def test_model_commit_on_detached_head_yields_the_worktree_tree(tmp_path: Path) -> None:
@@ -686,21 +690,25 @@ def test_model_commit_on_detached_head_yields_the_worktree_tree(tmp_path: Path) 
         "subprocess.run(['git', '-c', 'user.name=m', '-c', 'user.email=m@x', 'commit', '-q', '-m', 'b'], check=True); "
         "Path('first.txt').unlink()"
     )
+    before = source_snapshot(repo)
 
     _, receipt = run_delivery(repo, contract, (sys.executable, "-c", script))
 
     assert receipt["code"] == "OK", receipt
     assert receipt["head_moved"] is True
+    assert receipt["changed_paths"] == ["second.txt"]
     candidate = str(receipt["candidate_commit"])
     files = git(repo, "ls-tree", "--name-only", candidate).stdout.decode()
     assert "second.txt" in files and "first.txt" not in files
     parents = git(repo, "rev-list", "--parents", "-n", "1", candidate).stdout.decode().split()
     assert parents[1:] == [receipt["base_commit"]]
+    assert_source_unchanged(repo, before)
 
 
 def test_untouched_head_records_head_not_moved(tmp_path: Path) -> None:
     repo = make_repo(tmp_path / "repo")
     contract = write_contract(tmp_path / "contract.yaml", "plain")
+    before = source_snapshot(repo)
 
     _, receipt = run_delivery(
         repo, contract, (sys.executable, "-c", "from pathlib import Path; Path('plain.txt').write_text('ok')")
@@ -708,6 +716,7 @@ def test_untouched_head_records_head_not_moved(tmp_path: Path) -> None:
 
     assert receipt["code"] == "OK", receipt
     assert receipt["head_moved"] is False
+    assert_source_unchanged(repo, before)
 
 
 def _commit_then_write_script(*extra: str) -> str:
@@ -729,22 +738,48 @@ def test_moved_head_with_a_candidate_ref_created_during_the_run_is_candidate_exi
     script = _commit_then_write_script(
         "subprocess.run(['git', 'update-ref', 'refs/satyrn/candidates/collide/head', 'HEAD'], check=True)"
     )
+    before = source_snapshot(repo)  # HEAD, status and worktrees; the model's ref write is outside it
 
     _, receipt = run_delivery(repo, contract, (sys.executable, "-c", script))
 
     assert receipt["code"] == "CANDIDATE_EXISTS", receipt
     assert receipt["head_moved"] is True
+    assert_source_unchanged(repo, before)
 
 
 def test_moved_head_with_an_ancestor_ref_collision_is_git_failed_and_recorded(tmp_path: Path) -> None:
     repo = make_repo(tmp_path / "repo")
     assert git(repo, "update-ref", "refs/satyrn/candidates/conflict", "HEAD").returncode == 0
     contract = write_contract(tmp_path / "contract.yaml", "conflict")
+    before = source_snapshot(repo)
 
     _, receipt = run_delivery(repo, contract, (sys.executable, "-c", _commit_then_write_script()))
 
     assert receipt["code"] == "GIT_FAILED", receipt
     assert receipt["head_moved"] is True
+    assert_source_unchanged(repo, before)
+
+
+def test_attached_and_moved_head_is_refused_without_candidate(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path / "repo")
+    contract = write_contract(tmp_path / "contract.yaml", "attached-moved")
+    script = (
+        "from pathlib import Path; import subprocess; "
+        "subprocess.run(['git', 'switch', '--quiet', '-c', 'x'], check=True); "
+        "Path('first.txt').write_text('one'); "
+        "subprocess.run(['git', 'add', '-A'], check=True); "
+        "subprocess.run(['git', '-c', 'user.name=m', '-c', 'user.email=m@x', 'commit', '-q', '-m', 'a'], check=True)"
+    )
+    before = source_snapshot(repo)
+
+    proc, receipt = run_delivery(repo, contract, (sys.executable, "-c", script))
+
+    assert proc.returncode == 8
+    assert receipt["code"] == "COMMAND_CHANGED_HEAD", receipt
+    assert receipt["candidate_commit"] is None
+    assert git(repo, "show-ref", "--verify", "refs/heads/x").returncode == 0
+    assert git(repo, "show-ref", "--verify", str(receipt["candidate_ref"])).returncode != 0
+    assert_source_unchanged(repo, before)
 
 
 def test_unreadable_isolated_head_is_git_failure_before_cleanup_precedence(tmp_path: Path) -> None:
