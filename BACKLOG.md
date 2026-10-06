@@ -43,3 +43,12 @@ land on `main` together, before one re-pin.
 - **Gates that nothing runs:** `pyrefly`, `pytest-cov`, `types-pyyaml` and
   the coverage and pyrefly sections. Gate them or remove them; decided once
   for both repositories (evals `ROADMAP.md`, "Gates that nothing runs").
+
+**Done 2026-10-06, on branch `eb-head-tolerance`.**
+
+- **2026-10-06: a model `git commit` no longer discards the candidate**
+  (`COMMAND_CHANGED_HEAD` now means an attached HEAD only); evals ledger
+  2026-10-06 ruling 2. The receipt records `head_moved`. Done by the commit
+  that adds `head_disposition` to `delivery.py`; a branch the model creates
+  still refuses, because linked worktrees share refs with the source
+  repository. Closes when evals re-pins.

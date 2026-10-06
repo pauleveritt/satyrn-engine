@@ -23,6 +23,7 @@ from satyrn_engine.delivery import (
     DeliveryOutcome,
     DeliveryReceipt,
     ValidationOutcome,
+    head_disposition,
 )
 from satyrn_engine.exits import ExitCode
 
@@ -156,6 +157,7 @@ def test_receipt_matches_committed_fixture(code: DeliveryCode, fixture: str) -> 
         "guard_firings",
         "carried",
         "size_refusal",
+        "head_moved",
     ]
 
 
@@ -1209,3 +1211,49 @@ def test_the_receipt_carries_no_size_refusal_by_default() -> None:
         worktree_path=None,
     )
     assert receipt.payload()["size_refusal"] is None
+
+
+def test_head_at_base_and_detached_is_at_base() -> None:
+    assert head_disposition("b" * 40, "b" * 40, attached=False) == "at_base"
+
+
+def test_head_moved_and_detached_is_moved() -> None:
+    assert head_disposition("c" * 40, "b" * 40, attached=False) == "moved"
+
+
+def test_attached_head_is_refused_whether_or_not_it_moved() -> None:
+    assert head_disposition("b" * 40, "b" * 40, attached=True) == "attached"
+    assert head_disposition("c" * 40, "b" * 40, attached=True) == "attached"
+
+
+def test_the_receipt_carries_head_moved_when_set() -> None:
+    receipt = DeliveryReceipt(
+        code=DeliveryCode.OK,
+        message="candidate created",
+        contract_id="greeting",
+        repository="/src/app",
+        base_commit="base-sha",
+        candidate_ref="refs/satyrn/candidates/greeting/head",
+        candidate_commit="candidate-sha",
+        changed_paths=("greeting.py",),
+        command_exit=0,
+        worktree_path=None,
+        head_moved=True,
+    )
+    assert receipt.payload()["head_moved"] is True
+
+
+def test_the_receipt_carries_head_not_moved_by_default() -> None:
+    receipt = DeliveryReceipt(
+        code=DeliveryCode.OK,
+        message="candidate created",
+        contract_id="greeting",
+        repository="/src/app",
+        base_commit="base-sha",
+        candidate_ref="refs/satyrn/candidates/greeting/head",
+        candidate_commit="candidate-sha",
+        changed_paths=("greeting.py",),
+        command_exit=0,
+        worktree_path=None,
+    )
+    assert receipt.payload()["head_moved"] is False

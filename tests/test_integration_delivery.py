@@ -205,6 +205,7 @@ def test_clean_root_reaches_no_changes_without_touching_source(tmp_path: Path) -
             "tampered": [],
         },
         "size_refusal": None,
+        "head_moved": False,
     }
     assert_source_unchanged(repo, before)
 
@@ -532,6 +533,7 @@ def test_success_creates_candidate_with_exact_parent_and_paths(tmp_path: Path) -
             "tampered": [],
         },
         "size_refusal": None,
+        "head_moved": False,
     }
     assert git(repo, "rev-parse", candidate_ref).stdout.strip().decode() == candidate_commit
     assert git(repo, "rev-parse", f"{candidate_commit}^").stdout == before[0]
@@ -661,6 +663,53 @@ def test_attached_head_at_base_is_discarded_without_candidate(tmp_path: Path) ->
     assert accepted["code"] == "OK", accepted
 
 
+def test_empty_commit_on_detached_head_is_no_changes_and_recorded(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path / "repo")
+    contract = write_contract(tmp_path / "contract.yaml", "empty-commit")
+
+    _, receipt = run_delivery(repo, contract, ("git", "commit", "--allow-empty", "--quiet", "-m", "moved"))
+
+    assert receipt["code"] == "NO_CHANGES", receipt
+    assert receipt["head_moved"] is True
+
+
+def test_model_commit_on_detached_head_yields_the_worktree_tree(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path / "repo")
+    contract = write_contract(tmp_path / "contract.yaml", "committed")
+    script = (
+        "from pathlib import Path; import subprocess; "
+        "Path('first.txt').write_text('one'); "
+        "subprocess.run(['git', 'add', '-A'], check=True); "
+        "subprocess.run(['git', '-c', 'user.name=m', '-c', 'user.email=m@x', 'commit', '-q', '-m', 'a'], check=True); "
+        "Path('second.txt').write_text('two'); "
+        "subprocess.run(['git', 'add', '-A'], check=True); "
+        "subprocess.run(['git', '-c', 'user.name=m', '-c', 'user.email=m@x', 'commit', '-q', '-m', 'b'], check=True); "
+        "Path('first.txt').unlink()"
+    )
+
+    _, receipt = run_delivery(repo, contract, (sys.executable, "-c", script))
+
+    assert receipt["code"] == "OK", receipt
+    assert receipt["head_moved"] is True
+    candidate = str(receipt["candidate_commit"])
+    files = git(repo, "ls-tree", "--name-only", candidate).stdout.decode()
+    assert "second.txt" in files and "first.txt" not in files
+    parents = git(repo, "rev-list", "--parents", "-n", "1", candidate).stdout.decode().split()
+    assert parents[1:] == [receipt["base_commit"]]
+
+
+def test_untouched_head_records_head_not_moved(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path / "repo")
+    contract = write_contract(tmp_path / "contract.yaml", "plain")
+
+    _, receipt = run_delivery(
+        repo, contract, (sys.executable, "-c", "from pathlib import Path; Path('plain.txt').write_text('ok')")
+    )
+
+    assert receipt["code"] == "OK", receipt
+    assert receipt["head_moved"] is False
+
+
 def test_unreadable_isolated_head_is_git_failure_before_cleanup_precedence(tmp_path: Path) -> None:
     repo = make_repo(tmp_path / "repo")
     contract = write_contract(tmp_path / "contract.yaml", "missing-gitfile")
@@ -754,9 +803,8 @@ def test_tmpdir_inside_source_cannot_place_isolation_in_source(tmp_path: Path) -
     [
         (("definitely-not-a-real-e3-command",), "COMMAND_UNAVAILABLE", None),
         ((sys.executable, "-c", "raise SystemExit(9)"), "COMMAND_FAILED", 9),
-        (("git", "commit", "--allow-empty", "--quiet", "-m", "moved"), "COMMAND_CHANGED_HEAD", 0),
     ],
-    ids=["unavailable", "nonzero", "moved-head"],
+    ids=["unavailable", "nonzero"],
 )
 def test_failed_attempt_is_discarded_without_candidate(
     tmp_path: Path,
@@ -776,7 +824,6 @@ def test_failed_attempt_is_discarded_without_candidate(
             f"cannot start command: {FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), command[0])}"
         ),
         "COMMAND_FAILED": "command exited with status 9",
-        "COMMAND_CHANGED_HEAD": "command changed the isolated worktree HEAD",
     }[code]
     assert receipt == {
         "version": 1,
@@ -829,6 +876,7 @@ def test_failed_attempt_is_discarded_without_candidate(
             "tampered": [],
         },
         "size_refusal": None,
+        "head_moved": False,
     }
     assert git(repo, "show-ref", "--verify", str(receipt["candidate_ref"])).returncode != 0
     assert_source_unchanged(repo, before)
@@ -921,6 +969,7 @@ def test_timeout_kills_same_process_group_descendant(tmp_path: Path) -> None:
             "tampered": [],
         },
         "size_refusal": None,
+        "head_moved": False,
     }
     time.sleep(1.0)
     assert not sentinel.exists()
