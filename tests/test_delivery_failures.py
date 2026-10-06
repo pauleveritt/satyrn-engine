@@ -1161,3 +1161,43 @@ def test_exhausted_attempt_with_diff_retains_partial_candidate(
     assert receipt.candidate_commit == "c" * 40
     assert receipt.changed_paths == ("app.py",)
     assert receipt.budget_usage.state is state
+
+
+def test_cleanup_failure_preserves_head_moved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CLEANUP_FAILED early return keeps the pending result's head_moved."""
+    parent = tmp_path / "owned"
+    parent.mkdir()
+    monkeypatch.setattr(delivery, "_temporary_parent", lambda ctx: parent)
+    monkeypatch.setattr(delivery, "_git", lambda *args, **kwargs: git_result())
+    monkeypatch.setattr(delivery, "_worktree_registered", lambda *args: True)
+
+    def moved_head(
+        ctx: delivery._DeliveryContext,
+        state: delivery._AttemptState,
+        command: tuple[str, ...],
+        timeout: float,
+    ) -> delivery.DeliveryReceipt:
+        del command, timeout
+        state.cleanup_gate = delivery._CleanupGate.CLOSED
+        state.process_detail = "direct child did not exit after SIGKILL"
+        return delivery._context_receipt(
+            ctx,
+            delivery.DeliveryCode.OK,
+            "candidate created",
+            candidate_commit="c" * 40,
+            changed_paths=("app.py",),
+            command_exit=0,
+            head_moved=True,
+        )
+
+    monkeypatch.setattr(delivery, "_run_and_commit", moved_head)
+    monkeypatch.setattr(delivery, "_remove_worktree", lambda *args: None)
+
+    receipt = delivery._attempt(context(tmp_path), ("unused",), 1.0)
+
+    assert receipt.code is delivery.DeliveryCode.CLEANUP_FAILED
+    assert receipt.head_moved is True
+    shutil.rmtree(parent)

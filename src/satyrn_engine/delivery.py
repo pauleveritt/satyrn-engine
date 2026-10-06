@@ -155,6 +155,7 @@ class DeliveryPayload(TypedDict):
     guard_firings: dict[str, int]
     carried: dict[str, list[str]]
     size_refusal: str | None
+    head_moved: bool
 
 
 class BudgetPayload(TypedDict):
@@ -400,6 +401,7 @@ class DeliveryReceipt:
     guard_firings: GuardFirings = GuardFirings()
     carried: Carried = Carried()
     size_refusal: str | None = None
+    head_moved: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.code, DeliveryCode):
@@ -466,6 +468,7 @@ class DeliveryReceipt:
             "guard_firings": self.guard_firings.payload(),
             "carried": self.carried.payload(),
             "size_refusal": self.size_refusal,
+            "head_moved": self.head_moved,
         }
 
     def render(self) -> str:
@@ -733,6 +736,23 @@ def _preflight(
     )
 
 
+def head_disposition(head: str, base_commit: str, attached: bool) -> Literal["at_base", "moved", "attached"]:
+    """What the model's command did to the isolated worktree's HEAD.
+
+    An attached HEAD means the command created or switched to a branch; a
+    linked worktree shares refs with the source repository, so that branch
+    now exists there, and the attempt is refused (COMMAND_CHANGED_HEAD). A
+    detached HEAD that moved (the model ran `git commit`, or a detached
+    checkout or reset) is tolerated: the candidate is built from the
+    worktree's tree with `base_commit` as its only parent, never from HEAD,
+    so the move is recorded on the receipt (parity with the harness's
+    Baseline harvest, which diffs from the base).
+    """
+    if attached:
+        return "attached"
+    return "at_base" if head == base_commit else "moved"
+
+
 def _attempt(context: _DeliveryContext, command: tuple[str, ...], timeout: float) -> DeliveryReceipt:
     temporary_parent_result = _temporary_parent(context)
     if isinstance(temporary_parent_result, str):
@@ -795,6 +815,7 @@ def _attempt(context: _DeliveryContext, command: tuple[str, ...], timeout: float
                 tokens_out=pending.tokens_out,
                 guard_firings=pending.guard_firings,
                 carried=pending.carried,
+                head_moved=pending.head_moved,
             )
 
         if pending is None:  # pragma: no cover - lifecycle invariant
@@ -998,7 +1019,10 @@ def _run_and_commit(
             tokens_out=counter.tokens_out,
             guard_firings=GuardFirings.from_counter(counter),
         )
-    if head.stdout.strip() != context.base_commit.encode("ascii") or symbolic_head.returncode == 0:
+    disposition = head_disposition(
+        head.stdout.strip().decode("ascii"), context.base_commit, attached=symbolic_head.returncode == 0
+    )
+    if disposition == "attached":
         return _context_receipt(
             context,
             DeliveryCode.COMMAND_CHANGED_HEAD,
@@ -1012,6 +1036,7 @@ def _run_and_commit(
             tokens_out=counter.tokens_out,
             guard_firings=GuardFirings.from_counter(counter),
         )
+    head_moved = disposition == "moved"
 
     added = _git(
         state.worktree,
@@ -1037,6 +1062,7 @@ def _run_and_commit(
             tokens_in=counter.tokens_in,
             tokens_out=counter.tokens_out,
             guard_firings=GuardFirings.from_counter(counter),
+            head_moved=head_moved,
         )
     tree = _git(state.worktree, context.environment, "write-tree")
     base_tree = _git(state.worktree, context.environment, "rev-parse", f"{context.base_commit}^{{tree}}")
@@ -1054,6 +1080,7 @@ def _run_and_commit(
             tokens_in=counter.tokens_in,
             tokens_out=counter.tokens_out,
             guard_firings=GuardFirings.from_counter(counter),
+            head_moved=head_moved,
         )
     if tree.stdout.strip() == base_tree.stdout.strip():
         # Decision (pinned): an exhausted attempt that produced no diff is
@@ -1074,6 +1101,7 @@ def _run_and_commit(
             tokens_in=counter.tokens_in,
             tokens_out=counter.tokens_out,
             guard_firings=GuardFirings.from_counter(counter),
+            head_moved=head_moved,
         )
 
     commit_environment = context.environment | {
@@ -1107,6 +1135,7 @@ def _run_and_commit(
             tokens_in=counter.tokens_in,
             tokens_out=counter.tokens_out,
             guard_firings=GuardFirings.from_counter(counter),
+            head_moved=head_moved,
         )
     candidate_commit = committed.stdout.strip().decode("ascii")
     changed = _git(
@@ -1136,6 +1165,7 @@ def _run_and_commit(
             tokens_in=counter.tokens_in,
             tokens_out=counter.tokens_out,
             guard_firings=GuardFirings.from_counter(counter),
+            head_moved=head_moved,
         )
     raw_paths = [path for path in changed.stdout.split(b"\0") if path]
     try:
@@ -1154,6 +1184,7 @@ def _run_and_commit(
             tokens_in=counter.tokens_in,
             tokens_out=counter.tokens_out,
             guard_firings=GuardFirings.from_counter(counter),
+            head_moved=head_moved,
         )
     if exhausted is not None:
         message = f"candidate created; whole-attempt {_budget_exhaustion_detail(exhausted, usage)}"
@@ -1170,6 +1201,7 @@ def _run_and_commit(
             tokens_in=counter.tokens_in,
             tokens_out=counter.tokens_out,
             guard_firings=GuardFirings.from_counter(counter),
+            head_moved=head_moved,
         )
     return _context_receipt(
         context,
@@ -1185,6 +1217,7 @@ def _run_and_commit(
         tokens_in=counter.tokens_in,
         tokens_out=counter.tokens_out,
         guard_firings=GuardFirings.from_counter(counter),
+        head_moved=head_moved,
     )
 
 
@@ -1368,6 +1401,7 @@ def _publish(context: _DeliveryContext, pending: DeliveryReceipt) -> DeliveryRec
             tokens_out=pending.tokens_out,
             guard_firings=pending.guard_firings,
             carried=pending.carried,
+            head_moved=pending.head_moved,
         )
     return _context_receipt(
         context,
@@ -1388,6 +1422,7 @@ def _publish(context: _DeliveryContext, pending: DeliveryReceipt) -> DeliveryRec
         tokens_out=pending.tokens_out,
         guard_firings=pending.guard_firings,
         carried=pending.carried,
+        head_moved=pending.head_moved,
     )
 
 
@@ -1903,6 +1938,7 @@ def _context_receipt(
     tokens_out: int = 0,
     guard_firings: GuardFirings = _NO_GUARD_FIRINGS,
     carried: Carried = _NO_CARRIED,
+    head_moved: bool = False,
 ) -> DeliveryReceipt:
     return _receipt(
         context.repository,
@@ -1928,6 +1964,7 @@ def _context_receipt(
         guard_firings=guard_firings,
         carried=carried,
         size_refusal=context.size_refusal,
+        head_moved=head_moved,
     )
 
 
@@ -1956,6 +1993,7 @@ def _receipt(
     guard_firings: GuardFirings = _NO_GUARD_FIRINGS,
     carried: Carried = _NO_CARRIED,
     size_refusal: str | None = None,
+    head_moved: bool = False,
 ) -> DeliveryReceipt:
     declared = budget if budget is not None else Budget()
     if budget_usage is not None:
@@ -1988,4 +2026,5 @@ def _receipt(
         guard_firings=guard_firings,
         carried=carried,
         size_refusal=size_refusal,
+        head_moved=head_moved,
     )
