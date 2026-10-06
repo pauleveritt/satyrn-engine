@@ -710,6 +710,43 @@ def test_untouched_head_records_head_not_moved(tmp_path: Path) -> None:
     assert receipt["head_moved"] is False
 
 
+def _commit_then_write_script(*extra: str) -> str:
+    """A model command that commits on the detached HEAD, then leaves a change."""
+    return (
+        "from pathlib import Path; import subprocess; "
+        "Path('first.txt').write_text('one'); "
+        "subprocess.run(['git', 'add', '-A'], check=True); "
+        "subprocess.run(['git', '-c', 'user.name=m', '-c', 'user.email=m@x', 'commit', '-q', '-m', 'a'], check=True); "
+        "Path('second.txt').write_text('two'); " + "".join(extra)
+    )
+
+
+def test_moved_head_with_a_candidate_ref_created_during_the_run_is_candidate_exists_and_recorded(
+    tmp_path: Path,
+) -> None:
+    repo = make_repo(tmp_path / "repo")
+    contract = write_contract(tmp_path / "contract.yaml", "collide")
+    script = _commit_then_write_script(
+        "subprocess.run(['git', 'update-ref', 'refs/satyrn/candidates/collide/head', 'HEAD'], check=True)"
+    )
+
+    _, receipt = run_delivery(repo, contract, (sys.executable, "-c", script))
+
+    assert receipt["code"] == "CANDIDATE_EXISTS", receipt
+    assert receipt["head_moved"] is True
+
+
+def test_moved_head_with_an_ancestor_ref_collision_is_git_failed_and_recorded(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path / "repo")
+    assert git(repo, "update-ref", "refs/satyrn/candidates/conflict", "HEAD").returncode == 0
+    contract = write_contract(tmp_path / "contract.yaml", "conflict")
+
+    _, receipt = run_delivery(repo, contract, (sys.executable, "-c", _commit_then_write_script()))
+
+    assert receipt["code"] == "GIT_FAILED", receipt
+    assert receipt["head_moved"] is True
+
+
 def test_unreadable_isolated_head_is_git_failure_before_cleanup_precedence(tmp_path: Path) -> None:
     repo = make_repo(tmp_path / "repo")
     contract = write_contract(tmp_path / "contract.yaml", "missing-gitfile")

@@ -814,6 +814,7 @@ def _attempt(context: _DeliveryContext, command: tuple[str, ...], timeout: float
                 tokens_out=pending.tokens_out,
                 guard_firings=pending.guard_firings,
                 carried=pending.carried,
+                head_moved=pending.head_moved,
             )
 
         if pending is None:  # pragma: no cover - lifecycle invariant
@@ -1399,6 +1400,7 @@ def _publish(context: _DeliveryContext, pending: DeliveryReceipt) -> DeliveryRec
             tokens_out=pending.tokens_out,
             guard_firings=pending.guard_firings,
             carried=pending.carried,
+            head_moved=pending.head_moved,
         )
     return _context_receipt(
         context,
@@ -1419,6 +1421,7 @@ def _publish(context: _DeliveryContext, pending: DeliveryReceipt) -> DeliveryRec
         tokens_out=pending.tokens_out,
         guard_firings=pending.guard_firings,
         carried=pending.carried,
+        head_moved=pending.head_moved,
     )
 
 
