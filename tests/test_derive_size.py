@@ -3,8 +3,8 @@
 The six self-hosted tasks and depth-3 were, until this fix, read live from
 `satyrn-evals`'s task tree on every test run. Two problems with that: first,
 `satyrn-evals` is a separate, actively edited repository -- one more
-declared symbol on `selfhost-preflight-quiet`'s `Produces:` line (it sits
-exactly at the 10-symbol cap today) turns this repository's `just gates` red
+declared symbol on `selfhost-preflight-quiet`'s `Produces:` line (it sat
+exactly at the 10-symbol cap then) would turn this repository's `just gates` red
 with no commit made here, which release-two's frozen tree cannot tolerate.
 Second, on a machine without the evals checkout the nine parametrized rows
 that called `request_for` silently skipped, so `just gates` reported green
@@ -29,7 +29,9 @@ in `satyrn-evals`.
 """
 
 import json
+import os
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -47,7 +49,17 @@ from satyrn_engine.derive import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "derive_size"
-LIVE_TASKS = Path("/Users/pauleveritt/projects/pauleveritt/satyrn-evals/src/satyrn_evals/tasks")
+LIVE_TASKS_ENV = "SATYRN_EVALS_TASKS"
+
+
+def live_tasks_root(environment: Mapping[str, str] | None = None) -> Path:
+    """The evals task tree the cross-check reads: the directory
+    ``SATYRN_EVALS_TASKS`` names, else the sibling ``satyrn-evals`` checkout
+    beside this repository. Never a machine-specific path."""
+    environment = os.environ if environment is None else environment
+    if named := environment.get(LIVE_TASKS_ENV):
+        return Path(named)
+    return Path(__file__).resolve().parents[2] / "satyrn-evals" / "src" / "satyrn_evals" / "tasks"
 
 ADMITTED = (
     "selfhost-run-record-gate", "selfhost-docs-linter", "selfhost-guard-prefixes",
@@ -135,11 +147,12 @@ def test_the_caps_are_the_plans_numbers():
     assert (MEDIUM_MODULE_CAP, MEDIUM_PRODUCES_CAP) == (2, 10)
 
 
-def test_selfhost_preflight_quiet_sits_exactly_at_the_produces_cap():
-    # The real task at the boundary: 10 produced symbols, admitted only
-    # because the comparison is `>` and not `>=`.
+def test_selfhost_preflight_quiet_sits_one_under_the_produces_cap():
+    # The real task, re-vendored 2026-10-06 at 9 produced symbols. It sat at
+    # the cap (10) until the live task dropped `Certificate.as_dict()`. The
+    # boundary itself is pinned synthetically by the two tests below.
     request = request_for("selfhost-preflight-quiet")
-    assert len(produces_names(request)) == 10
+    assert len(produces_names(request)) == MEDIUM_PRODUCES_CAP - 1
     assert size_refusal(request) is None
 
 
@@ -219,7 +232,7 @@ def test_vendored_matches_live_manifests(name):
     fixture (see this module's docstring) to pick up an intentional
     change.
     """
-    manifest = LIVE_TASKS / name / "manifest.json"
+    manifest = live_tasks_root() / name / "manifest.json"
     if not manifest.is_file():
         pytest.skip(f"the evals task tree is not present: {manifest}")
 
@@ -247,3 +260,46 @@ def test_vendored_matches_live_manifests(name):
             + "; ".join(divergences),
             stacklevel=1,
         )
+
+
+def test_the_live_tasks_root_is_the_directory_the_environment_names(tmp_path):
+    assert live_tasks_root({LIVE_TASKS_ENV: str(tmp_path)}) == tmp_path
+
+
+def test_the_live_tasks_root_defaults_to_the_sibling_evals_checkout():
+    root = live_tasks_root({})
+    assert root.parts[-4:] == ("satyrn-evals", "src", "satyrn_evals", "tasks")
+    assert root.parents[3] == Path(__file__).resolve().parents[2]
+
+
+def _live_task(root: Path, name: str, contract: str) -> None:
+    (root / name).mkdir()
+    (root / name / "manifest.json").write_text(json.dumps({"contract": contract}), encoding="utf-8")
+
+
+def test_a_live_manifest_that_matches_the_vendored_fixture_raises_no_warning(tmp_path, monkeypatch):
+    name = "selfhost-preflight-quiet"
+    _live_task(tmp_path, name, _fixture(name)["request"])
+    monkeypatch.setenv(LIVE_TASKS_ENV, str(tmp_path))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        test_vendored_matches_live_manifests(name)
+
+
+def test_a_live_manifest_that_diverges_from_the_vendored_fixture_warns(tmp_path, monkeypatch):
+    name = "selfhost-preflight-quiet"
+    diverged = (
+        "Files:\n- Create: `scripts/preflight_quiet.py`\n- Test: `tests/`\n\n"
+        "Interfaces:\n- Produces: `only_one() -> int`.\n"
+    )
+    _live_task(tmp_path, name, diverged)
+    monkeypatch.setenv(LIVE_TASKS_ENV, str(tmp_path))
+    with pytest.warns(UserWarning, match="produces_count live=1 vendored=9"):
+        test_vendored_matches_live_manifests(name)
+
+
+def test_the_vendored_preflight_quiet_fixture_declares_nine_symbols():
+    fixture = _fixture("selfhost-preflight-quiet")
+    assert fixture["produces_count"] == 9
+    assert len(produces_names(fixture["request"])) == 9
+    assert "Certificate.as_dict" not in produces_names(fixture["request"])
